@@ -34,3 +34,8 @@ econet-gateway = "econet_gm3_gateway.main:main"
 [tool.ruff]
 line-length = 120
 target-version = "py311"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+]
