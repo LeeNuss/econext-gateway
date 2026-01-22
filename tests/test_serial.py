@@ -275,7 +275,7 @@ class TestFrameWriter:
         """Test frame write with retry."""
         conn = MagicMock(spec=SerialConnection)
         # Fail first attempt, succeed on second
-        conn.write = AsyncMock(side_effect=[asyncio.TimeoutError(), None])
+        conn.write = AsyncMock(side_effect=[TimeoutError(), None])
 
         writer = FrameWriter(conn, max_retries=3, retry_delay=0.01)
         frame = Frame(destination=1, command=Command.GET_PARAMS, data=b"")
@@ -289,7 +289,7 @@ class TestFrameWriter:
     async def test_write_frame_all_retries_fail(self):
         """Test frame write when all retries fail."""
         conn = MagicMock(spec=SerialConnection)
-        conn.write = AsyncMock(side_effect=asyncio.TimeoutError())
+        conn.write = AsyncMock(side_effect=TimeoutError())
 
         writer = FrameWriter(conn, max_retries=3, retry_delay=0.01)
         frame = Frame(destination=1, command=Command.GET_PARAMS, data=b"")

@@ -3,7 +3,6 @@
 import os
 from unittest.mock import patch
 
-
 from econet_gm3_gateway.core.config import Settings, setup_logging
 
 

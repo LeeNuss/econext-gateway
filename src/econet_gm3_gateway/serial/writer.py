@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-from typing import Optional
 
 from ..protocol.frames import Frame
 from .connection import SerialConnection
@@ -43,7 +42,7 @@ class FrameWriter:
         """Get writer statistics."""
         return self._stats.copy()
 
-    async def write_frame(self, frame: Frame, timeout: Optional[float] = None) -> bool:
+    async def write_frame(self, frame: Frame, timeout: float | None = None) -> bool:
         """
         Write a frame to the serial connection with retry logic.
 
@@ -77,7 +76,7 @@ class FrameWriter:
                     logger.debug("Frame written: %s", frame)
                     return True
 
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.warning("Frame write timeout on attempt %d/%d", attempt, self.max_retries)
                     if attempt < self.max_retries:
                         await asyncio.sleep(self.retry_delay)
@@ -100,7 +99,7 @@ class FrameWriter:
 
             return False
 
-    async def write_frames(self, frames: list[Frame], timeout: Optional[float] = None) -> int:
+    async def write_frames(self, frames: list[Frame], timeout: float | None = None) -> int:
         """
         Write multiple frames sequentially.
 

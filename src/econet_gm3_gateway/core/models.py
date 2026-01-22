@@ -1,7 +1,7 @@
 """Data models for GM3 gateway."""
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -15,8 +15,8 @@ class Parameter(BaseModel):
     type: int = Field(..., ge=1, description="Data type code")
     unit: int = Field(..., ge=0, description="Unit code")
     writable: bool = Field(..., description="Whether parameter can be modified")
-    min_value: Optional[float] = Field(None, description="Minimum allowed value")
-    max_value: Optional[float] = Field(None, description="Maximum allowed value")
+    min_value: float | None = Field(None, description="Minimum allowed value")
+    max_value: float | None = Field(None, description="Maximum allowed value")
 
     @field_validator("name")
     @classmethod
@@ -28,7 +28,7 @@ class Parameter(BaseModel):
 
     @field_validator("max_value")
     @classmethod
-    def validate_range(cls, v: Optional[float], info) -> Optional[float]:
+    def validate_range(cls, v: float | None, info) -> float | None:
         """Ensure max_value >= min_value if both are set."""
         if v is not None and info.data.get("min_value") is not None:
             if v < info.data["min_value"]:
@@ -57,7 +57,7 @@ class ParameterCollection(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.now, description="Timestamp of parameter snapshot")
     parameters: dict[str, Parameter] = Field(default_factory=dict, description="Parameters keyed by name")
 
-    def get_parameter(self, name: str) -> Optional[Parameter]:
+    def get_parameter(self, name: str) -> Parameter | None:
         """Get parameter by name."""
         return self.parameters.get(name)
 
@@ -159,7 +159,7 @@ class ErrorResponse(BaseModel):
 
     success: bool = Field(False, description="Operation success status")
     error: str = Field(..., description="Error message")
-    detail: Optional[str] = Field(None, description="Additional error details")
+    detail: str | None = Field(None, description="Additional error details")
     timestamp: datetime = Field(default_factory=datetime.now, description="Error timestamp")
 
     model_config = ConfigDict(
@@ -180,7 +180,7 @@ class HealthResponse(BaseModel):
     status: str = Field(..., description="Health status (healthy/degraded/unhealthy)")
     controller_connected: bool = Field(..., description="Whether controller is connected")
     parameters_count: int = Field(..., ge=0, description="Number of cached parameters")
-    last_update: Optional[datetime] = Field(None, description="Last successful update timestamp")
+    last_update: datetime | None = Field(None, description="Last successful update timestamp")
 
     model_config = ConfigDict(
         json_schema_extra={

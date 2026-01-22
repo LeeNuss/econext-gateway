@@ -21,7 +21,6 @@ from econet_gm3_gateway.protocol.handler import (
 )
 from econet_gm3_gateway.serial.connection import SerialConnection
 
-
 # ============================================================================
 # Test Parse Functions
 # ============================================================================

@@ -36,3 +36,12 @@ dev = [
 [tool.ruff]
 line-length = 120
 target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/econet_gm3_gateway/api/routes.py" = ["B008"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["econet_gm3_gateway"]

@@ -7,7 +7,7 @@ parameter reading/writing, and cache management.
 import asyncio
 import logging
 import struct
-from typing import Any, Optional
+from typing import Any
 
 from ..core.cache import ParameterCache
 from ..core.models import Parameter
@@ -16,12 +16,12 @@ from ..serial.reader import FrameReader
 from ..serial.writer import FrameWriter
 from .codec import decode_value, encode_value
 from .constants import (
-    Command,
-    DataType,
     DEST_ADDRESSES,
     POLL_INTERVAL,
     REQUEST_TIMEOUT,
     TYPE_SIZES,
+    Command,
+    DataType,
 )
 from .frames import Frame
 
@@ -38,8 +38,8 @@ class ParamStructEntry:
         unit: int,
         type_code: int,
         writable: bool,
-        min_value: Optional[float] = None,
-        max_value: Optional[float] = None,
+        min_value: float | None = None,
+        max_value: float | None = None,
     ):
         self.index = index
         self.name = name
@@ -333,7 +333,7 @@ class ProtocolHandler:
 
         self._param_structs: dict[int, ParamStructEntry] = {}
         self._total_params: int = 0
-        self._poll_task: Optional[asyncio.Task] = None
+        self._poll_task: asyncio.Task | None = None
         self._running = False
         self._lock = asyncio.Lock()
 
@@ -376,8 +376,8 @@ class ProtocolHandler:
         logger.info("Protocol handler stopped")
 
     async def send_and_receive(
-        self, command: int, data: bytes = b"", expected_response: Optional[int] = None
-    ) -> Optional[Frame]:
+        self, command: int, data: bytes = b"", expected_response: int | None = None
+    ) -> Frame | None:
         """Send a frame and wait for response.
 
         Args:

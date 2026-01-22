@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-from typing import Optional
 
 from ..protocol.constants import BEGIN_FRAME, END_FRAME, FRAME_MIN_LEN
 from ..protocol.frames import Frame
@@ -36,7 +35,7 @@ class FrameReader:
         """Get reader statistics."""
         return self._stats.copy()
 
-    async def read_frame(self, timeout: Optional[float] = None) -> Optional[Frame]:
+    async def read_frame(self, timeout: float | None = None) -> Frame | None:
         """
         Read a complete frame from the serial connection.
 
@@ -57,14 +56,14 @@ class FrameReader:
             else:
                 return await self._read_frame_internal()
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.debug("Frame read timeout after %ss", timeout)
             return None
         except ConnectionError:
             logger.error("Connection lost while reading frame")
             raise
 
-    async def _read_frame_internal(self) -> Optional[Frame]:
+    async def _read_frame_internal(self) -> Frame | None:
         """Internal frame reading implementation."""
         while True:
             # Try to extract frame from buffer
@@ -87,7 +86,7 @@ class FrameReader:
                 logger.error("Connection error while reading")
                 raise
 
-    def _extract_frame_from_buffer(self) -> Optional[Frame]:
+    def _extract_frame_from_buffer(self) -> Frame | None:
         """
         Try to extract a complete frame from buffer.
 

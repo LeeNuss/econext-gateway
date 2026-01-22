@@ -1,7 +1,7 @@
 """Data type encoding and decoding for GM3 protocol."""
 
 import struct
-from typing import Any, Union
+from typing import Any
 
 from .constants import DataType
 
@@ -73,7 +73,7 @@ def encode_value(value: Any, type_code: int) -> bytes:
         raise ValueError(f"Unsupported type code: {type_code}")
 
 
-def decode_value(data: bytes, type_code: int) -> Union[int, float, bool, str]:
+def decode_value(data: bytes, type_code: int) -> int | float | bool | str:
     """
     Decode bytes to Python value according to type code.
 

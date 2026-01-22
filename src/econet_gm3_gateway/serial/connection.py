@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-from typing import Optional
 
 import serial_asyncio
 from serial import SerialException
@@ -34,10 +33,10 @@ class SerialConnection:
         self.timeout = timeout
         self.reconnect_delay = reconnect_delay
 
-        self._reader: Optional[asyncio.StreamReader] = None
-        self._writer: Optional[asyncio.StreamWriter] = None
+        self._reader: asyncio.StreamReader | None = None
+        self._writer: asyncio.StreamWriter | None = None
         self._connected = False
-        self._reconnect_task: Optional[asyncio.Task] = None
+        self._reconnect_task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
 
     @property
@@ -176,7 +175,7 @@ class SerialConnection:
         except asyncio.IncompleteReadError as e:
             logger.error("Incomplete read: got %d bytes, expected %d", len(e.partial), n)
             raise
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.debug("Read timeout after %ss", self.timeout)
             raise
         except Exception as e:

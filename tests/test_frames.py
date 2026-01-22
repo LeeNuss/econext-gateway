@@ -2,7 +2,7 @@
 
 import pytest
 
-from econet_gm3_gateway.protocol.constants import BEGIN_FRAME, Command, END_FRAME, SRC_ADDRESS
+from econet_gm3_gateway.protocol.constants import BEGIN_FRAME, END_FRAME, SRC_ADDRESS, Command
 from econet_gm3_gateway.protocol.frames import Frame
 
 

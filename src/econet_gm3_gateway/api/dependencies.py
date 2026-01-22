@@ -1,7 +1,5 @@
 """FastAPI dependency injection for shared application state."""
 
-from typing import Optional
-
 from ..core.cache import ParameterCache
 from ..core.config import Settings
 from ..protocol.handler import ProtocolHandler
@@ -15,10 +13,10 @@ class AppState:
     """
 
     def __init__(self) -> None:
-        self.settings: Optional[Settings] = None
-        self.connection: Optional[SerialConnection] = None
-        self.cache: Optional[ParameterCache] = None
-        self.handler: Optional[ProtocolHandler] = None
+        self.settings: Settings | None = None
+        self.connection: SerialConnection | None = None
+        self.cache: ParameterCache | None = None
+        self.handler: ProtocolHandler | None = None
 
 
 # Global app state singleton

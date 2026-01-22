@@ -2,7 +2,6 @@
 
 import asyncio
 from datetime import datetime
-from typing import Optional
 
 from .models import Parameter
 
@@ -18,9 +17,9 @@ class ParameterCache:
         """Initialize empty parameter cache."""
         self._lock = asyncio.Lock()
         self._parameters: dict[str, Parameter] = {}
-        self._last_update: Optional[datetime] = None
+        self._last_update: datetime | None = None
 
-    async def get(self, name: str) -> Optional[Parameter]:
+    async def get(self, name: str) -> Parameter | None:
         """Get parameter by name.
 
         Args:
@@ -32,7 +31,7 @@ class ParameterCache:
         async with self._lock:
             return self._parameters.get(name)
 
-    async def get_by_index(self, index: int) -> Optional[Parameter]:
+    async def get_by_index(self, index: int) -> Parameter | None:
         """Get parameter by index.
 
         Args:
@@ -114,7 +113,7 @@ class ParameterCache:
             return name in self._parameters
 
     @property
-    def last_update(self) -> Optional[datetime]:
+    def last_update(self) -> datetime | None:
         """Get timestamp of last cache update.
 
         Returns:

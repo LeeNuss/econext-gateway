@@ -5,10 +5,10 @@ from .constants import (
     BEGIN_FRAME,
     END_FRAME,
     SRC_ADDRESS,
+    UNIT_NAMES,
     Command,
     DataType,
     Unit,
-    UNIT_NAMES,
 )
 from .crc import calculate_crc16, verify_crc16
 from .frames import Frame

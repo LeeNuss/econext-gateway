@@ -74,7 +74,7 @@ async def set_parameter(
     try:
         success = await handler.write_param(name, request.value)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from None
 
     if not success:
         raise HTTPException(status_code=503, detail="Controller did not acknowledge write")
