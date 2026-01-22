@@ -729,6 +729,39 @@ class TestProtocolHandler:
         assert cache.count == 2
 
     @pytest.mark.asyncio
+    async def test_poll_all_params_partial_response(self):
+        """Test polling handles controller returning fewer params than requested."""
+        handler, conn, cache = self._make_handler()
+        handler._params_per_request = 4  # Request all 4 at once
+
+        handler._param_structs = {
+            0: ParamStructEntry(0, "A", 0, DataType.INT16, True),
+            1: ParamStructEntry(1, "B", 0, DataType.INT16, False),
+            2: ParamStructEntry(2, "C", 0, DataType.INT16, True),
+            3: ParamStructEntry(3, "D", 0, DataType.INT16, False),
+        }
+
+        # First response: controller only returns params 0-1 (partial)
+        response1_data = struct.pack("<BH", 2, 0)
+        response1_data += b"\xc2" + struct.pack("<h", 10)
+        response1_data += b"\xc2" + struct.pack("<h", 20)
+        response1 = self._response_frame(Command.GET_PARAMS_RESPONSE, response1_data)
+
+        # Second response: controller returns params 2-3
+        response2_data = struct.pack("<BH", 2, 2)
+        response2_data += b"\xc2" + struct.pack("<h", 30)
+        response2_data += b"\xc2" + struct.pack("<h", 40)
+        response2 = self._response_frame(Command.GET_PARAMS_RESPONSE, response2_data)
+
+        handler._writer.write_frame = AsyncMock(return_value=True)
+        handler._reader.read_frame = AsyncMock(side_effect=[response1, response2])
+
+        total = await handler.poll_all_params()
+
+        assert total == 4
+        assert cache.count == 4
+
+    @pytest.mark.asyncio
     async def test_poll_all_no_structs(self):
         """Test polling when no param structs are known returns 0."""
         handler, conn, cache = self._make_handler()

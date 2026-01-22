@@ -659,6 +659,10 @@ class ProtocolHandler:
     async def poll_all_params(self) -> int:
         """Poll all known parameters and update cache.
 
+        Reads parameters in batches, advancing based on the actual
+        number of values returned by the controller (which may be
+        less than requested).
+
         Returns:
             Number of parameters successfully read.
         """
@@ -668,18 +672,51 @@ class ProtocolHandler:
         indices = sorted(self._param_structs.keys())
         total_read = 0
 
-        # Read in batches
-        batch_start = 0
-        while batch_start < len(indices):
-            start_index = indices[batch_start]
+        current_pos = 0
+        while current_pos < len(indices):
+            start_index = indices[current_pos]
 
-            # Find contiguous range for this batch
-            batch_end = min(batch_start + self._params_per_request, len(indices))
+            # Request up to params_per_request indices
+            batch_end = min(current_pos + self._params_per_request, len(indices))
             count = indices[batch_end - 1] - start_index + 1
 
-            params = await self.read_params(start_index, count)
-            total_read += len(params)
-            batch_start = batch_end
+            values = await self.fetch_param_values(start_index, count)
+
+            if not values:
+                # No response, skip to next batch
+                current_pos = batch_end
+                continue
+
+            # Build Parameter objects and update cache
+            parameters = []
+            for index, value in values:
+                entry = self._param_structs.get(index)
+                if entry is None or not entry.name:
+                    continue
+                param = Parameter(
+                    index=index,
+                    name=entry.name,
+                    value=value,
+                    type=entry.type_code,
+                    unit=entry.unit,
+                    writable=entry.writable,
+                    min_value=entry.min_value,
+                    max_value=entry.max_value,
+                )
+                parameters.append(param)
+
+            if parameters:
+                await self._cache.set_many(parameters)
+                total_read += len(parameters)
+
+            # Advance past the last index actually returned by controller
+            last_returned_index = values[-1][0]
+            new_pos = current_pos
+            while new_pos < len(indices) and indices[new_pos] <= last_returned_index:
+                new_pos += 1
+
+            # Always advance at least to batch_end to prevent infinite loops
+            current_pos = max(new_pos, current_pos + 1)
 
         return total_read
 
