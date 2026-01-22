@@ -840,3 +840,83 @@ class TestProtocolHandler:
 
         # Should have continued after the error
         assert call_count >= 2
+
+    @pytest.mark.asyncio
+    async def test_send_and_receive_response_validator(self):
+        """Test that response_validator filters frames."""
+        handler, conn, cache = self._make_handler()
+
+        # First frame passes src+cmd but fails validator, second passes all
+        rejected_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, b"\x01\x64\x00")
+        accepted_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, b"\x01\x00\x00\x2d\x00")
+
+        handler._writer.write_frame = AsyncMock(return_value=True)
+        handler._reader.read_frame = AsyncMock(side_effect=[rejected_frame, accepted_frame])
+
+        def validator(frame: Frame) -> bool:
+            first_index = struct.unpack("<H", frame.data[1:3])[0]
+            return first_index == 0
+
+        result = await handler.send_and_receive(
+            Command.GET_PARAMS,
+            b"\x01\x00\x00",
+            expected_response=Command.GET_PARAMS_RESPONSE,
+            response_validator=validator,
+        )
+
+        assert result is not None
+        assert result is accepted_frame
+        assert handler._reader.read_frame.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_fetch_param_values_skips_wrong_first_index(self):
+        """Test that fetch_param_values skips responses with mismatched firstIndex."""
+        handler, conn, cache = self._make_handler()
+
+        handler._param_structs = {
+            0: ParamStructEntry(index=0, name="Temp", unit=1, type_code=DataType.INT16, writable=True),
+        }
+
+        # First response has firstIndex=100 (from another device's request)
+        wrong_response_data = struct.pack("<BH", 100, 100) + b"\x00" * 200
+        wrong_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, wrong_response_data)
+
+        # Second response has firstIndex=0 (our response)
+        correct_response_data = struct.pack("<BH", 1, 0) + struct.pack("<h", 42)
+        correct_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, correct_response_data)
+
+        handler._writer.write_frame = AsyncMock(return_value=True)
+        handler._reader.read_frame = AsyncMock(side_effect=[wrong_frame, correct_frame])
+
+        results = await handler.fetch_param_values(0, 1)
+
+        assert len(results) == 1
+        assert results[0] == (0, 42)
+
+    @pytest.mark.asyncio
+    async def test_fetch_param_structs_skips_wrong_first_index(self):
+        """Test that fetch_param_structs skips responses with mismatched firstIndex."""
+        handler, conn, cache = self._make_handler()
+
+        # First response has firstIndex=50 (not our request for index 0)
+        wrong_data = struct.pack("<BH", 1, 50)
+        wrong_data += b"WrongParam\x00C\x00"
+        wrong_data += struct.pack("<BB", 0x22, 0x00)
+        wrong_data += struct.pack("<hh", 0, 100)
+        wrong_frame = self._response_frame(Command.GET_PARAMS_STRUCT_WITH_RANGE_RESPONSE, wrong_data)
+
+        # Second response has firstIndex=0 (our response)
+        correct_data = struct.pack("<BH", 1, 0)
+        correct_data += b"RightParam\x00C\x00"
+        correct_data += struct.pack("<BB", 0x22, 0x00)
+        correct_data += struct.pack("<hh", 0, 100)
+        correct_frame = self._response_frame(Command.GET_PARAMS_STRUCT_WITH_RANGE_RESPONSE, correct_data)
+
+        handler._writer.write_frame = AsyncMock(return_value=True)
+        handler._reader.read_frame = AsyncMock(side_effect=[wrong_frame, correct_frame])
+
+        entries = await handler.fetch_param_structs(0, 50)
+
+        assert len(entries) == 1
+        assert entries[0].name == "RightParam"
+        assert entries[0].index == 0

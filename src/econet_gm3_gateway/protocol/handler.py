@@ -7,6 +7,7 @@ parameter reading/writing, and cache management.
 import asyncio
 import logging
 import struct
+from collections.abc import Callable
 from typing import Any
 
 from econet_gm3_gateway.core.cache import ParameterCache
@@ -237,6 +238,11 @@ def parse_struct_response(data: bytes) -> list[ParamStructEntry]:
         # Map unit string to code
         unit_code = UNIT_STRING_MAP.get(unit_str, 0)
 
+        # Sanitize name: replace spaces, skip empty
+        name = name.replace(" ", "_").strip()
+        if not name:
+            continue
+
         param_index = first_index + i
         entries.append(
             ParamStructEntry(
@@ -376,19 +382,26 @@ class ProtocolHandler:
         logger.info("Protocol handler stopped")
 
     async def send_and_receive(
-        self, command: int, data: bytes = b"", expected_response: int | None = None, max_reads: int = 5
+        self,
+        command: int,
+        data: bytes = b"",
+        expected_response: int | None = None,
+        max_reads: int = 5,
+        response_validator: Callable[[Frame], bool] | None = None,
     ) -> Frame | None:
         """Send a frame and wait for response.
 
-        Skips frames from unexpected sources or with wrong commands
-        (e.g., responses to other devices on the bus). Keeps reading
-        up to max_reads frames before giving up.
+        Skips frames from unexpected sources, wrong commands, or that
+        fail the response_validator (e.g., responses to other devices
+        on the bus). Keeps reading up to max_reads frames before giving up.
 
         Args:
             command: Command code to send.
             data: Request payload.
             expected_response: Expected response command code.
             max_reads: Max frames to read before giving up.
+            response_validator: Optional callable to validate response data.
+                If provided and returns False, the frame is skipped.
 
         Returns:
             Response frame, or None on timeout.
@@ -427,6 +440,14 @@ class ProtocolHandler:
                     )
                     continue
 
+                # Validate response payload if validator provided
+                if response_validator is not None and not response_validator(response):
+                    logger.debug(
+                        f"Response validator rejected frame cmd=0x{response.command:02X}, "
+                        f"first bytes: {response.data[:6].hex() if response.data else 'empty'}"
+                    )
+                    continue
+
                 return response
 
             logger.warning(f"No matching response after {max_reads} reads for 0x{command:02X}")
@@ -443,10 +464,18 @@ class ProtocolHandler:
             List of parameter structure entries.
         """
         data = build_struct_request(start_index, count)
+
+        def validate_first_index(frame: Frame) -> bool:
+            if len(frame.data) < 3:
+                return False
+            first_index = struct.unpack("<H", frame.data[1:3])[0]
+            return first_index == start_index
+
         response = await self.send_and_receive(
             Command.GET_PARAMS_STRUCT_WITH_RANGE,
             data,
             expected_response=Command.GET_PARAMS_STRUCT_WITH_RANGE_RESPONSE,
+            response_validator=validate_first_index,
         )
 
         if response is None:
@@ -471,23 +500,25 @@ class ProtocolHandler:
             List of (index, value) tuples.
         """
         data = build_get_params_request(start_index, count)
+
+        def validate_first_index(frame: Frame) -> bool:
+            if len(frame.data) < 3:
+                return False
+            first_index = struct.unpack("<H", frame.data[1:3])[0]
+            return first_index == start_index
+
         response = await self.send_and_receive(
             Command.GET_PARAMS,
             data,
             expected_response=Command.GET_PARAMS_RESPONSE,
+            response_validator=validate_first_index,
         )
 
         if response is None:
             return []
 
         results = parse_get_params_response(response.data, self._param_structs)
-        if not results and response.data:
-            logger.debug(
-                f"GET_PARAMS response has {len(response.data)} bytes but parsed 0 values. "
-                f"First 32 bytes: {response.data[:32].hex()}"
-            )
-        else:
-            logger.debug(f"Fetched {len(results)} param values starting at index {start_index}")
+        logger.debug(f"Fetched {len(results)} param values starting at index {start_index}")
         return results
 
     async def read_params(self, start_index: int, count: int) -> list[Parameter]:

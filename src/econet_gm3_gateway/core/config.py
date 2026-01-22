@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     """
 
     serial_port: str = "/dev/ttyUSB0"
-    serial_baud: int = 9600
+    serial_baud: int = 115200
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     log_level: str = "INFO"

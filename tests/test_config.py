@@ -15,7 +15,7 @@ class TestSettings:
             settings = Settings()
 
         assert settings.serial_port == "/dev/ttyUSB0"
-        assert settings.serial_baud == 9600
+        assert settings.serial_baud == 115200
         assert settings.api_host == "0.0.0.0"
         assert settings.api_port == 8000
         assert settings.log_level == "INFO"
