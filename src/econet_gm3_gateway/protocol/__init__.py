@@ -12,9 +12,11 @@ from .constants import (
 )
 from .crc import calculate_crc16, verify_crc16
 from .frames import Frame
+from .handler import ProtocolHandler
 
 __all__ = [
     "Frame",
+    "ProtocolHandler",
     "calculate_crc16",
     "verify_crc16",
     "encode_value",
