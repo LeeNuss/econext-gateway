@@ -22,7 +22,7 @@ class TestSettings:
         assert settings.poll_interval == 10.0
         assert settings.request_timeout == 2.0
         assert settings.destination_address == 1
-        assert settings.params_per_request == 50
+        assert settings.params_per_request == 100
 
     def test_env_override_serial_port(self):
         """Test serial port override from environment."""

@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     poll_interval: float = 10.0
     request_timeout: float = 2.0
     destination_address: int = 1
-    params_per_request: int = 50
+    params_per_request: int = 100
 
     model_config = SettingsConfigDict(env_prefix="ECONET_")
 

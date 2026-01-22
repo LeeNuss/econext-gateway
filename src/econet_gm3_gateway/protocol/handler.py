@@ -637,7 +637,7 @@ class ProtocolHandler:
         """
         new_structs: dict[int, ParamStructEntry] = {}
         index = 0
-        batch_size = self._params_per_request
+        batch_size = 255  # Protocol max (count is uint8), get all in fewest requests
 
         while index < max_params:
             entries = await self.fetch_param_structs(index, batch_size)
