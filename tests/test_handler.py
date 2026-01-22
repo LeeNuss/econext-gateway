@@ -1,5 +1,6 @@
 """Unit tests for protocol handler."""
 
+import asyncio
 import struct
 from unittest.mock import AsyncMock, MagicMock
 
@@ -727,3 +728,123 @@ class TestProtocolHandler:
 
         assert result is None
         handler._writer.write_frame.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_discover_params_keeps_existing_on_failure(self):
+        """Test that discover_params keeps existing structs when discovery returns nothing."""
+        handler, conn, cache = self._make_handler()
+
+        # Pre-populate with existing structures
+        handler._param_structs = {
+            0: ParamStructEntry(0, "Existing", 0, DataType.INT16, True),
+        }
+
+        # Mock fetch_param_structs to return nothing (simulating communication failure)
+        handler.fetch_param_structs = AsyncMock(return_value=[])
+
+        total = await handler.discover_params()
+
+        # Should keep existing structures
+        assert total == 1
+        assert handler.param_count == 1
+        assert 0 in handler._param_structs
+        assert handler._param_structs[0].name == "Existing"
+
+    @pytest.mark.asyncio
+    async def test_poll_loop_waits_when_disconnected(self):
+        """Test that poll loop skips polling when not connected."""
+        handler, conn, cache = self._make_handler()
+        conn.connected = False
+
+        handler._param_structs = {
+            0: ParamStructEntry(0, "Temp", 0, DataType.INT16, True),
+        }
+
+        poll_mock = AsyncMock()
+        handler.poll_all_params = poll_mock
+        handler._poll_interval = 0.01
+
+        await handler.start()
+        await asyncio.sleep(0.05)
+        await handler.stop()
+
+        # Should not have polled since disconnected
+        poll_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_poll_loop_rediscovers_on_reconnect(self):
+        """Test that poll loop re-discovers params when connection is restored."""
+        handler, conn, cache = self._make_handler()
+        conn.connected = False
+        handler._poll_interval = 0.01
+
+        discover_mock = AsyncMock(return_value=2)
+        handler.discover_params = discover_mock
+        handler.poll_all_params = AsyncMock(return_value=2)
+
+        await handler.start()
+        await asyncio.sleep(0.03)
+
+        # Simulate reconnection
+        conn.connected = True
+        await asyncio.sleep(0.05)
+        await handler.stop()
+
+        # Should have called discover_params after reconnection
+        discover_mock.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_poll_loop_handles_connection_error(self):
+        """Test that poll loop handles ConnectionError gracefully."""
+        handler, conn, cache = self._make_handler()
+        handler._poll_interval = 0.01
+
+        handler._param_structs = {
+            0: ParamStructEntry(0, "Temp", 0, DataType.INT16, True),
+        }
+
+        call_count = 0
+
+        async def failing_poll():
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                raise ConnectionError("Serial port disconnected")
+            return 1
+
+        handler.poll_all_params = failing_poll
+
+        await handler.start()
+        await asyncio.sleep(0.08)
+        await handler.stop()
+
+        # Should have retried after ConnectionError
+        assert call_count >= 3
+
+    @pytest.mark.asyncio
+    async def test_poll_loop_handles_generic_exception(self):
+        """Test that poll loop handles unexpected exceptions without crashing."""
+        handler, conn, cache = self._make_handler()
+        handler._poll_interval = 0.01
+
+        handler._param_structs = {
+            0: ParamStructEntry(0, "Temp", 0, DataType.INT16, True),
+        }
+
+        call_count = 0
+
+        async def sometimes_failing_poll():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("Unexpected error")
+            return 1
+
+        handler.poll_all_params = sometimes_failing_poll
+
+        await handler.start()
+        await asyncio.sleep(0.05)
+        await handler.stop()
+
+        # Should have continued after the error
+        assert call_count >= 2

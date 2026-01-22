@@ -552,7 +552,8 @@ class ProtocolHandler:
         """Discover all parameters by fetching structures.
 
         Sends GET_PARAMS_STRUCT_WITH_RANGE requests until no more
-        parameters are returned.
+        parameters are returned. Only replaces existing structures
+        if discovery succeeds (at least one param found).
 
         Args:
             max_params: Maximum number of parameters to discover.
@@ -560,7 +561,7 @@ class ProtocolHandler:
         Returns:
             Total number of parameters discovered.
         """
-        self._param_structs.clear()
+        new_structs: dict[int, ParamStructEntry] = {}
         index = 0
         batch_size = self._params_per_request
 
@@ -568,11 +569,18 @@ class ProtocolHandler:
             entries = await self.fetch_param_structs(index, batch_size)
             if not entries:
                 break
+            for entry in entries:
+                new_structs[entry.index] = entry
             index = entries[-1].index + 1
 
-        self._total_params = len(self._param_structs)
-        logger.info(f"Discovered {self._total_params} parameters")
-        return self._total_params
+        if new_structs:
+            self._param_structs = new_structs
+            self._total_params = len(self._param_structs)
+            logger.info(f"Discovered {self._total_params} parameters")
+        else:
+            logger.warning("Parameter discovery returned no results, keeping existing structures")
+
+        return len(self._param_structs)
 
     async def poll_all_params(self) -> int:
         """Poll all known parameters and update cache.
@@ -602,20 +610,41 @@ class ProtocolHandler:
         return total_read
 
     async def _poll_loop(self) -> None:
-        """Background polling loop."""
+        """Background polling loop with reconnection support."""
+        consecutive_errors = 0
+        was_connected = self.connected
+
         while self._running:
             try:
-                if self.connected:
-                    # Discover params on first poll if needed
-                    if not self._param_structs:
-                        await self.discover_params()
+                if not self.connected:
+                    if was_connected:
+                        logger.warning("Connection lost, waiting for reconnection...")
+                        was_connected = False
+                    await asyncio.sleep(self._poll_interval)
+                    continue
 
-                    await self.poll_all_params()
+                if not was_connected:
+                    logger.info("Connection restored, re-discovering parameters...")
+                    was_connected = True
+                    await self.discover_params()
+
+                # Discover params on first poll if needed
+                if not self._param_structs:
+                    await self.discover_params()
+
+                await self.poll_all_params()
+                consecutive_errors = 0
 
             except asyncio.CancelledError:
                 raise
+            except ConnectionError:
+                consecutive_errors += 1
+                if consecutive_errors <= 3:
+                    logger.warning("Connection error during poll, will retry")
             except Exception as e:
-                logger.error(f"Poll error: {e}")
+                consecutive_errors += 1
+                if consecutive_errors <= 3:
+                    logger.error(f"Poll error: {e}")
 
             try:
                 await asyncio.sleep(self._poll_interval)

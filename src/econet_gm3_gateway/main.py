@@ -45,9 +45,14 @@ async def lifespan(app: FastAPI):
     connected = await app_state.connection.connect()
     if connected:
         logger.info(f"Connected to {settings.serial_port}")
-        await app_state.handler.start()
     else:
-        logger.warning(f"Failed to connect to {settings.serial_port}")
+        logger.warning(f"Failed to connect to {settings.serial_port}, will retry in background")
+
+    # Start reconnect loop (handles connection drops and initial failures)
+    await app_state.connection.start_reconnect_loop()
+
+    # Always start handler - poll loop waits for connection
+    await app_state.handler.start()
 
     yield
 
@@ -55,8 +60,10 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down...")
     if app_state.handler is not None:
         await app_state.handler.stop()
-    if app_state.connection is not None and app_state.connection.connected:
-        await app_state.connection.disconnect()
+    if app_state.connection is not None:
+        await app_state.connection.stop_reconnect_loop()
+        if app_state.connection.connected:
+            await app_state.connection.disconnect()
 
 
 app = FastAPI(
