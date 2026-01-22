@@ -54,20 +54,20 @@ All communication uses binary frames with the following structure:
 
 **Field Details:**
 
-| Offset | Size | Field | Value | Description |
-|--------|------|-------|-------|-------------|
-| 0 | 1 | BEGIN | 0x68 | Frame start marker |
-| 1 | 1 | LEN_L | - | Length low byte (frame_len - 6) |
-| 2 | 1 | LEN_H | - | Length high byte |
-| 3 | 1 | DA_L | - | Destination address low byte |
-| 4 | 1 | DA_H | - | Destination address high byte |
-| 5 | 1 | SA | 131 | Source address |
-| 6 | 1 | RSV | 0x00 | Reserved byte |
-| 7 | 1 | CMD | - | Command/frame type |
-| 8 | N | DATA | - | Payload (variable length) |
-| -3 | 1 | CRC_H | - | CRC-16 high byte |
-| -2 | 1 | CRC_L | - | CRC-16 low byte |
-| -1 | 1 | END | 0x16 | Frame end marker |
+| Offset | Size | Field | Value | Description                     |
+| ------ | ---- | ----- | ----- | ------------------------------- |
+| 0      | 1    | BEGIN | 0x68  | Frame start marker              |
+| 1      | 1    | LEN_L | -     | Length low byte (frame_len - 6) |
+| 2      | 1    | LEN_H | -     | Length high byte                |
+| 3      | 1    | DA_L  | -     | Destination address low byte    |
+| 4      | 1    | DA_H  | -     | Destination address high byte   |
+| 5      | 1    | SA    | 131   | Source address                  |
+| 6      | 1    | RSV   | 0x00  | Reserved byte                   |
+| 7      | 1    | CMD   | -     | Command/frame type              |
+| 8      | N    | DATA  | -     | Payload (variable length)       |
+| -3     | 1    | CRC_H | -     | CRC-16 high byte                |
+| -2     | 1    | CRC_L | -     | CRC-16 low byte                 |
+| -1     | 1    | END   | 0x16  | Frame end marker                |
 
 **Length Calculation:**
 ```
@@ -267,31 +267,31 @@ Each parameter has these properties:
 
 ### Common Parameters
 
-| Index | Name | Type | Unit | Description |
-|-------|------|------|------|-------------|
-| 0-50 | System | Various | - | UID, device name, version |
-| 100-200 | Temperatures | Float | °C | Boiler, outdoor, return temps |
-| 300-400 | Setpoints | Float/Int | °C | Target temperatures |
-| 376-388 | Network | Various | - | WiFi, Ethernet status |
+| Index   | Name         | Type      | Unit | Description                   |
+| ------- | ------------ | --------- | ---- | ----------------------------- |
+| 0-50    | System       | Various   | -    | UID, device name, version     |
+| 100-200 | Temperatures | Float     | °C   | Boiler, outdoor, return temps |
+| 300-400 | Setpoints    | Float/Int | °C   | Target temperatures           |
+| 376-388 | Network      | Various   | -    | WiFi, Ethernet status         |
 
 ## Data Types
 
 ### Type Codes
 
-| Code | Type | Size | Description |
-|------|------|------|-------------|
-| 1 | int8 | 1 | Signed byte (-128 to 127) |
-| 2 | int16 | 2 | Signed short (little-endian) |
-| 3 | int32 | 4 | Signed int (little-endian) |
-| 4 | uint8 | 1 | Unsigned byte (0 to 255) |
-| 5 | uint16 | 2 | Unsigned short (little-endian) |
-| 6 | uint32 | 4 | Unsigned int (little-endian) |
-| 7 | float | 4 | IEEE 754 float (little-endian) |
-| 9 | double | 8 | IEEE 754 double (little-endian) |
-| 10 | bool | 1 | Boolean (0 or 1) |
-| 12 | string | N | Null-terminated UTF-8 string |
-| 13 | int64 | 8 | Signed long long (little-endian) |
-| 14 | uint64 | 8 | Unsigned long long (little-endian) |
+| Code | Type   | Size | Description                        |
+| ---- | ------ | ---- | ---------------------------------- |
+| 1    | int8   | 1    | Signed byte (-128 to 127)          |
+| 2    | int16  | 2    | Signed short (little-endian)       |
+| 3    | int32  | 4    | Signed int (little-endian)         |
+| 4    | uint8  | 1    | Unsigned byte (0 to 255)           |
+| 5    | uint16 | 2    | Unsigned short (little-endian)     |
+| 6    | uint32 | 4    | Unsigned int (little-endian)       |
+| 7    | float  | 4    | IEEE 754 float (little-endian)     |
+| 9    | double | 8    | IEEE 754 double (little-endian)    |
+| 10   | bool   | 1    | Boolean (0 or 1)                   |
+| 12   | string | N    | Null-terminated UTF-8 string       |
+| 13   | int64  | 8    | Signed long long (little-endian)   |
+| 14   | uint64 | 8    | Unsigned long long (little-endian) |
 
 ### Encoding Examples
 
@@ -346,17 +346,17 @@ value = struct.unpack('<B', data[0:1])[0] != 0
 
 Common unit identifiers:
 
-| Code | Unit | Description |
-|------|------|-------------|
-| 0 | - | No unit / dimensionless |
-| 1 | °C | Temperature (Celsius) |
-| 2 | s | Seconds |
-| 3 | min | Minutes |
-| 4 | h | Hours |
-| 5 | d | Days |
-| 6 | % | Percentage |
-| 7 | kW | Kilowatts (power) |
-| 8 | kWh | Kilowatt-hours (energy) |
+| Code | Unit | Description             |
+| ---- | ---- | ----------------------- |
+| 0    | -    | No unit / dimensionless |
+| 1    | °C   | Temperature (Celsius)   |
+| 2    | s    | Seconds                 |
+| 3    | min  | Minutes                 |
+| 4    | h    | Hours                   |
+| 5    | d    | Days                    |
+| 6    | %    | Percentage              |
+| 7    | kW   | Kilowatts (power)       |
+| 8    | kWh  | Kilowatt-hours (energy) |
 
 ## Alarms
 

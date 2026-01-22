@@ -17,14 +17,14 @@ This document describes the architecture and design decisions for the econet GM3
 
 ### Core Technologies
 
-| Component | Technology | Version | Rationale |
-|-----------|-----------|---------|-----------|
-| Language | Python | 3.11+ | Modern features, async support, type hints |
-| Web Framework | FastAPI | Latest | Async-native, auto OpenAPI docs, Pydantic validation |
-| Serial I/O | pyserial-asyncio | Latest | Async serial communication |
-| ASGI Server | Uvicorn | Latest | High performance, async support |
-| Package Manager | uv | Latest | Fast, reliable dependency management |
-| Code Formatter | Ruff | 0.14.2 | Fast, comprehensive linting and formatting |
+| Component       | Technology       | Version | Rationale                                            |
+| --------------- | ---------------- | ------- | ---------------------------------------------------- |
+| Language        | Python           | 3.11+   | Modern features, async support, type hints           |
+| Web Framework   | FastAPI          | Latest  | Async-native, auto OpenAPI docs, Pydantic validation |
+| Serial I/O      | pyserial-asyncio | Latest  | Async serial communication                           |
+| ASGI Server     | Uvicorn          | Latest  | High performance, async support                      |
+| Package Manager | uv               | Latest  | Fast, reliable dependency management                 |
+| Code Formatter  | Ruff             | 0.14.2  | Fast, comprehensive linting and formatting           |
 
 ### Development Tools
 
@@ -338,21 +338,21 @@ WantedBy=multi-user.target
 
 ### Serial Communication Errors
 
-| Error | Strategy | Retry |
-|-------|----------|-------|
-| Timeout | Retry with exponential backoff | 3 attempts |
-| CRC Error | Discard frame, request resend | 3 attempts |
-| Device Disconnected | Reconnect, reinitialize | Infinite |
-| Invalid Response | Log error, return cached value | N/A |
+| Error               | Strategy                       | Retry      |
+| ------------------- | ------------------------------ | ---------- |
+| Timeout             | Retry with exponential backoff | 3 attempts |
+| CRC Error           | Discard frame, request resend  | 3 attempts |
+| Device Disconnected | Reconnect, reinitialize        | Infinite   |
+| Invalid Response    | Log error, return cached value | N/A        |
 
 ### API Errors
 
-| Error | HTTP Status | Response |
-|-------|-------------|----------|
-| Parameter not found | 404 | `{"error": "Parameter 'xyz' not found"}` |
-| Invalid value | 400 | `{"error": "Value out of range [20-55]"}` |
-| Serial unavailable | 503 | `{"error": "Heat pump unavailable"}` |
-| Internal error | 500 | `{"error": "Internal server error"}` |
+| Error               | HTTP Status | Response                                  |
+| ------------------- | ----------- | ----------------------------------------- |
+| Parameter not found | 404         | `{"error": "Parameter 'xyz' not found"}`  |
+| Invalid value       | 400         | `{"error": "Value out of range [20-55]"}` |
+| Serial unavailable  | 503         | `{"error": "Heat pump unavailable"}`      |
+| Internal error      | 500         | `{"error": "Internal server error"}`      |
 
 ## Testing Strategy
 
@@ -376,13 +376,13 @@ WantedBy=multi-user.target
 
 ## Performance Targets
 
-| Metric | Target | Notes |
-|--------|--------|-------|
-| API Response Time | < 200ms | For cached values |
-| Serial Read Cycle | 5-10s | Configurable polling interval |
-| Memory Usage | < 100MB | Including Python runtime |
-| CPU Usage (idle) | < 5% | On Raspberry Pi 3 |
-| Startup Time | < 5s | From cold start to ready |
+| Metric            | Target  | Notes                         |
+| ----------------- | ------- | ----------------------------- |
+| API Response Time | < 200ms | For cached values             |
+| Serial Read Cycle | 5-10s   | Configurable polling interval |
+| Memory Usage      | < 100MB | Including Python runtime      |
+| CPU Usage (idle)  | < 5%    | On Raspberry Pi 3             |
+| Startup Time      | < 5s    | From cold start to ready      |
 
 ## Security Considerations
 

@@ -203,14 +203,14 @@ All error responses follow this format:
 
 ### Common Errors
 
-| Error | Status | Description |
-|-------|--------|-------------|
-| Parameter not found | 404 | Requested parameter does not exist |
-| Invalid value type | 400 | Value type does not match parameter type |
-| Value out of range | 400 | Value exceeds min/max constraints |
-| Read-only parameter | 400 | Attempted to write to read-only parameter |
-| Controller unavailable | 503 | Serial connection to controller lost |
-| Internal error | 500 | Unexpected server error |
+| Error                  | Status | Description                               |
+| ---------------------- | ------ | ----------------------------------------- |
+| Parameter not found    | 404    | Requested parameter does not exist        |
+| Invalid value type     | 400    | Value type does not match parameter type  |
+| Value out of range     | 400    | Value exceeds min/max constraints         |
+| Read-only parameter    | 400    | Attempted to write to read-only parameter |
+| Controller unavailable | 503    | Serial connection to controller lost      |
+| Internal error         | 500    | Unexpected server error                   |
 
 ---
 
