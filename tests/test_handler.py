@@ -276,6 +276,8 @@ class TestBuildFunctions:
 class TestProtocolHandler:
     """Tests for ProtocolHandler class."""
 
+    DEST_ADDR = 1  # Default controller address
+
     def _make_handler(self) -> tuple[ProtocolHandler, MagicMock, ParameterCache]:
         """Create handler with mocked connection."""
         conn = MagicMock(spec=SerialConnection)
@@ -288,6 +290,12 @@ class TestProtocolHandler:
             request_timeout=0.5,
         )
         return handler, conn, cache
+
+    def _response_frame(self, command: int, data: bytes = b"") -> Frame:
+        """Create a mock response frame from the controller."""
+        frame = Frame(destination=131, command=command, data=data)
+        frame.source = self.DEST_ADDR  # Response comes FROM the controller
+        return frame
 
     @pytest.mark.asyncio
     async def test_init(self):
@@ -316,7 +324,7 @@ class TestProtocolHandler:
         handler, conn, cache = self._make_handler()
 
         # Mock writer and reader
-        response_frame = Frame(destination=131, command=Command.GET_PARAMS_RESPONSE, data=b"\x01\x00\x00\x2d\x00")
+        response_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, b"\x01\x00\x00\x2d\x00")
         handler._writer.write_frame = AsyncMock(return_value=True)
         handler._reader.read_frame = AsyncMock(return_value=response_frame)
 
@@ -365,7 +373,7 @@ class TestProtocolHandler:
         """Test receiving wrong response command."""
         handler, conn, cache = self._make_handler()
 
-        wrong_response = Frame(destination=131, command=Command.GET_SETTINGS_RESPONSE, data=b"")
+        wrong_response = self._response_frame(Command.GET_SETTINGS_RESPONSE)
         handler._writer.write_frame = AsyncMock(return_value=True)
         handler._reader.read_frame = AsyncMock(return_value=wrong_response)
 
@@ -389,11 +397,7 @@ class TestProtocolHandler:
         response_data += struct.pack("<BB", 0x22, 0x00)  # INT16, writable
         response_data += struct.pack("<hh", 0, 100)
 
-        response_frame = Frame(
-            destination=131,
-            command=Command.GET_PARAMS_STRUCT_WITH_RANGE_RESPONSE,
-            data=response_data,
-        )
+        response_frame = self._response_frame(Command.GET_PARAMS_STRUCT_WITH_RANGE_RESPONSE, response_data)
         handler._writer.write_frame = AsyncMock(return_value=True)
         handler._reader.read_frame = AsyncMock(return_value=response_frame)
 
@@ -419,11 +423,7 @@ class TestProtocolHandler:
         response_data += struct.pack("<h", 55)  # Temp = 55
         response_data += struct.pack("<B", 80)  # Pressure = 80
 
-        response_frame = Frame(
-            destination=131,
-            command=Command.GET_PARAMS_RESPONSE,
-            data=response_data,
-        )
+        response_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, response_data)
         handler._writer.write_frame = AsyncMock(return_value=True)
         handler._reader.read_frame = AsyncMock(return_value=response_frame)
 
@@ -451,11 +451,7 @@ class TestProtocolHandler:
         }
 
         response_data = struct.pack("<BH", 1, 0) + struct.pack("<h", 65)
-        response_frame = Frame(
-            destination=131,
-            command=Command.GET_PARAMS_RESPONSE,
-            data=response_data,
-        )
+        response_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, response_data)
         handler._writer.write_frame = AsyncMock(return_value=True)
         handler._reader.read_frame = AsyncMock(return_value=response_frame)
 
@@ -501,7 +497,7 @@ class TestProtocolHandler:
             )
         )
 
-        response_frame = Frame(destination=131, command=Command.MODIFY_PARAM_RESPONSE, data=b"")
+        response_frame = self._response_frame(Command.MODIFY_PARAM_RESPONSE)
         handler._writer.write_frame = AsyncMock(return_value=True)
         handler._reader.read_frame = AsyncMock(return_value=response_frame)
 
@@ -692,11 +688,7 @@ class TestProtocolHandler:
         response_data += struct.pack("<h", 42)
         response_data += struct.pack("<B", 99)
 
-        response_frame = Frame(
-            destination=131,
-            command=Command.GET_PARAMS_RESPONSE,
-            data=response_data,
-        )
+        response_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, response_data)
         handler._writer.write_frame = AsyncMock(return_value=True)
         handler._reader.read_frame = AsyncMock(return_value=response_frame)
 

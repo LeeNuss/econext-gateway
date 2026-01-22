@@ -376,14 +376,18 @@ class ProtocolHandler:
         logger.info("Protocol handler stopped")
 
     async def send_and_receive(
-        self, command: int, data: bytes = b"", expected_response: int | None = None
+        self, command: int, data: bytes = b"", expected_response: int | None = None, max_retries: int = 3
     ) -> Frame | None:
         """Send a frame and wait for response.
+
+        Filters out frames from unexpected sources (e.g., broadcast
+        traffic) and retries reading up to max_retries times.
 
         Args:
             command: Command code to send.
             data: Request payload.
             expected_response: Expected response command code.
+            max_retries: Max frames to skip before giving up.
 
         Returns:
             Response frame, or None on timeout.
@@ -399,17 +403,31 @@ class ProtocolHandler:
             if expected_response is None:
                 return None
 
-            response = await self._reader.read_frame(timeout=self._request_timeout)
+            for _ in range(max_retries):
+                response = await self._reader.read_frame(timeout=self._request_timeout)
 
-            if response is None:
-                logger.warning(f"Timeout waiting for response to 0x{command:02X}")
-                return None
+                if response is None:
+                    logger.warning(f"Timeout waiting for response to 0x{command:02X}")
+                    return None
 
-            if response.command != expected_response:
-                logger.warning(f"Unexpected response: got 0x{response.command:02X}, expected 0x{expected_response:02X}")
-                return None
+                # Skip frames not from our target device
+                if response.source != self._destination:
+                    logger.debug(
+                        f"Skipping frame from src={response.source} "
+                        f"(expected src={self._destination}), cmd=0x{response.command:02X}"
+                    )
+                    continue
 
-            return response
+                if response.command != expected_response:
+                    logger.warning(
+                        f"Unexpected response: got 0x{response.command:02X}, expected 0x{expected_response:02X}"
+                    )
+                    return None
+
+                return response
+
+            logger.warning(f"No valid response after {max_retries} frames for 0x{command:02X}")
+            return None
 
     async def fetch_param_structs(self, start_index: int = 0, count: int = 50) -> list[ParamStructEntry]:
         """Fetch parameter structure/metadata from controller.
@@ -460,7 +478,13 @@ class ProtocolHandler:
             return []
 
         results = parse_get_params_response(response.data, self._param_structs)
-        logger.debug(f"Fetched {len(results)} param values starting at index {start_index}")
+        if not results and response.data:
+            logger.debug(
+                f"GET_PARAMS response has {len(response.data)} bytes but parsed 0 values. "
+                f"First 32 bytes: {response.data[:32].hex()}"
+            )
+        else:
+            logger.debug(f"Fetched {len(results)} param values starting at index {start_index}")
         return results
 
     async def read_params(self, start_index: int, count: int) -> list[Parameter]:
