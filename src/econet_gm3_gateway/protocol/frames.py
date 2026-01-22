@@ -14,11 +14,12 @@ class Frame:
     Attributes:
         destination: Destination address (16-bit)
         source: Source address (8-bit)
+        reserved: Reserved byte (usually 0x00 or 0xFF)
         command: Command byte
         data: Payload data
     """
 
-    def __init__(self, destination: int, command: int, data: bytes = b""):
+    def __init__(self, destination: int, command: int, data: bytes = b"", reserved: int = 0x00):
         """
         Initialize a frame.
 
@@ -26,9 +27,11 @@ class Frame:
             destination: Destination address (0-65535)
             command: Command byte (0-255)
             data: Optional payload data
+            reserved: Reserved byte (default 0x00)
         """
         self.destination = destination
         self.source = SRC_ADDRESS
+        self.reserved = reserved
         self.command = command
         self.data = data
 
@@ -62,7 +65,7 @@ class Frame:
         frame.append(self.source)
 
         # Reserved
-        frame.append(0x00)
+        frame.append(self.reserved)
 
         # Command
         frame.append(self.command)
@@ -139,11 +142,12 @@ class Frame:
         # Extract fields
         destination = struct.unpack("<H", data[3:5])[0]
         source = data[5]
+        reserved = data[6]
         command = data[7]
         payload = data[8:-3]
 
         # Create frame object
-        frame = cls(destination=destination, command=command, data=payload)
+        frame = cls(destination=destination, command=command, data=payload, reserved=reserved)
         frame.source = source
 
         return frame
@@ -151,6 +155,6 @@ class Frame:
     def __repr__(self) -> str:
         """String representation for debugging."""
         return (
-            f"Frame(dest={self.destination}, src={self.source}, "
+            f"Frame(dest={self.destination}, src={self.source}, rsv=0x{self.reserved:02X}, "
             f"cmd=0x{self.command:02X}, data_len={len(self.data)})"
         )
