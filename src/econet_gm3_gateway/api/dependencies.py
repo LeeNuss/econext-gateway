@@ -1,9 +1,9 @@
 """FastAPI dependency injection for shared application state."""
 
-from ..core.cache import ParameterCache
-from ..core.config import Settings
-from ..protocol.handler import ProtocolHandler
-from ..serial.connection import SerialConnection
+from econet_gm3_gateway.core.cache import ParameterCache
+from econet_gm3_gateway.core.config import Settings
+from econet_gm3_gateway.protocol.handler import ProtocolHandler
+from econet_gm3_gateway.serial.connection import SerialConnection
 
 
 class AppState:

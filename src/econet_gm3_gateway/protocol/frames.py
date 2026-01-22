@@ -3,8 +3,8 @@
 import struct
 from typing import Optional
 
-from .constants import BEGIN_FRAME, END_FRAME, FRAME_MIN_LEN, SRC_ADDRESS
-from .crc import calculate_crc16
+from econet_gm3_gateway.protocol.constants import BEGIN_FRAME, END_FRAME, FRAME_MIN_LEN, SRC_ADDRESS
+from econet_gm3_gateway.protocol.crc import calculate_crc16
 
 
 class Frame:

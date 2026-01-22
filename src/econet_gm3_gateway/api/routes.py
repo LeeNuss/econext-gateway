@@ -4,15 +4,15 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..core.cache import ParameterCache
-from ..core.models import (
+from econet_gm3_gateway.api.dependencies import get_cache, get_handler
+from econet_gm3_gateway.core.cache import ParameterCache
+from econet_gm3_gateway.core.models import (
     ErrorResponse,
     ParameterSetRequest,
     ParameterSetResponse,
     ParametersResponse,
 )
-from ..protocol.handler import ProtocolHandler
-from .dependencies import get_cache, get_handler
+from econet_gm3_gateway.protocol.handler import ProtocolHandler
 
 router = APIRouter(prefix="/api")
 

@@ -3,8 +3,8 @@
 import asyncio
 import logging
 
-from ..protocol.frames import Frame
-from .connection import SerialConnection
+from econet_gm3_gateway.protocol.frames import Frame
+from econet_gm3_gateway.serial.connection import SerialConnection
 
 logger = logging.getLogger(__name__)
 

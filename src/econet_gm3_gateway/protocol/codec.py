@@ -3,7 +3,7 @@
 import struct
 from typing import Any
 
-from .constants import DataType
+from econet_gm3_gateway.protocol.constants import DataType
 
 
 def encode_value(value: Any, type_code: int) -> bytes:

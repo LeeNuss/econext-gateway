@@ -9,13 +9,10 @@ import logging
 import struct
 from typing import Any
 
-from ..core.cache import ParameterCache
-from ..core.models import Parameter
-from ..serial.connection import SerialConnection
-from ..serial.reader import FrameReader
-from ..serial.writer import FrameWriter
-from .codec import decode_value, encode_value
-from .constants import (
+from econet_gm3_gateway.core.cache import ParameterCache
+from econet_gm3_gateway.core.models import Parameter
+from econet_gm3_gateway.protocol.codec import decode_value, encode_value
+from econet_gm3_gateway.protocol.constants import (
     DEST_ADDRESSES,
     POLL_INTERVAL,
     REQUEST_TIMEOUT,
@@ -23,7 +20,10 @@ from .constants import (
     Command,
     DataType,
 )
-from .frames import Frame
+from econet_gm3_gateway.protocol.frames import Frame
+from econet_gm3_gateway.serial.connection import SerialConnection
+from econet_gm3_gateway.serial.reader import FrameReader
+from econet_gm3_gateway.serial.writer import FrameWriter
 
 logger = logging.getLogger(__name__)
 

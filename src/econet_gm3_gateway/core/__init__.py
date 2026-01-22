@@ -1,8 +1,8 @@
 """Core application functionality."""
 
-from .cache import ParameterCache
-from .config import Settings, setup_logging
-from .models import Parameter, ParameterCollection
+from econet_gm3_gateway.core.cache import ParameterCache
+from econet_gm3_gateway.core.config import Settings, setup_logging
+from econet_gm3_gateway.core.models import Parameter, ParameterCollection
 
 __all__ = [
     "ParameterCache",

@@ -1,5 +1,5 @@
 """FastAPI routes and models."""
 
-from .routes import router
+from econet_gm3_gateway.api.routes import router
 
 __all__ = ["router"]

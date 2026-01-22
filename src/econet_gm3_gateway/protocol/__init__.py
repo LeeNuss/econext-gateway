@@ -1,7 +1,7 @@
 """GM3 protocol implementation."""
 
-from .codec import decode_value, encode_value
-from .constants import (
+from econet_gm3_gateway.protocol.codec import decode_value, encode_value
+from econet_gm3_gateway.protocol.constants import (
     BEGIN_FRAME,
     END_FRAME,
     SRC_ADDRESS,
@@ -10,9 +10,9 @@ from .constants import (
     DataType,
     Unit,
 )
-from .crc import calculate_crc16, verify_crc16
-from .frames import Frame
-from .handler import ProtocolHandler
+from econet_gm3_gateway.protocol.crc import calculate_crc16, verify_crc16
+from econet_gm3_gateway.protocol.frames import Frame
+from econet_gm3_gateway.protocol.handler import ProtocolHandler
 
 __all__ = [
     "Frame",
