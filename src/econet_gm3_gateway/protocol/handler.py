@@ -91,9 +91,8 @@ def parse_get_params_response(data: bytes, param_structs: dict[int, ParamStructE
     Response format:
     - data[0]: paramsNo (number of parameters)
     - data[1:3]: firstParamIndex (LE uint16)
-    - data[3:]: parameter values packed based on known types
-
-    Each value may be preceded by a 1-byte separator.
+    - data[3]: separator byte (skipped)
+    - data[4:]: parameter values, each followed by a 1-byte separator
 
     Args:
         data: Response payload bytes.
@@ -112,7 +111,7 @@ def parse_get_params_response(data: bytes, param_structs: dict[int, ParamStructE
     first_index = struct.unpack("<H", data[1:3])[0]
 
     results = []
-    offset = 3
+    offset = 4  # Skip header (3 bytes) + first separator byte
 
     for i in range(params_no):
         param_index = first_index + i
@@ -127,7 +126,7 @@ def parse_get_params_response(data: bytes, param_structs: dict[int, ParamStructE
             # Find null terminator for string
             null_pos = data.find(b"\x00", offset)
             if null_pos == -1:
-                null_pos = len(data)
+                break
             value_bytes = data[offset : null_pos + 1]
             value_len = len(value_bytes)
         else:
@@ -145,7 +144,7 @@ def parse_get_params_response(data: bytes, param_structs: dict[int, ParamStructE
             logger.warning(f"Failed to decode param {param_index}: {e}")
             break
 
-        offset += value_len
+        offset += value_len + 1  # +1 to skip separator byte after value
 
     return results
 
@@ -238,10 +237,8 @@ def parse_struct_response(data: bytes) -> list[ParamStructEntry]:
         # Map unit string to code
         unit_code = UNIT_STRING_MAP.get(unit_str, 0)
 
-        # Sanitize name: replace spaces, skip empty
+        # Sanitize name: replace spaces
         name = name.replace(" ", "_").strip()
-        if not name:
-            continue
 
         param_index = first_index + i
         entries.append(
@@ -558,7 +555,7 @@ class ProtocolHandler:
 
         for index, value in values:
             entry = self._param_structs.get(index)
-            if entry is None:
+            if entry is None or not entry.name:
                 continue
 
             param = Parameter(

@@ -68,8 +68,8 @@ class TestParseGetParamsResponse:
         """Test parsing single INT16 parameter value."""
         structs = {0: ParamStructEntry(index=0, name="Temp", unit=1, type_code=DataType.INT16, writable=True)}
 
-        # paramsNo=1, firstIndex=0, value=45 (int16 LE)
-        data = struct.pack("<BH", 1, 0) + struct.pack("<h", 45)
+        # paramsNo=1, firstIndex=0, separator, value=45 (int16 LE)
+        data = struct.pack("<BH", 1, 0) + b"\xc2" + struct.pack("<h", 45)
 
         results = parse_get_params_response(data, structs)
 
@@ -85,9 +85,9 @@ class TestParseGetParamsResponse:
         }
 
         data = struct.pack("<BH", 3, 10)
-        data += struct.pack("<h", -100)  # A: int16
-        data += struct.pack("<B", 200)  # B: uint8
-        data += struct.pack("<f", 3.14)  # C: float
+        data += b"\xc2" + struct.pack("<h", -100)  # sep + A: int16
+        data += b"\xc2" + struct.pack("<B", 200)  # sep + B: uint8
+        data += b"\xc2" + struct.pack("<f", 3.14)  # sep + C: float
 
         results = parse_get_params_response(data, structs)
 
@@ -101,7 +101,7 @@ class TestParseGetParamsResponse:
         """Test parsing BOOL parameter."""
         structs = {0: ParamStructEntry(index=0, name="Flag", unit=0, type_code=DataType.BOOL, writable=True)}
 
-        data = struct.pack("<BH", 1, 0) + struct.pack("<B", 1)
+        data = struct.pack("<BH", 1, 0) + b"\xc2" + struct.pack("<B", 1)
         results = parse_get_params_response(data, structs)
 
         assert len(results) == 1
@@ -115,8 +115,8 @@ class TestParseGetParamsResponse:
         }
 
         data = struct.pack("<BH", 2, 0)
-        data += struct.pack("<h", 42)  # A
-        data += struct.pack("<h", 99)  # Unknown - should stop
+        data += b"\xc2" + struct.pack("<h", 42)  # sep + A
+        data += b"\xc2" + struct.pack("<h", 99)  # sep + Unknown - should stop
 
         results = parse_get_params_response(data, structs)
 
@@ -138,11 +138,41 @@ class TestParseGetParamsResponse:
         """Test parsing UINT32 parameter."""
         structs = {5: ParamStructEntry(index=5, name="Counter", unit=0, type_code=DataType.UINT32, writable=False)}
 
-        data = struct.pack("<BH", 1, 5) + struct.pack("<I", 1000000)
+        data = struct.pack("<BH", 1, 5) + b"\xc2" + struct.pack("<I", 1000000)
         results = parse_get_params_response(data, structs)
 
         assert len(results) == 1
         assert results[0] == (5, 1000000)
+
+    def test_string_param(self):
+        """Test parsing STRING parameter with null terminator."""
+        structs = {0: ParamStructEntry(index=0, name="Version", unit=0, type_code=DataType.STRING, writable=False)}
+
+        data = struct.pack("<BH", 1, 0) + b"\xc2" + b"S024.25\x00"
+        results = parse_get_params_response(data, structs)
+
+        assert len(results) == 1
+        assert results[0] == (0, "S024.25")
+
+    def test_mixed_string_and_numeric(self):
+        """Test parsing mixed string and numeric params with separators."""
+        structs = {
+            0: ParamStructEntry(index=0, name="Name", unit=0, type_code=DataType.STRING, writable=False),
+            1: ParamStructEntry(index=1, name="Code", unit=0, type_code=DataType.UINT8, writable=False),
+            2: ParamStructEntry(index=2, name="Count", unit=0, type_code=DataType.UINT32, writable=False),
+        }
+
+        data = struct.pack("<BH", 3, 0)
+        data += b"\xc2" + b"Hello\x00"  # sep + string
+        data += b"\xc2" + struct.pack("<B", 42)  # sep + uint8
+        data += b"\xc2" + struct.pack("<I", 99999)  # sep + uint32
+
+        results = parse_get_params_response(data, structs)
+
+        assert len(results) == 3
+        assert results[0] == (0, "Hello")
+        assert results[1] == (1, 42)
+        assert results[2] == (2, 99999)
 
 
 class TestParseStructResponse:
@@ -421,8 +451,8 @@ class TestProtocolHandler:
         }
 
         response_data = struct.pack("<BH", 2, 0)
-        response_data += struct.pack("<h", 55)  # Temp = 55
-        response_data += struct.pack("<B", 80)  # Pressure = 80
+        response_data += b"\xc2" + struct.pack("<h", 55)  # sep + Temp = 55
+        response_data += b"\xc2" + struct.pack("<B", 80)  # sep + Pressure = 80
 
         response_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, response_data)
         handler._writer.write_frame = AsyncMock(return_value=True)
@@ -451,7 +481,7 @@ class TestProtocolHandler:
             ),
         }
 
-        response_data = struct.pack("<BH", 1, 0) + struct.pack("<h", 65)
+        response_data = struct.pack("<BH", 1, 0) + b"\xc2" + struct.pack("<h", 65)
         response_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, response_data)
         handler._writer.write_frame = AsyncMock(return_value=True)
         handler._reader.read_frame = AsyncMock(return_value=response_frame)
@@ -686,8 +716,8 @@ class TestProtocolHandler:
         }
 
         response_data = struct.pack("<BH", 2, 0)
-        response_data += struct.pack("<h", 42)
-        response_data += struct.pack("<B", 99)
+        response_data += b"\xc2" + struct.pack("<h", 42)
+        response_data += b"\xc2" + struct.pack("<B", 99)
 
         response_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, response_data)
         handler._writer.write_frame = AsyncMock(return_value=True)
@@ -883,7 +913,7 @@ class TestProtocolHandler:
         wrong_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, wrong_response_data)
 
         # Second response has firstIndex=0 (our response)
-        correct_response_data = struct.pack("<BH", 1, 0) + struct.pack("<h", 42)
+        correct_response_data = struct.pack("<BH", 1, 0) + b"\xc2" + struct.pack("<h", 42)
         correct_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, correct_response_data)
 
         handler._writer.write_frame = AsyncMock(return_value=True)
