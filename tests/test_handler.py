@@ -384,11 +384,16 @@ class TestProtocolHandler:
 
     @pytest.mark.asyncio
     async def test_send_and_receive_timeout(self):
-        """Test receive timeout."""
+        """Test receive timeout when bus is silent."""
         handler, conn, cache = self._make_handler()
+        handler._request_timeout = 0.05  # Short timeout for test speed
+
+        async def simulated_read(*args, **kwargs):
+            await asyncio.sleep(0.02)
+            return None
 
         handler._writer.write_frame = AsyncMock(return_value=True)
-        handler._reader.read_frame = AsyncMock(return_value=None)
+        handler._reader.read_frame = AsyncMock(side_effect=simulated_read)
 
         result = await handler.send_and_receive(
             Command.GET_PARAMS,
@@ -402,11 +407,21 @@ class TestProtocolHandler:
     async def test_send_and_receive_wrong_command(self):
         """Test that wrong command frames are skipped until timeout."""
         handler, conn, cache = self._make_handler()
+        handler._request_timeout = 0.05
 
         wrong_response = self._response_frame(Command.GET_SETTINGS_RESPONSE)
+        call_count = 0
+
+        async def read_wrong_then_silent(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                return wrong_response
+            await asyncio.sleep(0.02)
+            return None
+
         handler._writer.write_frame = AsyncMock(return_value=True)
-        # Returns wrong frames then times out (None)
-        handler._reader.read_frame = AsyncMock(side_effect=[wrong_response, wrong_response, None])
+        handler._reader.read_frame = AsyncMock(side_effect=read_wrong_then_silent)
 
         result = await handler.send_and_receive(
             Command.GET_PARAMS,
@@ -666,8 +681,14 @@ class TestProtocolHandler:
             )
         )
 
+        handler._request_timeout = 0.05
+
+        async def simulated_read(*args, **kwargs):
+            await asyncio.sleep(0.02)
+            return None
+
         handler._writer.write_frame = AsyncMock(return_value=True)
-        handler._reader.read_frame = AsyncMock(return_value=None)
+        handler._reader.read_frame = AsyncMock(side_effect=simulated_read)
 
         result = await handler.write_param("Temp", 60)
 

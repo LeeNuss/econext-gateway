@@ -429,8 +429,9 @@ class ProtocolHandler:
                 response = await self._reader.read_frame(timeout=read_timeout)
 
                 if response is None:
-                    logger.warning(f"Timeout waiting for response to 0x{command:02X}")
-                    return None
+                    # Bus was quiet for this read interval, keep waiting
+                    # until total deadline expires
+                    continue
 
                 # Skip frames not from our target device
                 if response.source != self._destination:
@@ -622,7 +623,7 @@ class ProtocolHandler:
         logger.warning(f"Failed to write parameter {name}")
         return False
 
-    async def discover_params(self, max_params: int = 2000) -> int:
+    async def discover_params(self, max_params: int = 20000) -> int:
         """Discover all parameters by fetching structures.
 
         Sends GET_PARAMS_STRUCT_WITH_RANGE requests until no more
