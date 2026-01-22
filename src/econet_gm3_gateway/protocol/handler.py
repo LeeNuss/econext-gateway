@@ -386,20 +386,20 @@ class ProtocolHandler:
         command: int,
         data: bytes = b"",
         expected_response: int | None = None,
-        max_reads: int = 5,
         response_validator: Callable[[Frame], bool] | None = None,
     ) -> Frame | None:
         """Send a frame and wait for response.
 
         Skips frames from unexpected sources, wrong commands, or that
         fail the response_validator (e.g., responses to other devices
-        on the bus). Keeps reading up to max_reads frames before giving up.
+        on the bus). Keeps reading frames until either a match is found,
+        the bus goes silent (per-read timeout), or the total request
+        timeout is exceeded.
 
         Args:
             command: Command code to send.
             data: Request payload.
             expected_response: Expected response command code.
-            max_reads: Max frames to read before giving up.
             response_validator: Optional callable to validate response data.
                 If provided and returns False, the frame is skipped.
 
@@ -417,8 +417,19 @@ class ProtocolHandler:
             if expected_response is None:
                 return None
 
-            for _ in range(max_reads):
-                response = await self._reader.read_frame(timeout=self._request_timeout)
+            loop = asyncio.get_event_loop()
+            deadline = loop.time() + self._request_timeout
+            skipped = 0
+
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+
+                # Use shorter per-read timeout: wait up to 0.5s for next frame,
+                # but never exceed the total deadline
+                read_timeout = min(remaining, 0.5)
+                response = await self._reader.read_frame(timeout=read_timeout)
 
                 if response is None:
                     logger.warning(f"Timeout waiting for response to 0x{command:02X}")
@@ -430,6 +441,7 @@ class ProtocolHandler:
                         f"Skipping frame from src={response.source} "
                         f"(expected src={self._destination}), cmd=0x{response.command:02X}"
                     )
+                    skipped += 1
                     continue
 
                 # Skip responses to other devices' requests
@@ -438,6 +450,7 @@ class ProtocolHandler:
                         f"Skipping frame with cmd=0x{response.command:02X} "
                         f"(expected 0x{expected_response:02X})"
                     )
+                    skipped += 1
                     continue
 
                 # Validate response payload if validator provided
@@ -446,11 +459,17 @@ class ProtocolHandler:
                         f"Response validator rejected frame cmd=0x{response.command:02X}, "
                         f"first bytes: {response.data[:6].hex() if response.data else 'empty'}"
                     )
+                    skipped += 1
                     continue
 
+                if skipped > 0:
+                    logger.debug(f"Found matching response after skipping {skipped} frames")
                 return response
 
-            logger.warning(f"No matching response after {max_reads} reads for 0x{command:02X}")
+            logger.warning(
+                f"No matching response within {self._request_timeout}s for 0x{command:02X} "
+                f"(skipped {skipped} frames)"
+            )
             return None
 
     async def fetch_param_structs(self, start_index: int = 0, count: int = 50) -> list[ParamStructEntry]:

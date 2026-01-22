@@ -370,12 +370,13 @@ class TestProtocolHandler:
 
     @pytest.mark.asyncio
     async def test_send_and_receive_wrong_command(self):
-        """Test receiving wrong response command."""
+        """Test that wrong command frames are skipped until timeout."""
         handler, conn, cache = self._make_handler()
 
         wrong_response = self._response_frame(Command.GET_SETTINGS_RESPONSE)
         handler._writer.write_frame = AsyncMock(return_value=True)
-        handler._reader.read_frame = AsyncMock(return_value=wrong_response)
+        # Returns wrong frames then times out (None)
+        handler._reader.read_frame = AsyncMock(side_effect=[wrong_response, wrong_response, None])
 
         result = await handler.send_and_receive(
             Command.GET_PARAMS,
