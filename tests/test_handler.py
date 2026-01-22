@@ -1,14 +1,12 @@
 """Unit tests for protocol handler."""
 
-import asyncio
 import struct
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from econet_gm3_gateway.core.cache import ParameterCache
 from econet_gm3_gateway.core.models import Parameter
-from econet_gm3_gateway.protocol.codec import encode_value
 from econet_gm3_gateway.protocol.constants import Command, DataType
 from econet_gm3_gateway.protocol.frames import Frame
 from econet_gm3_gateway.protocol.handler import (
@@ -68,11 +66,7 @@ class TestParseGetParamsResponse:
 
     def test_single_int16_param(self):
         """Test parsing single INT16 parameter value."""
-        structs = {
-            0: ParamStructEntry(
-                index=0, name="Temp", unit=1, type_code=DataType.INT16, writable=True
-            )
-        }
+        structs = {0: ParamStructEntry(index=0, name="Temp", unit=1, type_code=DataType.INT16, writable=True)}
 
         # paramsNo=1, firstIndex=0, value=45 (int16 LE)
         data = struct.pack("<BH", 1, 0) + struct.pack("<h", 45)
@@ -85,15 +79,9 @@ class TestParseGetParamsResponse:
     def test_multiple_params(self):
         """Test parsing multiple parameter values."""
         structs = {
-            10: ParamStructEntry(
-                index=10, name="A", unit=0, type_code=DataType.INT16, writable=True
-            ),
-            11: ParamStructEntry(
-                index=11, name="B", unit=0, type_code=DataType.UINT8, writable=True
-            ),
-            12: ParamStructEntry(
-                index=12, name="C", unit=0, type_code=DataType.FLOAT, writable=False
-            ),
+            10: ParamStructEntry(index=10, name="A", unit=0, type_code=DataType.INT16, writable=True),
+            11: ParamStructEntry(index=11, name="B", unit=0, type_code=DataType.UINT8, writable=True),
+            12: ParamStructEntry(index=12, name="C", unit=0, type_code=DataType.FLOAT, writable=False),
         }
 
         data = struct.pack("<BH", 3, 10)
@@ -111,11 +99,7 @@ class TestParseGetParamsResponse:
 
     def test_bool_param(self):
         """Test parsing BOOL parameter."""
-        structs = {
-            0: ParamStructEntry(
-                index=0, name="Flag", unit=0, type_code=DataType.BOOL, writable=True
-            )
-        }
+        structs = {0: ParamStructEntry(index=0, name="Flag", unit=0, type_code=DataType.BOOL, writable=True)}
 
         data = struct.pack("<BH", 1, 0) + struct.pack("<B", 1)
         results = parse_get_params_response(data, structs)
@@ -126,9 +110,7 @@ class TestParseGetParamsResponse:
     def test_unknown_index_stops(self):
         """Test parsing stops at unknown parameter index."""
         structs = {
-            0: ParamStructEntry(
-                index=0, name="A", unit=0, type_code=DataType.INT16, writable=True
-            ),
+            0: ParamStructEntry(index=0, name="A", unit=0, type_code=DataType.INT16, writable=True),
             # Index 1 is missing from structs
         }
 
@@ -154,11 +136,7 @@ class TestParseGetParamsResponse:
 
     def test_uint32_param(self):
         """Test parsing UINT32 parameter."""
-        structs = {
-            5: ParamStructEntry(
-                index=5, name="Counter", unit=0, type_code=DataType.UINT32, writable=False
-            )
-        }
+        structs = {5: ParamStructEntry(index=5, name="Counter", unit=0, type_code=DataType.UINT32, writable=False)}
 
         data = struct.pack("<BH", 1, 5) + struct.pack("<I", 1000000)
         results = parse_get_params_response(data, structs)
@@ -267,9 +245,7 @@ class TestBuildFunctions:
 
     def test_build_modify_param_int16(self):
         """Test building MODIFY_PARAM request for INT16."""
-        data = build_modify_param_request(
-            index=42, value=65, type_code=DataType.INT16
-        )
+        data = build_modify_param_request(index=42, value=65, type_code=DataType.INT16)
 
         assert len(data) == 4  # 2 (index) + 2 (int16)
         assert struct.unpack("<H", data[0:2])[0] == 42
@@ -277,9 +253,7 @@ class TestBuildFunctions:
 
     def test_build_modify_param_float(self):
         """Test building MODIFY_PARAM request for FLOAT."""
-        data = build_modify_param_request(
-            index=10, value=3.14, type_code=DataType.FLOAT
-        )
+        data = build_modify_param_request(index=10, value=3.14, type_code=DataType.FLOAT)
 
         assert len(data) == 6  # 2 (index) + 4 (float)
         assert struct.unpack("<H", data[0:2])[0] == 10
@@ -287,9 +261,7 @@ class TestBuildFunctions:
 
     def test_build_modify_param_bool(self):
         """Test building MODIFY_PARAM request for BOOL."""
-        data = build_modify_param_request(
-            index=5, value=True, type_code=DataType.BOOL
-        )
+        data = build_modify_param_request(index=5, value=True, type_code=DataType.BOOL)
 
         assert len(data) == 3  # 2 (index) + 1 (bool)
         assert struct.unpack("<H", data[0:2])[0] == 5
@@ -344,9 +316,7 @@ class TestProtocolHandler:
         handler, conn, cache = self._make_handler()
 
         # Mock writer and reader
-        response_frame = Frame(
-            destination=131, command=Command.GET_PARAMS_RESPONSE, data=b"\x01\x00\x00\x2d\x00"
-        )
+        response_frame = Frame(destination=131, command=Command.GET_PARAMS_RESPONSE, data=b"\x01\x00\x00\x2d\x00")
         handler._writer.write_frame = AsyncMock(return_value=True)
         handler._reader.read_frame = AsyncMock(return_value=response_frame)
 
@@ -395,9 +365,7 @@ class TestProtocolHandler:
         """Test receiving wrong response command."""
         handler, conn, cache = self._make_handler()
 
-        wrong_response = Frame(
-            destination=131, command=Command.GET_SETTINGS_RESPONSE, data=b""
-        )
+        wrong_response = Frame(destination=131, command=Command.GET_SETTINGS_RESPONSE, data=b"")
         handler._writer.write_frame = AsyncMock(return_value=True)
         handler._reader.read_frame = AsyncMock(return_value=wrong_response)
 
@@ -443,12 +411,8 @@ class TestProtocolHandler:
 
         # Pre-populate structs
         handler._param_structs = {
-            0: ParamStructEntry(
-                index=0, name="Temp", unit=1, type_code=DataType.INT16, writable=True
-            ),
-            1: ParamStructEntry(
-                index=1, name="Pressure", unit=6, type_code=DataType.UINT8, writable=False
-            ),
+            0: ParamStructEntry(index=0, name="Temp", unit=1, type_code=DataType.INT16, writable=True),
+            1: ParamStructEntry(index=1, name="Pressure", unit=6, type_code=DataType.UINT8, writable=False),
         }
 
         response_data = struct.pack("<BH", 2, 0)
@@ -476,8 +440,13 @@ class TestProtocolHandler:
 
         handler._param_structs = {
             0: ParamStructEntry(
-                index=0, name="Temp", unit=1, type_code=DataType.INT16, writable=True,
-                min_value=10.0, max_value=90.0,
+                index=0,
+                name="Temp",
+                unit=1,
+                type_code=DataType.INT16,
+                writable=True,
+                min_value=10.0,
+                max_value=90.0,
             ),
         }
 
@@ -510,18 +479,29 @@ class TestProtocolHandler:
 
         handler._param_structs = {
             0: ParamStructEntry(
-                index=0, name="SetPoint", unit=1, type_code=DataType.INT16,
-                writable=True, min_value=20.0, max_value=80.0,
+                index=0,
+                name="SetPoint",
+                unit=1,
+                type_code=DataType.INT16,
+                writable=True,
+                min_value=20.0,
+                max_value=80.0,
             ),
         }
-        await cache.set(Parameter(
-            index=0, name="SetPoint", value=50, type=2, unit=1, writable=True,
-            min_value=20.0, max_value=80.0,
-        ))
-
-        response_frame = Frame(
-            destination=131, command=Command.MODIFY_PARAM_RESPONSE, data=b""
+        await cache.set(
+            Parameter(
+                index=0,
+                name="SetPoint",
+                value=50,
+                type=2,
+                unit=1,
+                writable=True,
+                min_value=20.0,
+                max_value=80.0,
+            )
         )
+
+        response_frame = Frame(destination=131, command=Command.MODIFY_PARAM_RESPONSE, data=b"")
         handler._writer.write_frame = AsyncMock(return_value=True)
         handler._reader.read_frame = AsyncMock(return_value=response_frame)
 
@@ -549,13 +529,23 @@ class TestProtocolHandler:
 
         handler._param_structs = {
             0: ParamStructEntry(
-                index=0, name="ReadOnly", unit=0, type_code=DataType.INT16,
+                index=0,
+                name="ReadOnly",
+                unit=0,
+                type_code=DataType.INT16,
                 writable=False,
             ),
         }
-        await cache.set(Parameter(
-            index=0, name="ReadOnly", value=42, type=2, unit=0, writable=False,
-        ))
+        await cache.set(
+            Parameter(
+                index=0,
+                name="ReadOnly",
+                value=42,
+                type=2,
+                unit=0,
+                writable=False,
+            )
+        )
 
         with pytest.raises(ValueError, match="read-only"):
             await handler.write_param("ReadOnly", 99)
@@ -567,14 +557,27 @@ class TestProtocolHandler:
 
         handler._param_structs = {
             0: ParamStructEntry(
-                index=0, name="Temp", unit=1, type_code=DataType.INT16,
-                writable=True, min_value=20.0, max_value=80.0,
+                index=0,
+                name="Temp",
+                unit=1,
+                type_code=DataType.INT16,
+                writable=True,
+                min_value=20.0,
+                max_value=80.0,
             ),
         }
-        await cache.set(Parameter(
-            index=0, name="Temp", value=50, type=2, unit=1, writable=True,
-            min_value=20.0, max_value=80.0,
-        ))
+        await cache.set(
+            Parameter(
+                index=0,
+                name="Temp",
+                value=50,
+                type=2,
+                unit=1,
+                writable=True,
+                min_value=20.0,
+                max_value=80.0,
+            )
+        )
 
         with pytest.raises(ValueError, match="below minimum"):
             await handler.write_param("Temp", 10)
@@ -586,14 +589,27 @@ class TestProtocolHandler:
 
         handler._param_structs = {
             0: ParamStructEntry(
-                index=0, name="Temp", unit=1, type_code=DataType.INT16,
-                writable=True, min_value=20.0, max_value=80.0,
+                index=0,
+                name="Temp",
+                unit=1,
+                type_code=DataType.INT16,
+                writable=True,
+                min_value=20.0,
+                max_value=80.0,
             ),
         }
-        await cache.set(Parameter(
-            index=0, name="Temp", value=50, type=2, unit=1, writable=True,
-            min_value=20.0, max_value=80.0,
-        ))
+        await cache.set(
+            Parameter(
+                index=0,
+                name="Temp",
+                value=50,
+                type=2,
+                unit=1,
+                writable=True,
+                min_value=20.0,
+                max_value=80.0,
+            )
+        )
 
         with pytest.raises(ValueError, match="above maximum"):
             await handler.write_param("Temp", 100)
@@ -605,13 +621,23 @@ class TestProtocolHandler:
 
         handler._param_structs = {
             0: ParamStructEntry(
-                index=0, name="Temp", unit=1, type_code=DataType.INT16,
+                index=0,
+                name="Temp",
+                unit=1,
+                type_code=DataType.INT16,
                 writable=True,
             ),
         }
-        await cache.set(Parameter(
-            index=0, name="Temp", value=50, type=2, unit=1, writable=True,
-        ))
+        await cache.set(
+            Parameter(
+                index=0,
+                name="Temp",
+                value=50,
+                type=2,
+                unit=1,
+                writable=True,
+            )
+        )
 
         handler._writer.write_frame = AsyncMock(return_value=True)
         handler._reader.read_frame = AsyncMock(return_value=None)

@@ -1,13 +1,11 @@
 """Tests using real captured serial data from GM3 device."""
 
-import os
 from pathlib import Path
 
 import pytest
 
 from econet_gm3_gateway.protocol.constants import BEGIN_FRAME, END_FRAME, Command
 from econet_gm3_gateway.protocol.frames import Frame
-from econet_gm3_gateway.protocol.crc import verify_crc16
 
 # Path to captured data
 ARTIFACTS_DIR = Path(__file__).parent / ".artifacts"
@@ -202,7 +200,7 @@ class TestCapturedFrames:
         max_len = max(lengths)
         avg_len = sum(lengths) / len(lengths)
 
-        print(f"\nPayload lengths:")
+        print("\nPayload lengths:")
         print(f"  Min: {min_len} bytes")
         print(f"  Max: {max_len} bytes")
         print(f"  Avg: {avg_len:.1f} bytes")

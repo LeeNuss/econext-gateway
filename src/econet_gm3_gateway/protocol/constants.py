@@ -39,6 +39,7 @@ class Command(IntEnum):
     MODIFY_PARAM = 0x29
     MODIFY_PARAM_RESPONSE = 0xA9
 
+
 # ============================================================================
 # Data Types
 # ============================================================================
@@ -59,6 +60,7 @@ class DataType(IntEnum):
     STRING = 12
     INT64 = 13
     UINT64 = 14
+
 
 # Type metadata
 TYPE_NAMES = {
@@ -107,6 +109,7 @@ class Unit(IntEnum):
     PERCENT = 6
     KILOWATTS = 7
     KILOWATT_HOURS = 8
+
 
 # Unit display names
 UNIT_NAMES = {

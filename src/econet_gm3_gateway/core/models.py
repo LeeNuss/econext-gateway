@@ -54,12 +54,8 @@ class Parameter(BaseModel):
 class ParameterCollection(BaseModel):
     """Collection of parameters with metadata."""
 
-    timestamp: datetime = Field(
-        default_factory=datetime.now, description="Timestamp of parameter snapshot"
-    )
-    parameters: dict[str, Parameter] = Field(
-        default_factory=dict, description="Parameters keyed by name"
-    )
+    timestamp: datetime = Field(default_factory=datetime.now, description="Timestamp of parameter snapshot")
+    parameters: dict[str, Parameter] = Field(default_factory=dict, description="Parameters keyed by name")
 
     def get_parameter(self, name: str) -> Optional[Parameter]:
         """Get parameter by name."""

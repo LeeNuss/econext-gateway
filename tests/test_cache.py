@@ -10,9 +10,7 @@ from econet_gm3_gateway.core.models import Parameter
 
 def make_param(name: str = "TestParam", index: int = 0, value: int = 42) -> Parameter:
     """Create a test parameter."""
-    return Parameter(
-        index=index, name=name, value=value, type=2, unit=1, writable=True
-    )
+    return Parameter(index=index, name=name, value=value, type=2, unit=1, writable=True)
 
 
 class TestParameterCache:

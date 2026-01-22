@@ -77,9 +77,7 @@ async def set_parameter(
         raise HTTPException(status_code=400, detail=str(e))
 
     if not success:
-        raise HTTPException(
-            status_code=503, detail="Controller did not acknowledge write"
-        )
+        raise HTTPException(status_code=503, detail="Controller did not acknowledge write")
 
     return ParameterSetResponse(
         success=True,

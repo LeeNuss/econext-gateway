@@ -63,9 +63,7 @@ class FrameWriter:
             for attempt in range(1, self.max_retries + 1):
                 try:
                     if timeout:
-                        await asyncio.wait_for(
-                            self.connection.write(frame_bytes), timeout=timeout
-                        )
+                        await asyncio.wait_for(self.connection.write(frame_bytes), timeout=timeout)
                     else:
                         await self.connection.write(frame_bytes)
 
@@ -80,9 +78,7 @@ class FrameWriter:
                     return True
 
                 except asyncio.TimeoutError:
-                    logger.warning(
-                        "Frame write timeout on attempt %d/%d", attempt, self.max_retries
-                    )
+                    logger.warning("Frame write timeout on attempt %d/%d", attempt, self.max_retries)
                     if attempt < self.max_retries:
                         await asyncio.sleep(self.retry_delay)
                     else:

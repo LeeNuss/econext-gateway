@@ -94,9 +94,7 @@ async def health():
         )
 
     connected = handler.connected
-    status = "healthy" if connected and cache.count > 0 else (
-        "degraded" if connected else "unhealthy"
-    )
+    status = "healthy" if connected and cache.count > 0 else ("degraded" if connected else "unhealthy")
 
     return HealthResponse(
         status=status,

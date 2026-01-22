@@ -8,9 +8,8 @@ from pathlib import Path
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from econet_gm3_gateway.protocol.constants import BEGIN_FRAME, END_FRAME, Command, DataType, Unit, UNIT_NAMES
+from econet_gm3_gateway.protocol.constants import BEGIN_FRAME, END_FRAME, Command
 from econet_gm3_gateway.protocol.frames import Frame
-from econet_gm3_gateway.protocol.codec import decode_value
 
 
 def get_command_name(cmd: int) -> str:
@@ -180,7 +179,7 @@ def main():
 
     # Apply limit
     if args.limit > 0:
-        valid_frames = valid_frames[:args.limit]
+        valid_frames = valid_frames[: args.limit]
 
     # Print frames
     print("=" * 70)

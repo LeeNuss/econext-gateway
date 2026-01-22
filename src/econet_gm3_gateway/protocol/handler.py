@@ -84,9 +84,7 @@ def parse_get_params_request(data: bytes) -> tuple[int, int]:
     return count, start_index
 
 
-def parse_get_params_response(
-    data: bytes, param_structs: dict[int, ParamStructEntry]
-) -> list[tuple[int, Any]]:
+def parse_get_params_response(data: bytes, param_structs: dict[int, ParamStructEntry]) -> list[tuple[int, Any]]:
     """Parse a GET_PARAMS_RESPONSE payload.
 
     Response format:
@@ -391,13 +389,9 @@ class ProtocolHandler:
             Response frame, or None on timeout.
         """
         async with self._lock:
-            request = Frame(
-                destination=self._destination, command=command, data=data
-            )
+            request = Frame(destination=self._destination, command=command, data=data)
 
-            success = await self._writer.write_frame(
-                request, timeout=self._request_timeout
-            )
+            success = await self._writer.write_frame(request, timeout=self._request_timeout)
             if not success:
                 logger.warning(f"Failed to send command 0x{command:02X}")
                 return None
@@ -408,23 +402,16 @@ class ProtocolHandler:
             response = await self._reader.read_frame(timeout=self._request_timeout)
 
             if response is None:
-                logger.warning(
-                    f"Timeout waiting for response to 0x{command:02X}"
-                )
+                logger.warning(f"Timeout waiting for response to 0x{command:02X}")
                 return None
 
             if response.command != expected_response:
-                logger.warning(
-                    f"Unexpected response: got 0x{response.command:02X}, "
-                    f"expected 0x{expected_response:02X}"
-                )
+                logger.warning(f"Unexpected response: got 0x{response.command:02X}, expected 0x{expected_response:02X}")
                 return None
 
             return response
 
-    async def fetch_param_structs(
-        self, start_index: int = 0, count: int = 50
-    ) -> list[ParamStructEntry]:
+    async def fetch_param_structs(self, start_index: int = 0, count: int = 50) -> list[ParamStructEntry]:
         """Fetch parameter structure/metadata from controller.
 
         Args:
@@ -449,14 +436,10 @@ class ProtocolHandler:
         for entry in entries:
             self._param_structs[entry.index] = entry
 
-        logger.debug(
-            f"Fetched {len(entries)} param structs starting at index {start_index}"
-        )
+        logger.debug(f"Fetched {len(entries)} param structs starting at index {start_index}")
         return entries
 
-    async def fetch_param_values(
-        self, start_index: int, count: int
-    ) -> list[tuple[int, Any]]:
+    async def fetch_param_values(self, start_index: int, count: int) -> list[tuple[int, Any]]:
         """Fetch parameter values from controller.
 
         Args:
@@ -477,14 +460,10 @@ class ProtocolHandler:
             return []
 
         results = parse_get_params_response(response.data, self._param_structs)
-        logger.debug(
-            f"Fetched {len(results)} param values starting at index {start_index}"
-        )
+        logger.debug(f"Fetched {len(results)} param values starting at index {start_index}")
         return results
 
-    async def read_params(
-        self, start_index: int, count: int
-    ) -> list[Parameter]:
+    async def read_params(self, start_index: int, count: int) -> list[Parameter]:
         """Read parameters and update cache.
 
         Fetches values from controller, creates Parameter objects,
@@ -547,14 +526,10 @@ class ProtocolHandler:
             raise ValueError(f"Parameter is read-only: {name}")
 
         if entry.min_value is not None and float(value) < entry.min_value:
-            raise ValueError(
-                f"Value {value} below minimum {entry.min_value} for {name}"
-            )
+            raise ValueError(f"Value {value} below minimum {entry.min_value} for {name}")
 
         if entry.max_value is not None and float(value) > entry.max_value:
-            raise ValueError(
-                f"Value {value} above maximum {entry.max_value} for {name}"
-            )
+            raise ValueError(f"Value {value} above maximum {entry.max_value} for {name}")
 
         data = build_modify_param_request(param.index, value, entry.type_code)
         response = await self.send_and_receive(

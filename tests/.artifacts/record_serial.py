@@ -55,7 +55,7 @@ def main():
                     total_bytes += len(data)
 
                     # Count frames (0x68 = BEGIN_FRAME marker)
-                    frame_count += data.count(b'\x68')
+                    frame_count += data.count(b"\x68")
 
                     if args.hex:
                         timestamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
@@ -64,7 +64,11 @@ def main():
                     else:
                         # Simple progress indicator
                         elapsed = time.time() - start_time
-                        print(f"\rBytes: {total_bytes:,}  Frames: ~{frame_count}  Time: {elapsed:.1f}s", end="", flush=True)
+                        print(
+                            f"\rBytes: {total_bytes:,}  Frames: ~{frame_count}  Time: {elapsed:.1f}s",
+                            end="",
+                            flush=True,
+                        )
 
     except KeyboardInterrupt:
         print("\n\nRecording stopped by user.")

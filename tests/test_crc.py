@@ -1,7 +1,5 @@
 """Unit tests for CRC-16 calculation."""
 
-import pytest
-
 from econet_gm3_gateway.protocol.crc import calculate_crc16, verify_crc16
 
 

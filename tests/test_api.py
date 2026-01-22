@@ -1,7 +1,6 @@
 """Unit tests for API endpoints."""
 
-from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -10,7 +9,7 @@ from econet_gm3_gateway.api.dependencies import app_state
 from econet_gm3_gateway.core.cache import ParameterCache
 from econet_gm3_gateway.core.models import Parameter
 from econet_gm3_gateway.main import app
-from econet_gm3_gateway.protocol.handler import ParamStructEntry, ProtocolHandler
+from econet_gm3_gateway.protocol.handler import ProtocolHandler
 from econet_gm3_gateway.serial.connection import SerialConnection
 
 
@@ -82,9 +81,9 @@ class TestHealthEndpoint:
         """Test health when connected with cached params."""
         import asyncio
 
-        asyncio.run(mock_app_state["cache"].set(
-            Parameter(index=0, name="Test", value=42, type=2, unit=0, writable=True)
-        ))
+        asyncio.run(
+            mock_app_state["cache"].set(Parameter(index=0, name="Test", value=42, type=2, unit=0, writable=True))
+        )
 
         response = client.get("/health")
 
@@ -130,18 +129,32 @@ class TestGetParameters:
         import asyncio
 
         cache = mock_app_state["cache"]
-        asyncio.run(cache.set(
-            Parameter(
-                index=0, name="Temperature", value=55, type=2, unit=1,
-                writable=True, min_value=20.0, max_value=80.0,
+        asyncio.run(
+            cache.set(
+                Parameter(
+                    index=0,
+                    name="Temperature",
+                    value=55,
+                    type=2,
+                    unit=1,
+                    writable=True,
+                    min_value=20.0,
+                    max_value=80.0,
+                )
             )
-        ))
-        asyncio.run(cache.set(
-            Parameter(
-                index=1, name="Pressure", value=2.5, type=7, unit=6,
-                writable=False,
+        )
+        asyncio.run(
+            cache.set(
+                Parameter(
+                    index=1,
+                    name="Pressure",
+                    value=2.5,
+                    type=7,
+                    unit=6,
+                    writable=False,
+                )
             )
-        ))
+        )
 
         response = client.get("/api/parameters")
 
@@ -180,12 +193,20 @@ class TestSetParameter:
         import asyncio
 
         cache = mock_app_state["cache"]
-        asyncio.run(cache.set(
-            Parameter(
-                index=0, name="SetPoint", value=50, type=2, unit=1,
-                writable=True, min_value=20.0, max_value=80.0,
+        asyncio.run(
+            cache.set(
+                Parameter(
+                    index=0,
+                    name="SetPoint",
+                    value=50,
+                    type=2,
+                    unit=1,
+                    writable=True,
+                    min_value=20.0,
+                    max_value=80.0,
+                )
             )
-        ))
+        )
 
         mock_app_state["handler"].write_param = AsyncMock(return_value=True)
 
@@ -215,12 +236,20 @@ class TestSetParameter:
         import asyncio
 
         cache = mock_app_state["cache"]
-        asyncio.run(cache.set(
-            Parameter(
-                index=0, name="Temp", value=50, type=2, unit=1,
-                writable=True, min_value=20.0, max_value=80.0,
+        asyncio.run(
+            cache.set(
+                Parameter(
+                    index=0,
+                    name="Temp",
+                    value=50,
+                    type=2,
+                    unit=1,
+                    writable=True,
+                    min_value=20.0,
+                    max_value=80.0,
+                )
             )
-        ))
+        )
 
         mock_app_state["handler"].write_param = AsyncMock(
             side_effect=ValueError("Value 100 above maximum 80.0 for Temp")
@@ -238,11 +267,18 @@ class TestSetParameter:
         import asyncio
 
         cache = mock_app_state["cache"]
-        asyncio.run(cache.set(
-            Parameter(
-                index=0, name="Temp", value=50, type=2, unit=1, writable=True,
+        asyncio.run(
+            cache.set(
+                Parameter(
+                    index=0,
+                    name="Temp",
+                    value=50,
+                    type=2,
+                    unit=1,
+                    writable=True,
+                )
             )
-        ))
+        )
 
         mock_app_state["handler"].write_param = AsyncMock(return_value=False)
 
