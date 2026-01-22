@@ -22,21 +22,17 @@ dependencies = [
     "pydantic-settings>=2.1.0",
 ]
 
-[project.optional-dependencies]
+[project.scripts]
+econet-gateway = "econet_gm3_gateway.main:main"
+
+[dependency-groups]
 dev = [
+    "httpx>=0.28.1",
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
     "ruff==0.14.13",
 ]
 
-[project.scripts]
-econet-gateway = "econet_gm3_gateway.main:main"
-
 [tool.ruff]
 line-length = 120
 target-version = "py311"
-
-[dependency-groups]
-dev = [
-    "httpx>=0.28.1",
-]
