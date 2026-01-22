@@ -376,18 +376,19 @@ class ProtocolHandler:
         logger.info("Protocol handler stopped")
 
     async def send_and_receive(
-        self, command: int, data: bytes = b"", expected_response: int | None = None, max_retries: int = 3
+        self, command: int, data: bytes = b"", expected_response: int | None = None, max_reads: int = 5
     ) -> Frame | None:
         """Send a frame and wait for response.
 
-        Filters out frames from unexpected sources (e.g., broadcast
-        traffic) and retries reading up to max_retries times.
+        Skips frames from unexpected sources or with wrong commands
+        (e.g., responses to other devices on the bus). Keeps reading
+        up to max_reads frames before giving up.
 
         Args:
             command: Command code to send.
             data: Request payload.
             expected_response: Expected response command code.
-            max_retries: Max frames to skip before giving up.
+            max_reads: Max frames to read before giving up.
 
         Returns:
             Response frame, or None on timeout.
@@ -403,7 +404,7 @@ class ProtocolHandler:
             if expected_response is None:
                 return None
 
-            for _ in range(max_retries):
+            for _ in range(max_reads):
                 response = await self._reader.read_frame(timeout=self._request_timeout)
 
                 if response is None:
@@ -418,15 +419,17 @@ class ProtocolHandler:
                     )
                     continue
 
+                # Skip responses to other devices' requests
                 if response.command != expected_response:
-                    logger.warning(
-                        f"Unexpected response: got 0x{response.command:02X}, expected 0x{expected_response:02X}"
+                    logger.debug(
+                        f"Skipping frame with cmd=0x{response.command:02X} "
+                        f"(expected 0x{expected_response:02X})"
                     )
-                    return None
+                    continue
 
                 return response
 
-            logger.warning(f"No valid response after {max_retries} frames for 0x{command:02X}")
+            logger.warning(f"No matching response after {max_reads} reads for 0x{command:02X}")
             return None
 
     async def fetch_param_structs(self, start_index: int = 0, count: int = 50) -> list[ParamStructEntry]:
