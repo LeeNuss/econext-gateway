@@ -15,9 +15,15 @@ from econet_gm3_gateway.core.models import Parameter
 from econet_gm3_gateway.protocol.codec import decode_value, encode_value
 from econet_gm3_gateway.protocol.constants import (
     DEST_ADDRESSES,
+    GET_TOKEN_FUNC,
+    GIVE_BACK_TOKEN_DATA,
+    PANEL_ADDRESS,
     POLL_INTERVAL,
     REQUEST_TIMEOUT,
     RETRY_ATTEMPTS,
+    SERVICE_CMD,
+    SRC_ADDRESS,
+    TOKEN_TIMEOUT,
     TYPE_SIZES,
     Command,
     DataType,
@@ -340,6 +346,7 @@ class ProtocolHandler:
         self._poll_task: asyncio.Task | None = None
         self._running = False
         self._lock = asyncio.Lock()
+        self._token_mode = False
 
     @property
     def connected(self) -> bool:
@@ -379,6 +386,56 @@ class ProtocolHandler:
 
         logger.info("Protocol handler stopped")
 
+    async def _wait_for_token(self, timeout: float = TOKEN_TIMEOUT) -> bool:
+        """Wait for token grant from master panel.
+
+        On a multi-master RS-485 bus, the master panel (device 100)
+        coordinates bus access by sending token grants to each device.
+        This method reads frames until it receives a token grant,
+        giving us exclusive bus access for our operation.
+
+        Args:
+            timeout: Maximum seconds to wait for token.
+
+        Returns:
+            True if token received, False if timeout.
+        """
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
+
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                logger.debug("Token wait timeout after %.1fs, sending without token", timeout)
+                return False
+
+            read_timeout = min(remaining, 0.5)
+            frame = await self._reader.read_frame(timeout=read_timeout)
+
+            if frame is None:
+                continue
+
+            # Check for token grant from master panel (device 100) addressed to us
+            if (
+                frame.source == PANEL_ADDRESS
+                and frame.destination in (SRC_ADDRESS, 0xFFFF)
+                and frame.command == SERVICE_CMD
+                and len(frame.data) >= 2
+                and struct.unpack("<H", frame.data[0:2])[0] == GET_TOKEN_FUNC
+            ):
+                logger.debug("Token received from master panel")
+                return True
+
+    async def _return_token(self) -> None:
+        """Return token to master panel after completing bus operations."""
+        token_frame = Frame(
+            destination=PANEL_ADDRESS,
+            command=SERVICE_CMD,
+            data=GIVE_BACK_TOKEN_DATA,
+        )
+        await self._writer.write_frame(token_frame)
+        logger.debug("Token returned to master panel")
+
     async def send_and_receive(
         self,
         command: int,
@@ -404,73 +461,66 @@ class ProtocolHandler:
         Returns:
             Response frame, or None on timeout.
         """
-        async with self._lock:
-            request = Frame(destination=self._destination, command=command, data=data)
+        request = Frame(destination=self._destination, command=command, data=data)
 
-            success = await self._writer.write_frame(request, timeout=self._request_timeout)
-            if not success:
-                logger.warning(f"Failed to send command 0x{command:02X}")
-                return None
-
-            if expected_response is None:
-                return None
-
-            loop = asyncio.get_event_loop()
-            deadline = loop.time() + self._request_timeout
-            skipped = 0
-
-            while True:
-                remaining = deadline - loop.time()
-                if remaining <= 0:
-                    break
-
-                # Use shorter per-read timeout to check deadline frequently.
-                # On a busy bus, this allows reading many frames from other
-                # devices while still detecting bus-idle gaps.
-                read_timeout = min(remaining, 0.5)
-                response = await self._reader.read_frame(timeout=read_timeout)
-
-                if response is None:
-                    # Bus was quiet for this read interval, keep waiting
-                    # until total deadline expires
-                    continue
-
-                # Skip frames not from our target device
-                if response.source != self._destination:
-                    # logger.debug(
-                    #     f"Skipping frame from src={response.source} "
-                    #     f"(expected src={self._destination}), cmd=0x{response.command:02X}"
-                    # )
-                    skipped += 1
-                    continue
-
-                # Skip responses to other devices' requests
-                if response.command != expected_response:
-                    # logger.debug(
-                    #     f"Skipping frame with cmd=0x{response.command:02X} "
-                    #     f"(expected 0x{expected_response:02X})"
-                    # )
-                    skipped += 1
-                    continue
-
-                # Validate response payload if validator provided
-                if response_validator is not None and not response_validator(response):
-                    logger.debug(
-                        f"Response validator rejected frame cmd=0x{response.command:02X}, "
-                        f"first bytes: {response.data[:6].hex() if response.data else 'empty'}"
-                    )
-                    skipped += 1
-                    continue
-
-                # if skipped > 0:
-                #     logger.debug(f"Found matching response after skipping {skipped} frames")
-                return response
-
-            logger.warning(
-                f"No matching response within {self._request_timeout}s for 0x{command:02X} "
-                f"(skipped {skipped} frames)"
-            )
+        success = await self._writer.write_frame(request, timeout=self._request_timeout)
+        if not success:
+            logger.warning(f"Failed to send command 0x{command:02X}")
             return None
+
+        if expected_response is None:
+            return None
+
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + self._request_timeout
+        skipped = 0
+
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+
+            # Use shorter per-read timeout to check deadline frequently.
+            # On a busy bus, this allows reading many frames from other
+            # devices while still detecting bus-idle gaps.
+            read_timeout = min(remaining, 0.5)
+            response = await self._reader.read_frame(timeout=read_timeout)
+
+            if response is None:
+                # Bus was quiet for this read interval, keep waiting
+                # until total deadline expires
+                continue
+
+            # Skip frames not from our target device
+            if response.source != self._destination:
+                # Auto-detect token mode when master panel is active
+                if response.source == PANEL_ADDRESS and not self._token_mode:
+                    self._token_mode = True
+                    logger.info("Master panel detected on bus, enabling token mode")
+                skipped += 1
+                continue
+
+            # Skip responses to other devices' requests
+            if response.command != expected_response:
+                skipped += 1
+                continue
+
+            # Validate response payload if validator provided
+            if response_validator is not None and not response_validator(response):
+                logger.debug(
+                    f"Response validator rejected frame cmd=0x{response.command:02X}, "
+                    f"first bytes: {response.data[:6].hex() if response.data else 'empty'}"
+                )
+                skipped += 1
+                continue
+
+            return response
+
+        logger.warning(
+            f"No matching response within {self._request_timeout}s for 0x{command:02X} "
+            f"(skipped {skipped} frames)"
+        )
+        return None
 
     async def fetch_param_structs(self, start_index: int = 0, count: int = 50) -> list[ParamStructEntry]:
         """Fetch parameter structure/metadata from controller.
@@ -609,14 +659,22 @@ class ProtocolHandler:
             raise ValueError(f"Value {value} above maximum {entry.max_value} for {name}")
 
         data = build_modify_param_request(param.index, value, entry.type_code)
-        response = await self.send_and_receive(
-            Command.MODIFY_PARAM,
-            data,
-            expected_response=Command.MODIFY_PARAM_RESPONSE,
-        )
+
+        async with self._lock:
+            got_token = False
+            if self._token_mode:
+                got_token = await self._wait_for_token()
+            try:
+                response = await self.send_and_receive(
+                    Command.MODIFY_PARAM,
+                    data,
+                    expected_response=Command.MODIFY_PARAM_RESPONSE,
+                )
+            finally:
+                if got_token:
+                    await self._return_token()
 
         if response is not None:
-            # Update cache with new value
             updated_param = param.model_copy(update={"value": value})
             await self._cache.set(updated_param)
             logger.info(f"Parameter {name} set to {value}")
@@ -628,9 +686,9 @@ class ProtocolHandler:
     async def discover_params(self, max_params: int = 20000) -> int:
         """Discover all parameters by fetching structures.
 
-        Sends GET_PARAMS_STRUCT_WITH_RANGE requests until no more
-        parameters are returned. Only replaces existing structures
-        if discovery succeeds (at least one param found).
+        Waits for token grant from master panel before sending requests,
+        holds the token for all batches, then returns it. This prevents
+        bus collisions on multi-master RS-485 networks.
 
         Args:
             max_params: Maximum number of parameters to discover.
@@ -638,40 +696,46 @@ class ProtocolHandler:
         Returns:
             Total number of parameters discovered.
         """
-        new_structs: dict[int, ParamStructEntry] = {}
-        index = 0
-        batch_size = 255  # Protocol max (count is uint8), get all in fewest requests
+        async with self._lock:
+            got_token = False
+            if self._token_mode:
+                got_token = await self._wait_for_token()
+            try:
+                new_structs: dict[int, ParamStructEntry] = {}
+                index = 0
+                batch_size = 255
 
-        while index < max_params:
-            entries = None
-            for attempt in range(RETRY_ATTEMPTS):
-                entries = await self.fetch_param_structs(index, batch_size)
-                if entries:
-                    break
-                logger.debug("Struct fetch failed at index %d, retry %d/%d", index, attempt + 1, RETRY_ATTEMPTS)
-                await asyncio.sleep(0.5)
-            if not entries:
-                break
-            for entry in entries:
-                new_structs[entry.index] = entry
-            index = entries[-1].index + 1
+                while index < max_params:
+                    entries = None
+                    for attempt in range(RETRY_ATTEMPTS):
+                        entries = await self.fetch_param_structs(index, batch_size)
+                        if entries:
+                            break
+                        logger.debug("Struct fetch failed at index %d, retry %d/%d", index, attempt + 1, RETRY_ATTEMPTS)
+                        await asyncio.sleep(0.5)
+                    if not entries:
+                        break
+                    for entry in entries:
+                        new_structs[entry.index] = entry
+                    index = entries[-1].index + 1
 
-        if new_structs:
-            self._param_structs = new_structs
-            self._total_params = len(self._param_structs)
-            logger.info(f"Discovered {self._total_params} parameters")
-        else:
-            logger.warning("Parameter discovery returned no results, keeping existing structures")
+                if new_structs:
+                    self._param_structs = new_structs
+                    self._total_params = len(self._param_structs)
+                    logger.info(f"Discovered {self._total_params} parameters")
+                else:
+                    logger.warning("Parameter discovery returned no results, keeping existing structures")
 
-        return len(self._param_structs)
+                return len(self._param_structs)
+            finally:
+                if got_token:
+                    await self._return_token()
 
     async def poll_all_params(self) -> int:
         """Poll all known parameters and update cache.
 
-        Reads parameters in batches, advancing based on the actual
-        number of values returned by the controller (which may be
-        less than requested). Retries failed batches up to 3 times
-        with short delays to handle bus contention.
+        If token mode is active, waits for token grant and holds it
+        for all batches. Otherwise sends requests directly.
 
         Returns:
             Number of parameters successfully read.
@@ -679,62 +743,65 @@ class ProtocolHandler:
         if not self._param_structs:
             return 0
 
-        indices = sorted(self._param_structs.keys())
-        total_read = 0
+        async with self._lock:
+            got_token = False
+            if self._token_mode:
+                got_token = await self._wait_for_token()
+            try:
+                indices = sorted(self._param_structs.keys())
+                total_read = 0
 
-        current_pos = 0
-        while current_pos < len(indices):
-            start_index = indices[current_pos]
+                current_pos = 0
+                while current_pos < len(indices):
+                    start_index = indices[current_pos]
 
-            # Request up to params_per_request indices
-            batch_end = min(current_pos + self._params_per_request, len(indices))
-            count = indices[batch_end - 1] - start_index + 1
+                    batch_end = min(current_pos + self._params_per_request, len(indices))
+                    count = indices[batch_end - 1] - start_index + 1
 
-            values = None
-            for attempt in range(RETRY_ATTEMPTS):
-                values = await self.fetch_param_values(start_index, count)
-                if values:
-                    break
-                logger.debug("Value fetch failed at index %d, retry %d/%d", start_index, attempt + 1, RETRY_ATTEMPTS)
-                await asyncio.sleep(0.5)
+                    values = None
+                    for attempt in range(RETRY_ATTEMPTS):
+                        values = await self.fetch_param_values(start_index, count)
+                        if values:
+                            break
+                        logger.debug("Value fetch failed at index %d, retry %d/%d", start_index, attempt + 1, RETRY_ATTEMPTS)
+                        await asyncio.sleep(0.5)
 
-            if not values:
-                # Still no response, skip to next batch
-                current_pos = batch_end
-                continue
+                    if not values:
+                        current_pos = batch_end
+                        continue
 
-            # Build Parameter objects and update cache
-            parameters = []
-            for index, value in values:
-                entry = self._param_structs.get(index)
-                if entry is None or not entry.name:
-                    continue
-                param = Parameter(
-                    index=index,
-                    name=entry.name,
-                    value=value,
-                    type=entry.type_code,
-                    unit=entry.unit,
-                    writable=entry.writable,
-                    min_value=entry.min_value,
-                    max_value=entry.max_value,
-                )
-                parameters.append(param)
+                    parameters = []
+                    for index, value in values:
+                        entry = self._param_structs.get(index)
+                        if entry is None or not entry.name:
+                            continue
+                        param = Parameter(
+                            index=index,
+                            name=entry.name,
+                            value=value,
+                            type=entry.type_code,
+                            unit=entry.unit,
+                            writable=entry.writable,
+                            min_value=entry.min_value,
+                            max_value=entry.max_value,
+                        )
+                        parameters.append(param)
 
-            if parameters:
-                await self._cache.set_many(parameters)
-                total_read += len(parameters)
+                    if parameters:
+                        await self._cache.set_many(parameters)
+                        total_read += len(parameters)
 
-            # Advance past the last index actually returned by controller
-            last_returned_index = values[-1][0]
-            new_pos = current_pos
-            while new_pos < len(indices) and indices[new_pos] <= last_returned_index:
-                new_pos += 1
+                    last_returned_index = values[-1][0]
+                    new_pos = current_pos
+                    while new_pos < len(indices) and indices[new_pos] <= last_returned_index:
+                        new_pos += 1
 
-            # Always advance at least to batch_end to prevent infinite loops
-            current_pos = max(new_pos, current_pos + 1)
+                    current_pos = max(new_pos, current_pos + 1)
 
-        return total_read
+                return total_read
+            finally:
+                if got_token:
+                    await self._return_token()
 
     async def _poll_loop(self) -> None:
         """Background polling loop with reconnection support."""

@@ -121,14 +121,55 @@ The gateway initiates all communication, with the controller responding to reque
 3. Gateway processes response
 4. Repeat
 
-### Token Communication
+### Token Communication (Bus Arbitration)
 
-Modern controllers support token-based communication:
+On multi-master RS-485 buses, the master panel (device 100) coordinates bus access
+using a token-passing protocol. This prevents frame collisions when multiple devices
+(e.g., gateway at address 131, polling module at address 255) need to communicate
+with the same controller.
 
-1. Gateway requests token (CMD: 0x801 split across CMD and first data byte)
-2. Controller grants token with response containing `[0x00, 0x08, 0x00, 0x00]`
-3. Gateway performs operations while holding token
-4. Gateway returns token when done
+**Token mode is auto-detected:** the gateway starts in non-token mode and enables
+token mode when it first observes frames from the master panel (address 100) on the bus.
+
+**Service Frame Format (CMD: 0x09):**
+```
+[BEGIN][LEN_L][LEN_H][DA_L][DA_H][SA][RSV][0x09][FUNC_L][FUNC_H][...][CRC_H][CRC_L][END]
+```
+
+**Token Grant (master panel -> gateway):**
+- Source: 100 (master panel)
+- Destination: 131 (gateway) or 0xFFFF (broadcast)
+- Command: 0x09 (SERVICE)
+- Data: `[0x01, 0x08]` (GET_TOKEN function code 0x0801, little-endian)
+
+**Token Return (gateway -> master panel):**
+- Destination: 100 (master panel)
+- Command: 0x09 (SERVICE)
+- Data: `[0x00, 0x08, 0x00, 0x00]` (GIVE_BACK_TOKEN)
+
+**Token Protocol Flow:**
+```
+Master Panel             Gateway                  Controller
+     |                      |                          |
+     | Token Grant (0x09)   |                          |
+     |--------------------->|                          |
+     |                      |  Request (e.g. 0x02)     |
+     |                      |------------------------->|
+     |                      |       Response (0x82)    |
+     |                      |<-------------------------|
+     |                      |  ... more requests ...   |
+     |                      |                          |
+     |  Token Return (0x09) |                          |
+     |<---------------------|                          |
+     |                      |                          |
+```
+
+**Key behaviors:**
+- The gateway holds the token for the entire operation (all batches of a discovery
+  or poll cycle), not just one request-response pair
+- On a quiet bus (no master panel detected), the gateway sends freely without tokens
+- If the token wait times out (10s), the gateway sends without the token as a fallback
+- The master panel cycles tokens between all devices on the bus (typical cycle: 3-5s)
 
 ### Request-Response Cycle
 

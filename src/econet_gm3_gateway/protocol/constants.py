@@ -125,6 +125,15 @@ UNIT_NAMES = {
 }
 
 # ============================================================================
+# Token Passing (Bus Arbitration)
+# ============================================================================
+
+SERVICE_CMD = 0x09  # Service frame command byte (token passing)
+GET_TOKEN_FUNC = 0x0801  # Token grant function code (LE uint16 in data[0:2])
+GIVE_BACK_TOKEN_DATA = b"\x00\x08\x00\x00"  # Token return payload
+TOKEN_TIMEOUT = 10.0  # Max time to wait for token grant (seconds)
+
+# ============================================================================
 # Communication Settings
 # ============================================================================
 
