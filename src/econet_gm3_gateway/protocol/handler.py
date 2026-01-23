@@ -17,6 +17,7 @@ from econet_gm3_gateway.protocol.constants import (
     DEST_ADDRESSES,
     POLL_INTERVAL,
     REQUEST_TIMEOUT,
+    RETRY_ATTEMPTS,
     TYPE_SIZES,
     Command,
     DataType,
@@ -642,11 +643,13 @@ class ProtocolHandler:
         batch_size = 255  # Protocol max (count is uint8), get all in fewest requests
 
         while index < max_params:
-            entries = await self.fetch_param_structs(index, batch_size)
-            if not entries:
-                # Retry once after delay (bus contention may have caused failure)
-                await asyncio.sleep(1.0)
+            entries = None
+            for attempt in range(RETRY_ATTEMPTS):
                 entries = await self.fetch_param_structs(index, batch_size)
+                if entries:
+                    break
+                logger.debug("Struct fetch failed at index %d, retry %d/%d", index, attempt + 1, RETRY_ATTEMPTS)
+                await asyncio.sleep(0.5)
             if not entries:
                 break
             for entry in entries:
@@ -667,8 +670,8 @@ class ProtocolHandler:
 
         Reads parameters in batches, advancing based on the actual
         number of values returned by the controller (which may be
-        less than requested). Retries failed batches once after a
-        short delay to handle bus contention.
+        less than requested). Retries failed batches up to 3 times
+        with short delays to handle bus contention.
 
         Returns:
             Number of parameters successfully read.
@@ -687,12 +690,13 @@ class ProtocolHandler:
             batch_end = min(current_pos + self._params_per_request, len(indices))
             count = indices[batch_end - 1] - start_index + 1
 
-            values = await self.fetch_param_values(start_index, count)
-
-            if not values:
-                # Retry once after delay (bus contention may have caused failure)
-                await asyncio.sleep(1.0)
+            values = None
+            for attempt in range(RETRY_ATTEMPTS):
                 values = await self.fetch_param_values(start_index, count)
+                if values:
+                    break
+                logger.debug("Value fetch failed at index %d, retry %d/%d", start_index, attempt + 1, RETRY_ATTEMPTS)
+                await asyncio.sleep(0.5)
 
             if not values:
                 # Still no response, skip to next batch
