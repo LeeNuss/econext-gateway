@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     api_port: int = 8000
     log_level: str = "INFO"
     poll_interval: float = 10.0
-    request_timeout: float = 2.0
+    request_timeout: float = 5.0
     destination_address: int = 1
     params_per_request: int = 50
 

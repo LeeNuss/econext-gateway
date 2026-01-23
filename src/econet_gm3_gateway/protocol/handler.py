@@ -423,8 +423,9 @@ class ProtocolHandler:
                 if remaining <= 0:
                     break
 
-                # Use shorter per-read timeout: wait up to 0.5s for next frame,
-                # but never exceed the total deadline
+                # Use shorter per-read timeout to check deadline frequently.
+                # On a busy bus, this allows reading many frames from other
+                # devices while still detecting bus-idle gaps.
                 read_timeout = min(remaining, 0.5)
                 response = await self._reader.read_frame(timeout=read_timeout)
 
@@ -435,19 +436,19 @@ class ProtocolHandler:
 
                 # Skip frames not from our target device
                 if response.source != self._destination:
-                    logger.debug(
-                        f"Skipping frame from src={response.source} "
-                        f"(expected src={self._destination}), cmd=0x{response.command:02X}"
-                    )
+                    # logger.debug(
+                    #     f"Skipping frame from src={response.source} "
+                    #     f"(expected src={self._destination}), cmd=0x{response.command:02X}"
+                    # )
                     skipped += 1
                     continue
 
                 # Skip responses to other devices' requests
                 if response.command != expected_response:
-                    logger.debug(
-                        f"Skipping frame with cmd=0x{response.command:02X} "
-                        f"(expected 0x{expected_response:02X})"
-                    )
+                    # logger.debug(
+                    #     f"Skipping frame with cmd=0x{response.command:02X} "
+                    #     f"(expected 0x{expected_response:02X})"
+                    # )
                     skipped += 1
                     continue
 
@@ -460,8 +461,8 @@ class ProtocolHandler:
                     skipped += 1
                     continue
 
-                if skipped > 0:
-                    logger.debug(f"Found matching response after skipping {skipped} frames")
+                # if skipped > 0:
+                #     logger.debug(f"Found matching response after skipping {skipped} frames")
                 return response
 
             logger.warning(
@@ -643,6 +644,10 @@ class ProtocolHandler:
         while index < max_params:
             entries = await self.fetch_param_structs(index, batch_size)
             if not entries:
+                # Retry once after delay (bus contention may have caused failure)
+                await asyncio.sleep(1.0)
+                entries = await self.fetch_param_structs(index, batch_size)
+            if not entries:
                 break
             for entry in entries:
                 new_structs[entry.index] = entry
@@ -662,7 +667,8 @@ class ProtocolHandler:
 
         Reads parameters in batches, advancing based on the actual
         number of values returned by the controller (which may be
-        less than requested).
+        less than requested). Retries failed batches once after a
+        short delay to handle bus contention.
 
         Returns:
             Number of parameters successfully read.
@@ -684,7 +690,12 @@ class ProtocolHandler:
             values = await self.fetch_param_values(start_index, count)
 
             if not values:
-                # No response, skip to next batch
+                # Retry once after delay (bus contention may have caused failure)
+                await asyncio.sleep(1.0)
+                values = await self.fetch_param_values(start_index, count)
+
+            if not values:
+                # Still no response, skip to next batch
                 current_pos = batch_end
                 continue
 

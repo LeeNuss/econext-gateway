@@ -20,7 +20,7 @@ class TestSettings:
         assert settings.api_port == 8000
         assert settings.log_level == "INFO"
         assert settings.poll_interval == 10.0
-        assert settings.request_timeout == 2.0
+        assert settings.request_timeout == 5.0
         assert settings.destination_address == 1
         assert settings.params_per_request == 50
 

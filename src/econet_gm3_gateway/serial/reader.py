@@ -148,7 +148,7 @@ class FrameReader:
             # Success! Remove frame from buffer
             del self._buffer[:frame_length]
             self._stats["frames_read"] += 1
-            logger.debug("Frame read: %s", frame)
+            # logger.debug("Frame read: %s", frame)
             return frame
 
     def reset_buffer(self) -> None:
