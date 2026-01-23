@@ -698,14 +698,16 @@ class ProtocolHandler:
         """
         async with self._lock:
             got_token = False
-            if self._token_mode:
-                got_token = await self._wait_for_token()
             try:
                 new_structs: dict[int, ParamStructEntry] = {}
                 index = 0
                 batch_size = 255
 
                 while index < max_params:
+                    # Acquire token if token mode detected (may happen mid-discovery)
+                    if self._token_mode and not got_token:
+                        got_token = await self._wait_for_token()
+
                     entries = None
                     for attempt in range(RETRY_ATTEMPTS):
                         entries = await self.fetch_param_structs(index, batch_size)
@@ -745,14 +747,16 @@ class ProtocolHandler:
 
         async with self._lock:
             got_token = False
-            if self._token_mode:
-                got_token = await self._wait_for_token()
             try:
                 indices = sorted(self._param_structs.keys())
                 total_read = 0
 
                 current_pos = 0
                 while current_pos < len(indices):
+                    # Acquire token if token mode detected (may happen mid-poll)
+                    if self._token_mode and not got_token:
+                        got_token = await self._wait_for_token()
+
                     start_index = indices[current_pos]
 
                     batch_end = min(current_pos + self._params_per_request, len(indices))

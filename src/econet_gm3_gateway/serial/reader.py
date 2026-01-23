@@ -132,7 +132,7 @@ class FrameReader:
 
             # Validate END marker
             if frame_data[-1] != END_FRAME:
-                logger.warning("Invalid END marker, discarding BEGIN marker")
+                logger.warning(f"Invalid END marker {frame_data[-1]}, discarding BEGIN marker")
                 del self._buffer[0]
                 self._stats["frames_invalid"] += 1
                 continue
