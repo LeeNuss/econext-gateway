@@ -93,19 +93,20 @@ class TestParameter:
                 writable=False,
             )
 
-    def test_parameter_invalid_range(self):
-        """Test parameter with max < min fails validation."""
-        with pytest.raises(ValidationError):
-            Parameter(
-                index=0,
-                name="Test",
-                value=50,
-                type=1,
-                unit=0,
-                writable=True,
-                min_value=80.0,
-                max_value=20.0,
-            )
+    def test_parameter_invalid_range_cleared(self):
+        """Test parameter with max < min clears the range."""
+        param = Parameter(
+            index=0,
+            name="Test",
+            value=50,
+            type=1,
+            unit=0,
+            writable=True,
+            min_value=80.0,
+            max_value=20.0,
+        )
+        assert param.min_value is None
+        assert param.max_value is None
 
     def test_parameter_different_value_types(self):
         """Test parameter accepts different value types."""

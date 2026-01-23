@@ -19,9 +19,9 @@ class Settings(BaseSettings):
     api_port: int = 8000
     log_level: str = "INFO"
     poll_interval: float = 10.0
-    request_timeout: float = 3.0
+    request_timeout: float = 1.5
     destination_address: int = 1
-    params_per_request: int = 50
+    params_per_request: int = 100
 
     model_config = SettingsConfigDict(env_prefix="ECONET_")
 

@@ -17,6 +17,9 @@ from econet_gm3_gateway.protocol.constants import (
     DEST_ADDRESSES,
     GET_TOKEN_FUNC,
     GIVE_BACK_TOKEN_DATA,
+    IDENTIFY_ANS_CMD,
+    IDENTIFY_CMD,
+    IDENTIFY_RESPONSE_DATA,
     PANEL_ADDRESS,
     POLL_INTERVAL,
     REQUEST_TIMEOUT,
@@ -320,6 +323,7 @@ class ProtocolHandler:
         poll_interval: float = POLL_INTERVAL,
         request_timeout: float = REQUEST_TIMEOUT,
         params_per_request: int = 50,
+        token_timeout: float = TOKEN_TIMEOUT,
     ):
         """Initialize protocol handler.
 
@@ -330,6 +334,7 @@ class ProtocolHandler:
             poll_interval: Seconds between poll cycles.
             request_timeout: Timeout for individual requests.
             params_per_request: Number of params per GET_PARAMS request.
+            token_timeout: Seconds to wait for token before fallback.
         """
         self._connection = connection
         self._cache = cache
@@ -337,6 +342,7 @@ class ProtocolHandler:
         self._poll_interval = poll_interval
         self._request_timeout = request_timeout
         self._params_per_request = params_per_request
+        self._token_timeout = token_timeout
 
         self._reader = FrameReader(connection)
         self._writer = FrameWriter(connection)
@@ -346,7 +352,7 @@ class ProtocolHandler:
         self._poll_task: asyncio.Task | None = None
         self._running = False
         self._lock = asyncio.Lock()
-        self._token_mode = False
+        self._has_token = False
 
     @property
     def connected(self) -> bool:
@@ -386,45 +392,37 @@ class ProtocolHandler:
 
         logger.info("Protocol handler stopped")
 
-    async def _wait_for_token(self, timeout: float = TOKEN_TIMEOUT) -> bool:
-        """Wait for token grant from master panel.
+    async def _handle_panel_frame(self, frame: Frame) -> None:
+        """Handle frames from the master panel (device 100).
 
-        On a multi-master RS-485 bus, the master panel (device 100)
-        coordinates bus access by sending token grants to each device.
-        This method reads frames until it receives a token grant,
-        giving us exclusive bus access for our operation.
+        Responds to IDENTIFY_DEV probes (registering on the bus) and
+        detects SERVICE/GET_TOKEN grants (exclusive bus access).
 
         Args:
-            timeout: Maximum seconds to wait for token.
-
-        Returns:
-            True if token received, False if timeout.
+            frame: Frame from the panel addressed to us.
         """
-        loop = asyncio.get_event_loop()
-        deadline = loop.time() + timeout
+        if frame.command == IDENTIFY_CMD:
+            # Panel is asking "who are you?" - respond with device identity
+            response = Frame(
+                destination=PANEL_ADDRESS,
+                command=IDENTIFY_ANS_CMD,
+                data=IDENTIFY_RESPONSE_DATA,
+            )
+            await self._writer.write_frame(response)
+            logger.debug("Responded to IDENTIFY from panel")
 
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                logger.debug("Token wait timeout after %.1fs, sending without token", timeout)
-                return False
-
-            read_timeout = min(remaining, 0.5)
-            frame = await self._reader.read_frame(timeout=read_timeout)
-
-            if frame is None:
-                continue
-
-            # Check for token grant from master panel (device 100) addressed to us
-            if (
-                frame.source == PANEL_ADDRESS
-                and frame.destination in (SRC_ADDRESS, 0xFFFF)
-                and frame.command == SERVICE_CMD
-                and len(frame.data) >= 2
-                and struct.unpack("<H", frame.data[0:2])[0] == GET_TOKEN_FUNC
-            ):
-                logger.debug("Token received from master panel")
-                return True
+        elif frame.command == SERVICE_CMD:
+            # Log all SERVICE frames for debugging
+            func_code = 0
+            if len(frame.data) >= 2:
+                func_code = struct.unpack("<H", frame.data[0:2])[0]
+            logger.debug(
+                "SERVICE frame from panel: func=0x%04X, data=%s", func_code, frame.data.hex() if frame.data else "empty"
+            )
+            # Check if this is a token grant (GET_TOKEN function code)
+            if func_code == GET_TOKEN_FUNC:
+                self._has_token = True
+                logger.info("Token received from master panel")
 
     async def _return_token(self) -> None:
         """Return token to master panel after completing bus operations."""
@@ -434,7 +432,58 @@ class ProtocolHandler:
             data=GIVE_BACK_TOKEN_DATA,
         )
         await self._writer.write_frame(token_frame)
-        logger.debug("Token returned to master panel")
+        self._has_token = False
+        logger.info("Token returned to master panel")
+
+    async def _wait_for_token(self) -> None:
+        """Wait for bus token from the master panel.
+
+        Listens passively on the bus, responds to IDENTIFY probes,
+        and waits for the panel to grant us the token (SERVICE frame
+        with GET_TOKEN function code). This matches the original
+        webserver's checkIfMultimaster() + passive listen behavior.
+
+        Falls back to bus-idle detection if no token received within
+        the timeout period.
+        """
+        if self._token_timeout <= 0:
+            return
+
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + self._token_timeout
+        consecutive_idle = 0
+        required_idle = 3  # 3 x 0.5s = 1.5s of silence (fallback)
+
+        logger.debug("Waiting for token from panel...")
+
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                logger.debug("Token wait timed out, falling back to bus-idle")
+                return
+
+            read_timeout = min(remaining, 0.5)
+            frame = await self._reader.read_frame(timeout=read_timeout)
+
+            if frame is None:
+                consecutive_idle += 1
+                if consecutive_idle >= required_idle:
+                    logger.debug("Bus idle detected (fallback), proceeding without token")
+                    return
+                continue
+
+            consecutive_idle = 0
+
+            # Only process frames addressed to us or broadcast
+            if frame.destination != SRC_ADDRESS and frame.destination != 0xFFFF:
+                continue
+
+            # Handle panel frames (IDENTIFY and token grant)
+            if frame.source == PANEL_ADDRESS:
+                await self._handle_panel_frame(frame)
+                if self._has_token:
+                    logger.info("Token received, proceeding immediately")
+                    return
 
     async def send_and_receive(
         self,
@@ -442,14 +491,14 @@ class ProtocolHandler:
         data: bytes = b"",
         expected_response: int | None = None,
         response_validator: Callable[[Frame], bool] | None = None,
+        destination: int | None = None,
     ) -> Frame | None:
         """Send a frame and wait for response.
 
-        Skips frames from unexpected sources, wrong commands, or that
-        fail the response_validator (e.g., responses to other devices
-        on the bus). Keeps reading frames until either a match is found,
-        the bus goes silent (per-read timeout), or the total request
-        timeout is exceeded.
+        Matches the original firmware's send-one/read-one pattern:
+        sends a request, then reads frames with a short timeout (0.2s).
+        If the bus goes quiet (no frame within 0.2s), the response
+        isn't coming and we return None for the caller to retry.
 
         Args:
             command: Command code to send.
@@ -457,16 +506,21 @@ class ProtocolHandler:
             expected_response: Expected response command code.
             response_validator: Optional callable to validate response data.
                 If provided and returns False, the frame is skipped.
+            destination: Override destination address (default: self._destination).
 
         Returns:
             Response frame, or None on timeout.
         """
-        request = Frame(destination=self._destination, command=command, data=data)
+        dest = destination if destination is not None else self._destination
+        request = Frame(destination=dest, command=command, data=data)
 
         success = await self._writer.write_frame(request, timeout=self._request_timeout)
         if not success:
             logger.warning(f"Failed to send command 0x{command:02X}")
             return None
+
+        # Clear reader buffer after write (matches original's clearFrameBuffer)
+        self._reader.reset_buffer()
 
         if expected_response is None:
             return None
@@ -480,27 +534,31 @@ class ProtocolHandler:
             if remaining <= 0:
                 break
 
-            # Use shorter per-read timeout to check deadline frequently.
-            # On a busy bus, this allows reading many frames from other
-            # devices while still detecting bus-idle gaps.
-            read_timeout = min(remaining, 0.5)
+            # 0.2s per-read timeout matching original PORT_TIMEOUT
+            read_timeout = min(remaining, 0.2)
             response = await self._reader.read_frame(timeout=read_timeout)
 
             if response is None:
-                # Bus was quiet for this read interval, keep waiting
-                # until total deadline expires
-                continue
+                # Bus quiet - response isn't coming, let caller retry
+                break
 
-            # Skip frames not from our target device
-            if response.source != self._destination:
-                # Auto-detect token mode when master panel is active
-                if response.source == PANEL_ADDRESS and not self._token_mode:
-                    self._token_mode = True
-                    logger.info("Master panel detected on bus, enabling token mode")
+            # Skip frames not addressed to us
+            if response.destination != SRC_ADDRESS and response.destination != 0xFFFF:
                 skipped += 1
                 continue
 
-            # Skip responses to other devices' requests
+            # Handle panel frames addressed to us (token protocol)
+            if response.source == PANEL_ADDRESS:
+                await self._handle_panel_frame(response)
+                skipped += 1
+                continue
+
+            # Skip frames not from expected source
+            if response.source != dest and dest != 0xFFFF:
+                skipped += 1
+                continue
+
+            # Skip wrong response commands
             if response.command != expected_response:
                 skipped += 1
                 continue
@@ -516,11 +574,27 @@ class ProtocolHandler:
 
             return response
 
-        logger.warning(
-            f"No matching response within {self._request_timeout}s for 0x{command:02X} "
-            f"(skipped {skipped} frames)"
-        )
+        if skipped > 0:
+            logger.debug(f"No matching response for 0x{command:02X} (skipped {skipped} frames)")
         return None
+
+    async def _send_get_settings(self) -> None:
+        """Send GET_SETTINGS as first request after receiving token.
+
+        The original firmware sends this to address 0xFFFF (broadcast)
+        as the first request after getting the token, which initializes
+        the connection with the controller.
+        """
+        response = await self.send_and_receive(
+            Command.GET_SETTINGS,
+            data=b"",
+            expected_response=Command.GET_SETTINGS_RESPONSE,
+            destination=0xFFFF,
+        )
+        if response:
+            logger.debug("GET_SETTINGS response received (%d bytes)", len(response.data))
+        else:
+            logger.debug("GET_SETTINGS got no response (non-critical)")
 
     async def fetch_param_structs(self, start_index: int = 0, count: int = 50) -> list[ParamStructEntry]:
         """Fetch parameter structure/metadata from controller.
@@ -661,9 +735,6 @@ class ProtocolHandler:
         data = build_modify_param_request(param.index, value, entry.type_code)
 
         async with self._lock:
-            got_token = False
-            if self._token_mode:
-                got_token = await self._wait_for_token()
             try:
                 response = await self.send_and_receive(
                     Command.MODIFY_PARAM,
@@ -671,7 +742,7 @@ class ProtocolHandler:
                     expected_response=Command.MODIFY_PARAM_RESPONSE,
                 )
             finally:
-                if got_token:
+                if self._has_token:
                     await self._return_token()
 
         if response is not None:
@@ -686,9 +757,9 @@ class ProtocolHandler:
     async def discover_params(self, max_params: int = 20000) -> int:
         """Discover all parameters by fetching structures.
 
-        Waits for token grant from master panel before sending requests,
-        holds the token for all batches, then returns it. This prevents
-        bus collisions on multi-master RS-485 networks.
+        Waits for token from the master panel (responds to IDENTIFY),
+        then sends GET_SETTINGS followed by struct requests back-to-back.
+        Returns token when done.
 
         Args:
             max_params: Maximum number of parameters to discover.
@@ -697,26 +768,33 @@ class ProtocolHandler:
             Total number of parameters discovered.
         """
         async with self._lock:
-            got_token = False
             try:
+                await self._wait_for_token()
+
+                if self._has_token:
+                    await self._send_get_settings()
+
                 new_structs: dict[int, ParamStructEntry] = {}
                 index = 0
-                batch_size = 255
+                batch_size = 100  # Match original's maxNumStructDPParams
+                consecutive_failures = 0
 
                 while index < max_params:
-                    # Acquire token if token mode detected (may happen mid-discovery)
-                    if self._token_mode and not got_token:
-                        got_token = await self._wait_for_token()
-
                     entries = None
-                    for attempt in range(RETRY_ATTEMPTS):
+                    for _ in range(RETRY_ATTEMPTS):
                         entries = await self.fetch_param_structs(index, batch_size)
                         if entries:
                             break
-                        logger.debug("Struct fetch failed at index %d, retry %d/%d", index, attempt + 1, RETRY_ATTEMPTS)
-                        await asyncio.sleep(0.5)
+                        if not self._has_token:
+                            await asyncio.sleep(0.5)
                     if not entries:
-                        break
+                        consecutive_failures += 1
+                        if consecutive_failures >= 3:
+                            # 3 consecutive failed batches = end of param range
+                            break
+                        index += batch_size
+                        continue
+                    consecutive_failures = 0
                     for entry in entries:
                         new_structs[entry.index] = entry
                     index = entries[-1].index + 1
@@ -730,14 +808,13 @@ class ProtocolHandler:
 
                 return len(self._param_structs)
             finally:
-                if got_token:
+                if self._has_token:
                     await self._return_token()
 
     async def poll_all_params(self) -> int:
         """Poll all known parameters and update cache.
 
-        If token mode is active, waits for token grant and holds it
-        for all batches. Otherwise sends requests directly.
+        Waits for token from panel before sending requests.
 
         Returns:
             Number of parameters successfully read.
@@ -746,29 +823,26 @@ class ProtocolHandler:
             return 0
 
         async with self._lock:
-            got_token = False
             try:
+                await self._wait_for_token()
+
                 indices = sorted(self._param_structs.keys())
                 total_read = 0
 
                 current_pos = 0
                 while current_pos < len(indices):
-                    # Acquire token if token mode detected (may happen mid-poll)
-                    if self._token_mode and not got_token:
-                        got_token = await self._wait_for_token()
-
                     start_index = indices[current_pos]
 
                     batch_end = min(current_pos + self._params_per_request, len(indices))
                     count = indices[batch_end - 1] - start_index + 1
 
                     values = None
-                    for attempt in range(RETRY_ATTEMPTS):
+                    for _ in range(RETRY_ATTEMPTS):
                         values = await self.fetch_param_values(start_index, count)
                         if values:
                             break
-                        logger.debug("Value fetch failed at index %d, retry %d/%d", start_index, attempt + 1, RETRY_ATTEMPTS)
-                        await asyncio.sleep(0.5)
+                        if not self._has_token:
+                            await asyncio.sleep(0.5)
 
                     if not values:
                         current_pos = batch_end
@@ -804,7 +878,7 @@ class ProtocolHandler:
 
                 return total_read
             finally:
-                if got_token:
+                if self._has_token:
                     await self._return_token()
 
     async def _poll_loop(self) -> None:

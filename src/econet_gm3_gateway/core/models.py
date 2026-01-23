@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Parameter(BaseModel):
@@ -26,14 +26,14 @@ class Parameter(BaseModel):
             raise ValueError("Parameter name cannot be empty")
         return v
 
-    @field_validator("max_value")
-    @classmethod
-    def validate_range(cls, v: float | None, info) -> float | None:
-        """Ensure max_value >= min_value if both are set."""
-        if v is not None and info.data.get("min_value") is not None:
-            if v < info.data["min_value"]:
-                raise ValueError("max_value must be >= min_value")
-        return v
+    @model_validator(mode="after")
+    def fix_inverted_range(self) -> "Parameter":
+        """Clear invalid range if max_value < min_value."""
+        if self.min_value is not None and self.max_value is not None:
+            if self.max_value < self.min_value:
+                self.min_value = None
+                self.max_value = None
+        return self
 
     model_config = ConfigDict(
         json_schema_extra={

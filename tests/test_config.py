@@ -20,9 +20,9 @@ class TestSettings:
         assert settings.api_port == 8000
         assert settings.log_level == "INFO"
         assert settings.poll_interval == 10.0
-        assert settings.request_timeout == 3.0
+        assert settings.request_timeout == 1.5
         assert settings.destination_address == 1
-        assert settings.params_per_request == 50
+        assert settings.params_per_request == 100
 
     def test_env_override_serial_port(self):
         """Test serial port override from environment."""

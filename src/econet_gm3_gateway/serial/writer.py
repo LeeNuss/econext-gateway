@@ -61,6 +61,9 @@ class FrameWriter:
 
             for attempt in range(1, self.max_retries + 1):
                 try:
+                    # RS-485 bus turnaround delay (matches original firmware's time.sleep(0.02))
+                    await asyncio.sleep(0.02)
+
                     if timeout:
                         await asyncio.wait_for(self.connection.write(frame_bytes), timeout=timeout)
                     else:

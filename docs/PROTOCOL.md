@@ -115,61 +115,175 @@ To validate a received frame:
 
 The gateway initiates all communication, with the controller responding to requests.
 
-**Communication Flow:**
-1. Gateway sends request frame
-2. Controller responds with data frame
-3. Gateway processes response
-4. Repeat
+**Startup Sequence:**
+1. Connect to serial port (115200 baud)
+2. Wait for token from panel (respond to IDENTIFY probes; fallback to bus-idle after 1.5s)
+3. If token received: send GET_SETTINGS (0x00) to broadcast (0xFFFF) to initialize
+4. Discover parameters: GET_PARAMS_STRUCT_WITH_RANGE (0x02) in batches of 100
+5. Discovery completes when controller returns empty response or 3 consecutive batch failures
+6. Return token to panel
+
+**Ongoing Polling (every 10s):**
+1. Wait for token from panel (up to 15s, fallback to bus-idle)
+2. Send GET_PARAMS (0x40) in batches of 100 params
+3. Update parameter cache with new values
+4. Return token to panel
+
+**Observed Performance:**
+- With token: Discovery completes in ~5s, polling in ~2s (exclusive bus access)
+- Without token: Discovery takes ~60-90s, polling ~15-20s (shared bus, retries needed)
 
 ### Token Communication (Bus Arbitration)
 
 On multi-master RS-485 buses, the master panel (device 100) coordinates bus access
 using a token-passing protocol. This prevents frame collisions when multiple devices
-(e.g., gateway at address 131, polling module at address 255) need to communicate
-with the same controller.
+need to communicate with the same controller.
 
-**Token mode is auto-detected:** the gateway starts in non-token mode and enables
-token mode when it first observes frames from the master panel (address 100) on the bus.
+#### Observed Bus Devices
 
-**Service Frame Format (CMD: 0x09):**
+| Address | Role           | Observed Behavior                                                              |
+| ------- | -------------- | ------------------------------------------------------------------------------ |
+| 1       | Controller     | Responds to GET_PARAMS, GET_PARAMS_STRUCT, MODIFY_PARAM                        |
+| 100     | Master Panel   | Sends IDENTIFY probes, SERVICE frames, MODIFY_PARAM to controller              |
+| 131     | Gateway        | Our device - responds to IDENTIFY, sends param requests                        |
+| 165     | Unknown device | Panel queries it with GET_PARAMS (0x40), responds with 0xC0/0x7F               |
+| 255     | Polling module | Continuously sends GET_PARAMS to controller (responses go to broadcast 0xFFFF) |
+
+#### Device Identification (IDENTIFY)
+
+The master panel periodically probes devices on the bus using IDENTIFY requests.
+Devices must respond to register their presence.
+
+**IDENTIFY Request (panel -> device):**
+- Command: `0x09` (IDENTIFY_CMD)
+- Data: empty
+- The panel sends this to each known device address in sequence
+
+**IDENTIFY Response (device -> panel):**
+- Command: `0x89` (IDENTIFY_ANS_CMD)
+- Data: `"PLUM\x00EcoNET\x00\x00\x00\x00\x00"` (16 bytes)
+  - Null-terminated device manufacturer string ("PLUM")
+  - Null-terminated device type string ("EcoNET")
+  - 4 zero bytes (padding/reserved)
+
+#### Service Frames
+
+Service frames use CMD byte `0x68` (same value as BEGIN_FRAME marker). The function
+code is encoded as a little-endian uint16 in the first 2 bytes of the data payload.
+
+**Service Frame Format (CMD: 0x68):**
 ```
-[BEGIN][LEN_L][LEN_H][DA_L][DA_H][SA][RSV][0x09][FUNC_L][FUNC_H][...][CRC_H][CRC_L][END]
+[0x68][LEN_L][LEN_H][DA_L][DA_H][SA][RSV][0x68][FUNC_L][FUNC_H][...][CRC_H][CRC_L][0x16]
 ```
 
-**Token Grant (master panel -> gateway):**
+**Observed Service Functions:**
+
+| Function | Direction          | Destination          | Description                                        |
+| -------- | ------------------ | -------------------- | -------------------------------------------------- |
+| 0x0801   | Panel -> Device    | Device address (131) | Token grant                                        |
+| 0x0023   | Panel -> Broadcast | 0xFFFF               | Clock/timer sync (20 bytes, includes date/time)    |
+| 0x2001   | Panel -> Broadcast | 0xFFFF               | Status broadcast (16 bytes, includes temperatures) |
+
+**Token Grant (panel -> gateway):**
 - Source: 100 (master panel)
-- Destination: 131 (gateway) or 0xFFFF (broadcast)
-- Command: 0x09 (SERVICE)
-- Data: `[0x01, 0x08]` (GET_TOKEN function code 0x0801, little-endian)
+- Destination: 131 (gateway)
+- Command: `0x68` (SERVICE_CMD)
+- Data: `[0x01, 0x08, ...]` (function 0x0801 LE, followed by additional bytes)
 
-**Token Return (gateway -> master panel):**
+**Token Return (gateway -> panel):**
 - Destination: 100 (master panel)
-- Command: 0x09 (SERVICE)
-- Data: `[0x00, 0x08, 0x00, 0x00]` (GIVE_BACK_TOKEN)
+- Command: `0x68` (SERVICE_CMD)
+- Data: `[0x00, 0x08, 0x00, 0x00]` (function 0x0800 LE + 2 zero bytes)
 
-**Token Protocol Flow:**
+#### Observed Bus Cycle
+
+The master panel operates on a ~10-second cycle with the following phases:
+
+```
+Phase 1: Device Identification (~0.5s)
+  Panel sends IDENTIFY (0x09) to addresses: 32, 131, 165, 168
+  Devices that exist respond with IDENTIFY_ANS (0x89)
+
+Phase 2: Polling Module Activity (~3-5s)
+  Device 255 sends ~14 GET_PARAMS (0x40) requests to controller
+  Controller responds to broadcast (dest=0xFFFF) with 0xC0 responses
+  Response sizes: 116-466 bytes each
+
+Phase 3: Panel Operations (~1s)
+  Panel queries device 165 (GET_PARAMS)
+  Panel writes params to controller (MODIFY_PARAM 0x29, 4 writes)
+  Controller ACKs each write (0xA9)
+
+Phase 4: Service Broadcasts
+  Panel sends SERVICE 0x0023 (clock sync, dest=0xFFFF)
+  Panel sends SERVICE 0x2001 (status, dest=0xFFFF)
+
+Phase 5: Token Grant
+  Panel sends SERVICE 0x0801 to gateway (dest=131)
+  Gateway holds token for its operations
+  Gateway returns token when done
+```
+
+#### Token Protocol Flow
+
 ```
 Master Panel             Gateway                  Controller
      |                      |                          |
-     | Token Grant (0x09)   |                          |
+     | IDENTIFY (0x09)      |                          |
      |--------------------->|                          |
-     |                      |  Request (e.g. 0x02)     |
+     |  IDENTIFY_ANS (0x89) |                          |
+     |<---------------------|                          |
+     |                      |                          |
+     | ... panel cycle ...  |                          |
+     |                      |                          |
+     | SERVICE 0x0801       |                          |
+     | (Token Grant)        |                          |
+     |--------------------->|                          |
+     |                      |  GET_PARAMS (0x40)       |
      |                      |------------------------->|
-     |                      |       Response (0x82)    |
+     |                      |  GET_PARAMS_RESP (0xC0)  |
      |                      |<-------------------------|
      |                      |  ... more requests ...   |
      |                      |                          |
-     |  Token Return (0x09) |                          |
+     | SERVICE 0x0800       |                          |
+     | (Token Return)       |                          |
      |<---------------------|                          |
      |                      |                          |
 ```
 
-**Key behaviors:**
-- The gateway holds the token for the entire operation (all batches of a discovery
-  or poll cycle), not just one request-response pair
-- On a quiet bus (no master panel detected), the gateway sends freely without tokens
-- If the token wait times out (10s), the gateway sends without the token as a fallback
-- The master panel cycles tokens between all devices on the bus (typical cycle: 3-5s)
+#### Timing and Behavior
+
+- **Bus turnaround delay:** 20ms sleep before every write (RS-485 half-duplex requirement)
+- **Response timeout:** 0.2s per read when holding token (exclusive bus access)
+- **Token wait timeout:** 15s max wait for token; falls back to bus-idle detection
+- **Bus-idle fallback:** 3 consecutive 0.5s read timeouts (1.5s silence) = bus idle
+- **Retry strategy without token:** Send request, break on 0.2s silence, retry up to 5 times
+- **Panel cycle time:** ~10 seconds between token grants
+- **Token hold time:** Gateway holds token for entire operation (all batches)
+
+#### Without Token (Bus-Idle Fallback)
+
+When the token is not available (panel not present, or timeout exceeded), the gateway
+falls back to opportunistic communication:
+
+1. Wait for 1.5s of bus silence (no frames)
+2. Send request to controller
+3. Read for 0.2s - if bus goes quiet, response likely isn't coming
+4. Retry up to 5 times per batch
+5. Controller responds to ~40% of requests on first try; most succeed within 3-5 retries
+6. Average 2s per successful batch without token (vs immediate with token)
+
+#### Critical Implementation Notes
+
+- **Do NOT clear the reader buffer after IDENTIFY response.** The token frame
+  often arrives in the same serial read chunk as the IDENTIFY request. Clearing
+  the buffer discards the token.
+- **The SERVICE CMD byte (0x68) is the same as BEGIN_FRAME.** The frame parser
+  must handle this correctly by validating frame length and END marker, not just
+  scanning for 0x68 bytes.
+- **Device 255 traffic creates noise.** Its GET_PARAMS responses go to broadcast
+  (0xFFFF) and pass through destination filters. The response validator (checking
+  start_index) is essential to distinguish our responses from device 255's.
 
 ### Request-Response Cycle
 
@@ -451,10 +565,18 @@ All date bytes set to 0xFF indicates no alarm exists at this index.
 
 ### Retry Strategy
 
-Recommended retry behavior:
-- Timeout: 200-500ms per request
-- Retries: 3 attempts before giving up
-- Backoff: Exponential backoff on repeated failures
+**With token (exclusive bus access):**
+- Per-read timeout: 200ms (bus should be quiet except for our response)
+- Break immediately on bus silence (response isn't coming)
+- Retries: 5 attempts per batch
+- No delay between retries
+
+**Without token (shared bus):**
+- Per-read timeout: 200ms
+- Break on bus silence, retry immediately
+- Retries: 5 attempts per batch
+- 500ms delay between retries (avoid flooding the bus)
+- Expect ~40% success rate per attempt; most batches succeed within 3-5 tries
 
 ### Connection Recovery
 

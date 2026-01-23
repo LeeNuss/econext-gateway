@@ -128,16 +128,22 @@ UNIT_NAMES = {
 # Token Passing (Bus Arbitration)
 # ============================================================================
 
-SERVICE_CMD = 0x09  # Service frame command byte (token passing)
+# Device identification (panel probes devices on the bus)
+IDENTIFY_CMD = 0x09  # Panel sends this to identify devices
+IDENTIFY_ANS_CMD = 0x89  # Device responds with identity
+IDENTIFY_RESPONSE_DATA = b"PLUM\x00EcoNET\x00\x00\x00\x00\x00"  # Identity payload
+
+# Service frames (token grant/return)
+SERVICE_CMD = 0x68  # Service frame command byte (same value as BEGIN_FRAME)
 GET_TOKEN_FUNC = 0x0801  # Token grant function code (LE uint16 in data[0:2])
 GIVE_BACK_TOKEN_DATA = b"\x00\x08\x00\x00"  # Token return payload
-TOKEN_TIMEOUT = 10.0  # Max time to wait for token grant (seconds)
+TOKEN_TIMEOUT = 15.0  # Max time to wait for bus idle (seconds, ~1.5 panel cycles)
 
 # ============================================================================
 # Communication Settings
 # ============================================================================
 
 SERIAL_TIMEOUT = 0.2  # Serial read timeout (seconds)
-RETRY_ATTEMPTS = 3  # Number of retry attempts for failed operations
-REQUEST_TIMEOUT = 3.0  # Request timeout (seconds)
+RETRY_ATTEMPTS = 5  # Number of retry attempts for failed operations
+REQUEST_TIMEOUT = 1.5  # Request timeout (seconds)
 POLL_INTERVAL = 10.0  # Parameter polling interval (seconds)
