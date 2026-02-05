@@ -14,7 +14,7 @@ class TestSettings:
         with patch.dict(os.environ, {}, clear=True):
             settings = Settings()
 
-        assert settings.serial_port == "/dev/ttyUSB0"
+        assert settings.serial_port == "/dev/ttyUSB1"
         assert settings.serial_baud == 115200
         assert settings.api_host == "0.0.0.0"
         assert settings.api_port == 8000
@@ -78,7 +78,7 @@ class TestSettings:
         with patch.dict(os.environ, {"SERIAL_PORT": "/dev/other"}, clear=True):
             settings = Settings()
 
-        assert settings.serial_port == "/dev/ttyUSB0"
+        assert settings.serial_port == "/dev/ttyUSB1"
 
 
 class TestSetupLogging:

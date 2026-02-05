@@ -255,9 +255,9 @@ Master Panel             Gateway                  Controller
 
 - **Bus turnaround delay:** 20ms sleep before every write (RS-485 half-duplex requirement)
 - **Response timeout:** 0.2s per read when holding token (exclusive bus access)
-- **Token wait timeout:** 15s max wait for token; falls back to bus-idle detection
-- **Bus-idle fallback:** 3 consecutive 0.5s read timeouts (1.5s silence) = bus idle
-- **Retry strategy without token:** Send request, break on 0.2s silence, retry up to 5 times
+- **Token wait timeout:** 5s max wait for token; falls back to sending without token
+- **Response silence threshold:** 3 consecutive 0.2s read timeouts (0.6s) = no response
+- **Retry strategy without token:** Send request, wait 0.6s silence, retry up to 5 times
 - **Panel cycle time:** ~10 seconds between token grants
 - **Token hold time:** Gateway holds token for entire operation (all batches)
 
@@ -266,12 +266,12 @@ Master Panel             Gateway                  Controller
 When the token is not available (panel not present, or timeout exceeded), the gateway
 falls back to opportunistic communication:
 
-1. Wait for 1.5s of bus silence (no frames)
-2. Send request to controller
-3. Read for 0.2s - if bus goes quiet, response likely isn't coming
-4. Retry up to 5 times per batch
-5. Controller responds to ~40% of requests on first try; most succeed within 3-5 retries
-6. Average 2s per successful batch without token (vs immediate with token)
+1. Send request to controller immediately
+2. Read frames, skipping non-matching responses (device 255 traffic)
+3. If 0.6s of consecutive silence (3 x 0.2s), give up on this attempt
+4. Retry up to 5 times per batch (no delay between retries)
+5. Controller responds to ~20-30% of requests on first try; most succeed within 3-5 retries
+6. Average ~5s per successful batch without token (vs ~0.1s with token)
 
 #### Critical Implementation Notes
 

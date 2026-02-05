@@ -42,13 +42,16 @@ class FrameWriter:
         """Get writer statistics."""
         return self._stats.copy()
 
-    async def write_frame(self, frame: Frame, timeout: float | None = None) -> bool:
+    async def write_frame(
+        self, frame: Frame, timeout: float | None = None, flush_after: bool = False
+    ) -> bool:
         """
         Write a frame to the serial connection with retry logic.
 
         Args:
             frame: Frame to write
             timeout: Write timeout in seconds (None for no timeout)
+            flush_after: If True, flush serial buffers after write (for protocol responses)
 
         Returns:
             True if write successful, False otherwise
@@ -61,13 +64,13 @@ class FrameWriter:
 
             for attempt in range(1, self.max_retries + 1):
                 try:
-                    # RS-485 bus turnaround delay (matches original firmware's time.sleep(0.02))
-                    await asyncio.sleep(0.02)
-
                     if timeout:
-                        await asyncio.wait_for(self.connection.write(frame_bytes), timeout=timeout)
+                        await asyncio.wait_for(
+                            self.connection.write(frame_bytes, flush_after=flush_after),
+                            timeout=timeout,
+                        )
                     else:
-                        await self.connection.write(frame_bytes)
+                        await self.connection.write(frame_bytes, flush_after=flush_after)
 
                     self._stats["frames_written"] += 1
                     self._stats["bytes_written"] += len(frame_bytes)
@@ -76,7 +79,7 @@ class FrameWriter:
                         self._stats["retries"] += attempt - 1
                         logger.info("Frame write succeeded on attempt %d", attempt)
 
-                    logger.debug("Frame written: %s", frame)
+                    logger.debug("Frame written: %s (hex: %s)", frame, frame_bytes.hex())
                     return True
 
                 except TimeoutError:

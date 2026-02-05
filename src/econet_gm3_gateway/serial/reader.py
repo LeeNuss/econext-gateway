@@ -140,10 +140,14 @@ class FrameReader:
             # Try to parse frame
             frame = Frame.from_bytes(frame_data)
             if frame is None:
-                logger.warning("Frame parse failed (CRC or validation error)")
+                logger.warning("Frame parse failed (CRC or validation error): %s", frame_data.hex())
                 del self._buffer[0]
                 self._stats["frames_invalid"] += 1
                 continue
+
+            # Log SERVICE frames to address 131 specially
+            if frame.command == 0x68 and frame.destination == 131:
+                logger.info("RAW SERVICE to 131: %s", frame_data.hex())
 
             # Success! Remove frame from buffer
             del self._buffer[:frame_length]

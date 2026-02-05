@@ -1,31 +1,37 @@
-"""Serial port connection management."""
+"""Serial port connection management using direct pyserial."""
 
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
-import serial_asyncio
+import serial
 from serial import SerialException
 
 logger = logging.getLogger(__name__)
 
 
 class SerialConnection:
-    """Manages serial port connection with automatic reconnection."""
+    """Manages serial port connection with automatic reconnection.
+
+    Uses direct pyserial with thread executor for async compatibility.
+    This matches the original econet webserver's synchronous serial approach
+    and works better with CP210x adapters.
+    """
 
     def __init__(
         self,
         port: str,
-        baudrate: int = 19200,
-        timeout: float = 1.0,
+        baudrate: int = 115200,
+        timeout: float = 0.2,  # Match original webserver's PORT_TIMEOUT
         reconnect_delay: float = 5.0,
     ):
         """
         Initialize serial connection manager.
 
         Args:
-            port: Serial port path (e.g., '/dev/ttyUSB0')
-            baudrate: Communication speed (default: 19200)
-            timeout: Read/write timeout in seconds
+            port: Serial port path (e.g., '/dev/ttyUSB1')
+            baudrate: Communication speed (default: 115200)
+            timeout: Read/write timeout in seconds (default: 0.2 matches original)
             reconnect_delay: Delay between reconnection attempts in seconds
         """
         self.port = port
@@ -33,16 +39,38 @@ class SerialConnection:
         self.timeout = timeout
         self.reconnect_delay = reconnect_delay
 
-        self._reader: asyncio.StreamReader | None = None
-        self._writer: asyncio.StreamWriter | None = None
+        self._serial: serial.Serial | None = None
         self._connected = False
         self._reconnect_task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="serial")
 
     @property
     def connected(self) -> bool:
         """Check if currently connected."""
-        return self._connected and self._writer is not None and not self._writer.is_closing()
+        return self._connected and self._serial is not None and self._serial.is_open
+
+    def _baud_toggle_reset(self) -> None:
+        """Perform baud rate toggle to reset RS-485 transceiver.
+
+        The original econet webserver does this sequence at startup:
+        1. Open at 9600 baud
+        2. Close
+        3. Open at target baud rate
+
+        This may help synchronize with the panel or reset the RS-485 state.
+        """
+        try:
+            logger.debug("Performing baud toggle reset on %s", self.port)
+            temp_port = serial.Serial()
+            temp_port.port = self.port
+            temp_port.baudrate = 9600
+            temp_port.timeout = 0.1
+            temp_port.open()
+            temp_port.close()
+            logger.debug("Baud toggle reset completed")
+        except (OSError, SerialException) as e:
+            logger.warning("Baud toggle reset failed (non-fatal): %s", e)
 
     async def connect(self) -> bool:
         """
@@ -57,13 +85,17 @@ class SerialConnection:
                 return True
 
             try:
+                # Perform baud toggle reset (matches original webserver behavior)
+                self._baud_toggle_reset()
+
                 logger.info("Connecting to serial port %s at %d baud", self.port, self.baudrate)
 
-                self._reader, self._writer = await serial_asyncio.open_serial_connection(
-                    url=self.port,
-                    baudrate=self.baudrate,
-                    timeout=self.timeout,
-                )
+                # Use direct pyserial, same as original webserver
+                self._serial = serial.Serial()
+                self._serial.port = self.port
+                self._serial.baudrate = self.baudrate
+                self._serial.timeout = self.timeout
+                self._serial.open()
 
                 self._connected = True
                 logger.info("Successfully connected to %s", self.port)
@@ -82,15 +114,13 @@ class SerialConnection:
 
             logger.info("Disconnecting from %s", self.port)
 
-            if self._writer:
+            if self._serial:
                 try:
-                    self._writer.close()
-                    await self._writer.wait_closed()
+                    self._serial.close()
                 except Exception as e:
-                    logger.error("Error closing writer: %s", e)
+                    logger.error("Error closing serial port: %s", e)
 
-            self._reader = None
-            self._writer = None
+            self._serial = None
             self._connected = False
             logger.info("Disconnected from %s", self.port)
 
@@ -148,62 +178,97 @@ class SerialConnection:
                 logger.error("Error in reconnect loop: %s", e)
                 await asyncio.sleep(self.reconnect_delay)
 
+    def _sync_read(self, n: int) -> bytes:
+        """Synchronous read - runs in thread executor."""
+        if not self._serial or not self._serial.is_open:
+            raise ConnectionError("Not connected to serial port")
+        return self._serial.read(n)
+
     async def read(self, n: int = -1) -> bytes:
         """
         Read from serial port.
 
         Args:
-            n: Number of bytes to read (-1 for all available)
+            n: Number of bytes to read (-1 for available data up to 4096)
 
         Returns:
             Bytes read from serial port
 
         Raises:
             ConnectionError: If not connected
-            asyncio.TimeoutError: If read times out
         """
-        if not self.connected or not self._reader:
+        if not self.connected or not self._serial:
             raise ConnectionError("Not connected to serial port")
 
         try:
-            if n == -1:
-                data = await asyncio.wait_for(self._reader.read(8192), timeout=self.timeout)
-            else:
-                data = await asyncio.wait_for(self._reader.readexactly(n), timeout=self.timeout)
+            loop = asyncio.get_event_loop()
+            read_size = 4096 if n == -1 else n
+            data = await loop.run_in_executor(self._executor, self._sync_read, read_size)
             return data
 
-        except asyncio.IncompleteReadError as e:
-            logger.error("Incomplete read: got %d bytes, expected %d", len(e.partial), n)
-            raise
-        except TimeoutError:
-            logger.debug("Read timeout after %ss", self.timeout)
-            raise
+        except SerialException as e:
+            error_str = str(e)
+            # "device reports readiness to read but returned no data" is transient
+            if "reports readiness" in error_str or "multiple access" in error_str:
+                logger.warning("Transient serial error (will retry): %s", e)
+                return b""
+            logger.error("Read error: %s", e)
+            self._connected = False
+            raise ConnectionError(str(e)) from e
         except Exception as e:
             logger.error("Read error: %s", e)
             self._connected = False
             raise
 
-    async def write(self, data: bytes) -> None:
+    def _sync_write(self, data: bytes) -> None:
+        """Synchronous write - runs in thread executor."""
+        if not self._serial or not self._serial.is_open:
+            raise ConnectionError("Not connected to serial port")
+        self._serial.write(data)
+
+    async def write(self, data: bytes, flush_after: bool = False) -> None:
         """
         Write to serial port.
 
         Args:
             data: Bytes to write
+            flush_after: If True, flush input/output buffers after write
 
         Raises:
             ConnectionError: If not connected
         """
-        if not self.connected or not self._writer:
+        if not self.connected or not self._serial:
             raise ConnectionError("Not connected to serial port")
 
         try:
-            self._writer.write(data)
-            await self._writer.drain()
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(self._executor, self._sync_write, data)
+
+            if flush_after:
+                self._flush_serial()
 
         except Exception as e:
             logger.error("Write error: %s", e)
             self._connected = False
             raise
+
+    def _flush_serial(self) -> None:
+        """Flush underlying serial port buffers (input and output).
+
+        The original webserver does:
+        1. self.port.flushInput()  - clear any garbage in RX buffer
+        2. self.port.flush()       - wait for TX buffer to empty
+
+        This ensures the response is fully transmitted before we
+        start listening for the next frame.
+        """
+        try:
+            if self._serial and self._serial.is_open:
+                self._serial.reset_input_buffer()  # Clear RX buffer
+                self._serial.flush()  # Wait for TX complete
+                logger.debug("Serial port flushed (RX cleared, TX complete)")
+        except Exception as e:
+            logger.warning("Failed to flush serial port: %s", e)
 
     async def __aenter__(self):
         """Async context manager entry."""

@@ -39,6 +39,7 @@ async def lifespan(app: FastAPI):
         poll_interval=settings.poll_interval,
         request_timeout=settings.request_timeout,
         params_per_request=settings.params_per_request,
+        token_required=settings.token_required,
     )
 
     # Connect and start polling

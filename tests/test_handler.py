@@ -319,6 +319,7 @@ class TestProtocolHandler:
             poll_interval=1.0,
             request_timeout=0.5,
             token_timeout=0,
+            token_required=False,
         )
         return handler, conn, cache
 

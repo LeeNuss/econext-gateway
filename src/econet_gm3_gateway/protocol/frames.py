@@ -11,15 +11,17 @@ class Frame:
     """
     Represents a GM3 protocol frame.
 
+    Frame structure:
+    [BEGIN][LEN_L][LEN_H][DA_L][DA_H][SA_L][SA_H][CMD][DATA...][CRC_H][CRC_L][END]
+
     Attributes:
         destination: Destination address (16-bit)
-        source: Source address (8-bit)
-        reserved: Reserved byte (usually 0x00 or 0xFF)
+        source: Source address (16-bit)
         command: Command byte
         data: Payload data
     """
 
-    def __init__(self, destination: int, command: int, data: bytes = b"", reserved: int = 0x00):
+    def __init__(self, destination: int, command: int, data: bytes = b""):
         """
         Initialize a frame.
 
@@ -27,11 +29,9 @@ class Frame:
             destination: Destination address (0-65535)
             command: Command byte (0-255)
             data: Optional payload data
-            reserved: Reserved byte (default 0x00)
         """
         self.destination = destination
         self.source = SRC_ADDRESS
-        self.reserved = reserved
         self.command = command
         self.data = data
 
@@ -40,7 +40,7 @@ class Frame:
         Convert frame to bytes for transmission.
 
         Frame structure:
-        [BEGIN][LEN_L][LEN_H][DA_L][DA_H][SA][RSV][CMD][DATA...][CRC_H][CRC_L][END]
+        [BEGIN][LEN_L][LEN_H][DA_L][DA_H][SA_L][SA_H][CMD][DATA...][CRC_H][CRC_L][END]
 
         Returns:
             Complete frame as bytes
@@ -58,14 +58,11 @@ class Frame:
         # Length (will be filled after we know data length)
         frame.extend([0, 0])  # LEN_L, LEN_H
 
-        # Destination address (little-endian)
+        # Destination address (little-endian 16-bit)
         frame.extend(struct.pack("<H", self.destination))
 
-        # Source address
-        frame.append(self.source)
-
-        # Reserved
-        frame.append(self.reserved)
+        # Source address (little-endian 16-bit)
+        frame.extend(struct.pack("<H", self.source))
 
         # Command
         frame.append(self.command)
@@ -75,10 +72,12 @@ class Frame:
             frame.extend(self.data)
 
         # Calculate and update length (total length - 6 header bytes)
-        # Length represents: RSV + CMD + DATA + CRC + END
-        # Current frame has: BEGIN + LEN + DEST + SRC + RSV + CMD + DATA
-        # Will add: CRC (2 bytes) + END (1 byte) = 3 bytes
-        length = len(frame) - 6 + 3  # -6 for header, +3 for CRC and END to be added
+        # Length = total frame size - 6 (BEGIN + LEN_L + LEN_H + DA_L + DA_H + SA_L)
+        # But actually length field represents bytes from SA_H onwards to END (inclusive)
+        # Current frame: BEGIN(1) + LEN(2) + DA(2) + SA(2) + CMD(1) + DATA(n) = 8 + n
+        # Will add: CRC(2) + END(1) = 3 bytes, so total = 11 + n
+        # Length value = total - 6 = 5 + n = SA_H(1) + CMD(1) + DATA(n) + CRC(2) + END(1)
+        length = len(frame) - 6 + 3  # -6 for BEGIN+LEN+DA+SA_L, +3 for CRC+END
         frame[1] = length & 0xFF
         frame[2] = (length >> 8) & 0xFF
 
@@ -140,14 +139,14 @@ class Frame:
             return None
 
         # Extract fields
+        # Frame structure: [BEGIN][LEN_L][LEN_H][DA_L][DA_H][SA_L][SA_H][CMD][DATA...][CRC_H][CRC_L][END]
         destination = struct.unpack("<H", data[3:5])[0]
-        source = data[5]
-        reserved = data[6]
+        source = struct.unpack("<H", data[5:7])[0]
         command = data[7]
         payload = data[8:-3]
 
         # Create frame object
-        frame = cls(destination=destination, command=command, data=payload, reserved=reserved)
+        frame = cls(destination=destination, command=command, data=payload)
         frame.source = source
 
         return frame
@@ -155,6 +154,6 @@ class Frame:
     def __repr__(self) -> str:
         """String representation for debugging."""
         return (
-            f"Frame(dest={self.destination}, src={self.source}, rsv=0x{self.reserved:02X}, "
+            f"Frame(dest={self.destination}, src={self.source}, "
             f"cmd=0x{self.command:02X}, data_len={len(self.data)})"
         )

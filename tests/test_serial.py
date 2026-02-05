@@ -28,24 +28,26 @@ class TestSerialConnection:
     @pytest.mark.asyncio
     async def test_connect_success(self):
         """Test successful connection."""
-        with patch("econet_gm3_gateway.serial.connection.serial_asyncio") as mock_serial:
-            mock_reader = AsyncMock()
-            mock_writer = MagicMock()
-            mock_writer.is_closing.return_value = False
-            mock_serial.open_serial_connection = AsyncMock(return_value=(mock_reader, mock_writer))
+        with patch("econet_gm3_gateway.serial.connection.serial.Serial") as mock_serial_class:
+            mock_serial = MagicMock()
+            mock_serial.is_open = True
+            mock_serial_class.return_value = mock_serial
 
             conn = SerialConnection("/dev/ttyUSB0")
             result = await conn.connect()
 
             assert result is True
             assert conn.connected is True
-            mock_serial.open_serial_connection.assert_called_once()
+            # open() is called twice: once for baud toggle reset, once for actual connection
+            assert mock_serial.open.call_count >= 1
 
     @pytest.mark.asyncio
     async def test_connect_failure(self):
         """Test connection failure."""
-        with patch("econet_gm3_gateway.serial.connection.serial_asyncio") as mock_serial:
-            mock_serial.open_serial_connection = AsyncMock(side_effect=OSError("Port not found"))
+        with patch("econet_gm3_gateway.serial.connection.serial.Serial") as mock_serial_class:
+            mock_serial = MagicMock()
+            mock_serial.open.side_effect = OSError("Port not found")
+            mock_serial_class.return_value = mock_serial
 
             conn = SerialConnection("/dev/ttyUSB0")
             result = await conn.connect()
@@ -56,12 +58,10 @@ class TestSerialConnection:
     @pytest.mark.asyncio
     async def test_disconnect(self):
         """Test disconnection."""
-        with patch("econet_gm3_gateway.serial.connection.serial_asyncio") as mock_serial:
-            mock_reader = AsyncMock()
-            mock_writer = MagicMock()
-            mock_writer.is_closing.return_value = False
-            mock_writer.wait_closed = AsyncMock()
-            mock_serial.open_serial_connection = AsyncMock(return_value=(mock_reader, mock_writer))
+        with patch("econet_gm3_gateway.serial.connection.serial.Serial") as mock_serial_class:
+            mock_serial = MagicMock()
+            mock_serial.is_open = True
+            mock_serial_class.return_value = mock_serial
 
             conn = SerialConnection("/dev/ttyUSB0")
             await conn.connect()
@@ -70,18 +70,17 @@ class TestSerialConnection:
             await conn.disconnect()
 
             assert conn.connected is False
-            mock_writer.close.assert_called_once()
-            mock_writer.wait_closed.assert_called_once()
+            # close() may be called multiple times (baud toggle + disconnect)
+            assert mock_serial.close.call_count >= 1
 
     @pytest.mark.asyncio
     async def test_read_success(self):
         """Test successful read."""
-        with patch("econet_gm3_gateway.serial.connection.serial_asyncio") as mock_serial:
-            mock_reader = AsyncMock()
-            mock_reader.read = AsyncMock(return_value=b"test data")
-            mock_writer = MagicMock()
-            mock_writer.is_closing.return_value = False
-            mock_serial.open_serial_connection = AsyncMock(return_value=(mock_reader, mock_writer))
+        with patch("econet_gm3_gateway.serial.connection.serial.Serial") as mock_serial_class:
+            mock_serial = MagicMock()
+            mock_serial.is_open = True
+            mock_serial.read.return_value = b"test data"
+            mock_serial_class.return_value = mock_serial
 
             conn = SerialConnection("/dev/ttyUSB0")
             await conn.connect()
@@ -101,20 +100,17 @@ class TestSerialConnection:
     @pytest.mark.asyncio
     async def test_write_success(self):
         """Test successful write."""
-        with patch("econet_gm3_gateway.serial.connection.serial_asyncio") as mock_serial:
-            mock_reader = AsyncMock()
-            mock_writer = MagicMock()
-            mock_writer.is_closing.return_value = False
-            mock_writer.drain = AsyncMock()
-            mock_serial.open_serial_connection = AsyncMock(return_value=(mock_reader, mock_writer))
+        with patch("econet_gm3_gateway.serial.connection.serial.Serial") as mock_serial_class:
+            mock_serial = MagicMock()
+            mock_serial.is_open = True
+            mock_serial_class.return_value = mock_serial
 
             conn = SerialConnection("/dev/ttyUSB0")
             await conn.connect()
 
             await conn.write(b"test data")
 
-            mock_writer.write.assert_called_once_with(b"test data")
-            mock_writer.drain.assert_called_once()
+            mock_serial.write.assert_called_once_with(b"test data")
 
     @pytest.mark.asyncio
     async def test_write_not_connected(self):
@@ -127,12 +123,10 @@ class TestSerialConnection:
     @pytest.mark.asyncio
     async def test_context_manager(self):
         """Test async context manager."""
-        with patch("econet_gm3_gateway.serial.connection.serial_asyncio") as mock_serial:
-            mock_reader = AsyncMock()
-            mock_writer = MagicMock()
-            mock_writer.is_closing.return_value = False
-            mock_writer.wait_closed = AsyncMock()
-            mock_serial.open_serial_connection = AsyncMock(return_value=(mock_reader, mock_writer))
+        with patch("econet_gm3_gateway.serial.connection.serial.Serial") as mock_serial_class:
+            mock_serial = MagicMock()
+            mock_serial.is_open = True
+            mock_serial_class.return_value = mock_serial
 
             async with SerialConnection("/dev/ttyUSB0") as conn:
                 assert conn.connected is True

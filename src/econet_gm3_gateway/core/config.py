@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     prefixed with ECONET_ (e.g., ECONET_SERIAL_PORT).
     """
 
-    serial_port: str = "/dev/ttyUSB0"
+    serial_port: str = "/dev/ttyUSB1"
     serial_baud: int = 115200
     api_host: str = "0.0.0.0"
     api_port: int = 8000
@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     request_timeout: float = 1.5
     destination_address: int = 1
     params_per_request: int = 100
+    token_required: bool = True
 
     model_config = SettingsConfigDict(env_prefix="ECONET_")
 

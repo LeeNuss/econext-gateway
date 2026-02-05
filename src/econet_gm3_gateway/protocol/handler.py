@@ -324,6 +324,7 @@ class ProtocolHandler:
         request_timeout: float = REQUEST_TIMEOUT,
         params_per_request: int = 50,
         token_timeout: float = TOKEN_TIMEOUT,
+        token_required: bool = True,
     ):
         """Initialize protocol handler.
 
@@ -335,6 +336,8 @@ class ProtocolHandler:
             request_timeout: Timeout for individual requests.
             params_per_request: Number of params per GET_PARAMS request.
             token_timeout: Seconds to wait for token before fallback.
+            token_required: If True, wait indefinitely for token (like original).
+                If False, use token_timeout as maximum wait time.
         """
         self._connection = connection
         self._cache = cache
@@ -343,6 +346,7 @@ class ProtocolHandler:
         self._request_timeout = request_timeout
         self._params_per_request = params_per_request
         self._token_timeout = token_timeout
+        self._token_required = token_required
 
         self._reader = FrameReader(connection)
         self._writer = FrameWriter(connection)
@@ -403,21 +407,27 @@ class ProtocolHandler:
         """
         if frame.command == IDENTIFY_CMD:
             # Panel is asking "who are you?" - respond with device identity
+            # 20ms delay for RS-485 bus turnaround (matches original webserver)
+            await asyncio.sleep(0.02)
             response = Frame(
                 destination=PANEL_ADDRESS,
                 command=IDENTIFY_ANS_CMD,
                 data=IDENTIFY_RESPONSE_DATA,
             )
-            await self._writer.write_frame(response)
-            logger.debug("Responded to IDENTIFY from panel")
+            # flush_after=True ensures proper RS-485 handling:
+            # 1. Clears RX buffer (flushInput) to discard any garbage during turnaround
+            # 2. Waits for TX buffer to empty (flush) to ensure data is fully transmitted
+            # This matches the original webserver's clearFrameBuffer() + flush() sequence
+            await self._writer.write_frame(response, flush_after=True)
+            logger.info("Responded to IDENTIFY from panel")
 
         elif frame.command == SERVICE_CMD:
             # Log all SERVICE frames for debugging
             func_code = 0
             if len(frame.data) >= 2:
                 func_code = struct.unpack("<H", frame.data[0:2])[0]
-            logger.debug(
-                "SERVICE frame from panel: func=0x%04X, data=%s", func_code, frame.data.hex() if frame.data else "empty"
+            logger.info(
+                "SERVICE frame: dest=%d, func=0x%04X, data=%s", frame.destination, func_code, frame.data.hex() if frame.data else "empty"
             )
             # Check if this is a token grant (GET_TOKEN function code)
             if func_code == GET_TOKEN_FUNC:
@@ -443,36 +453,49 @@ class ProtocolHandler:
         with GET_TOKEN function code). This matches the original
         webserver's checkIfMultimaster() + passive listen behavior.
 
-        Falls back to bus-idle detection if no token received within
-        the timeout period.
+        When token_required=True, waits indefinitely (like the original
+        webserver which never sends without the token). When False,
+        falls back after token_timeout seconds.
         """
-        if self._token_timeout <= 0:
+        if not self._token_required and self._token_timeout <= 0:
             return
 
-        loop = asyncio.get_event_loop()
-        deadline = loop.time() + self._token_timeout
-        consecutive_idle = 0
-        required_idle = 3  # 3 x 0.5s = 1.5s of silence (fallback)
+        if self._token_required:
+            logger.debug("Waiting for token from panel (indefinite, token_required=True)...")
+        else:
+            logger.debug("Waiting for token from panel (%.0fs timeout)...", self._token_timeout)
 
-        logger.debug("Waiting for token from panel...")
+        loop = asyncio.get_event_loop()
+        deadline = None if self._token_required else loop.time() + self._token_timeout
 
         while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                logger.debug("Token wait timed out, falling back to bus-idle")
-                return
+            if deadline is not None:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    logger.debug("Token wait timed out after %.0fs, proceeding without token", self._token_timeout)
+                    return
+                read_timeout = min(remaining, 0.5)
+            else:
+                read_timeout = 0.5
 
-            read_timeout = min(remaining, 0.5)
             frame = await self._reader.read_frame(timeout=read_timeout)
 
             if frame is None:
-                consecutive_idle += 1
-                if consecutive_idle >= required_idle:
-                    logger.debug("Bus idle detected (fallback), proceeding without token")
-                    return
                 continue
 
-            consecutive_idle = 0
+            # Log ALL bus traffic for debugging (before filtering)
+            logger.debug(
+                "Bus: src=%d dst=%d cmd=0x%02X len=%d",
+                frame.source,
+                frame.destination,
+                frame.command,
+                len(frame.data) if frame.data else 0,
+            )
+
+            # Special logging for SERVICE frames to us
+            if frame.command == SERVICE_CMD and frame.destination == SRC_ADDRESS:
+                func_code = struct.unpack("<H", frame.data[0:2])[0] if len(frame.data) >= 2 else 0
+                logger.info("SERVICE to US (131): func=0x%04X", func_code)
 
             # Only process frames addressed to us or broadcast
             if frame.destination != SRC_ADDRESS and frame.destination != 0xFFFF:
@@ -519,7 +542,7 @@ class ProtocolHandler:
             logger.warning(f"Failed to send command 0x{command:02X}")
             return None
 
-        # Clear reader buffer after write (matches original's clearFrameBuffer)
+        # Clear stale frames from buffer before reading response
         self._reader.reset_buffer()
 
         if expected_response is None:
@@ -528,6 +551,7 @@ class ProtocolHandler:
         loop = asyncio.get_event_loop()
         deadline = loop.time() + self._request_timeout
         skipped = 0
+        consecutive_silence = 0
 
         while True:
             remaining = deadline - loop.time()
@@ -539,8 +563,14 @@ class ProtocolHandler:
             response = await self._reader.read_frame(timeout=read_timeout)
 
             if response is None:
-                # Bus quiet - response isn't coming, let caller retry
-                break
+                consecutive_silence += 1
+                if consecutive_silence >= 3:
+                    # 0.6s of consecutive silence - response isn't coming
+                    break
+                continue
+
+            # Any frame received resets the silence counter
+            consecutive_silence = 0
 
             # Skip frames not addressed to us
             if response.destination != SRC_ADDRESS and response.destination != 0xFFFF:
@@ -785,8 +815,6 @@ class ProtocolHandler:
                         entries = await self.fetch_param_structs(index, batch_size)
                         if entries:
                             break
-                        if not self._has_token:
-                            await asyncio.sleep(0.5)
                     if not entries:
                         consecutive_failures += 1
                         if consecutive_failures >= 3:
@@ -841,8 +869,6 @@ class ProtocolHandler:
                         values = await self.fetch_param_values(start_index, count)
                         if values:
                             break
-                        if not self._has_token:
-                            await asyncio.sleep(0.5)
 
                     if not values:
                         current_pos = batch_end
