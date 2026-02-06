@@ -449,12 +449,27 @@ class TestProtocolHandler:
         handler._writer.write_frame = AsyncMock(return_value=True)
         handler._reader.read_frame = AsyncMock(return_value=response_frame)
 
-        entries = await handler.fetch_param_structs(0, 50)
+        entries, end_of_range = await handler.fetch_param_structs(0, 50)
 
         assert len(entries) == 1
         assert entries[0].name == "TestParam"
         assert entries[0].type_code == DataType.INT16
+        assert end_of_range is False
         assert handler.param_count == 1
+
+    @pytest.mark.asyncio
+    async def test_fetch_param_structs_no_data(self):
+        """Test that NO_DATA response signals end of range."""
+        handler, conn, cache = self._make_handler()
+
+        no_data_frame = self._response_frame(Command.NO_DATA, b"")
+        handler._writer.write_frame = AsyncMock(return_value=True)
+        handler._reader.read_frame = AsyncMock(return_value=no_data_frame)
+
+        entries, end_of_range = await handler.fetch_param_structs(500, 100)
+
+        assert len(entries) == 0
+        assert end_of_range is True
 
     @pytest.mark.asyncio
     async def test_fetch_param_values(self):
@@ -702,31 +717,46 @@ class TestProtocolHandler:
 
     @pytest.mark.asyncio
     async def test_discover_params(self):
-        """Test parameter discovery."""
+        """Test parameter discovery with NO_DATA termination."""
         handler, conn, cache = self._make_handler()
 
-        # First call returns 2 params, second call returns empty (end of params)
+        # First call returns 2 regulator params, second returns NO_DATA
+        # Third call returns 1 panel param, fourth returns NO_DATA
         call_count = 0
 
-        async def mock_fetch_structs(start_index, count):
+        async def mock_fetch_structs(start_index, count, destination=None):
             nonlocal call_count
             call_count += 1
-            if call_count == 1:
-                entries = [
-                    ParamStructEntry(0, "A", 0, DataType.INT16, True),
-                    ParamStructEntry(1, "B", 0, DataType.UINT8, False),
-                ]
-                for e in entries:
-                    handler._param_structs[e.index] = e
-                return entries
-            return []
+            if destination is None:
+                # Regulator params
+                if start_index == 0:
+                    entries = [
+                        ParamStructEntry(0, "A", 0, DataType.INT16, True),
+                        ParamStructEntry(1, "B", 0, DataType.UINT8, False),
+                    ]
+                    for e in entries:
+                        handler._param_structs[e.index] = e
+                    return entries, False
+                return [], True  # NO_DATA
+            else:
+                # Panel params (destination=PANEL_ADDRESS)
+                if start_index == 0:
+                    entries = [
+                        ParamStructEntry(0, "PanelA", 0, DataType.INT16, True),
+                    ]
+                    for e in entries:
+                        handler._param_structs[e.index] = e
+                    return entries, False
+                return [], True  # NO_DATA
 
         handler.fetch_param_structs = mock_fetch_structs
+        handler._has_token = True
 
         total = await handler.discover_params()
 
-        assert total == 2
-        assert handler.param_count == 2
+        # 2 regulator + 1 panel = 3
+        assert total == 3
+        assert handler.param_count == 3
 
     @pytest.mark.asyncio
     async def test_poll_all_params(self):
@@ -819,7 +849,7 @@ class TestProtocolHandler:
         }
 
         # Mock fetch_param_structs to return nothing (simulating communication failure)
-        handler.fetch_param_structs = AsyncMock(return_value=[])
+        handler.fetch_param_structs = AsyncMock(return_value=([], False))
 
         total = await handler.discover_params()
 
@@ -1002,8 +1032,9 @@ class TestProtocolHandler:
         handler._writer.write_frame = AsyncMock(return_value=True)
         handler._reader.read_frame = AsyncMock(side_effect=[wrong_frame, correct_frame])
 
-        entries = await handler.fetch_param_structs(0, 50)
+        entries, end_of_range = await handler.fetch_param_structs(0, 50)
 
         assert len(entries) == 1
         assert entries[0].name == "RightParam"
         assert entries[0].index == 0
+        assert end_of_range is False

@@ -38,7 +38,7 @@ class TestSerialConnection:
 
             assert result is True
             assert conn.connected is True
-            # open() is called twice: once for baud toggle reset, once for actual connection
+            # Called twice: once for baud toggle, once for actual connection
             assert mock_serial.open.call_count >= 1
 
     @pytest.mark.asyncio
@@ -70,7 +70,6 @@ class TestSerialConnection:
             await conn.disconnect()
 
             assert conn.connected is False
-            # close() may be called multiple times (baud toggle + disconnect)
             assert mock_serial.close.call_count >= 1
 
     @pytest.mark.asyncio

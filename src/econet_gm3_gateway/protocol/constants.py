@@ -30,6 +30,8 @@ class Command(IntEnum):
     # Read operations
     GET_SETTINGS = 0x00
     GET_SETTINGS_RESPONSE = 0x80
+    GET_PARAMS_STRUCT = 0x01
+    GET_PARAMS_STRUCT_RESPONSE = 0x81
     GET_PARAMS_STRUCT_WITH_RANGE = 0x02
     GET_PARAMS_STRUCT_WITH_RANGE_RESPONSE = 0x82
     GET_PARAMS = 0x40
@@ -38,6 +40,10 @@ class Command(IntEnum):
     # Write operations
     MODIFY_PARAM = 0x29
     MODIFY_PARAM_RESPONSE = 0xA9
+
+    # Status responses
+    ERROR = 0x7E
+    NO_DATA = 0x7F
 
 
 # ============================================================================

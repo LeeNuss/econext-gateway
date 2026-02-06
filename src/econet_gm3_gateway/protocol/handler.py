@@ -266,6 +266,77 @@ def parse_struct_response(data: bytes) -> list[ParamStructEntry]:
     return entries
 
 
+def parse_struct_response_no_range(data: bytes) -> list[ParamStructEntry]:
+    """Parse a GET_PARAMS_STRUCT_RESPONSE payload (WITHOUT range data).
+
+    Used for panel parameters (command 0x01/0x81). Format differs from
+    WITH_RANGE: instead of (type_byte, extra_byte, 4-byte range), it has
+    (exponent_byte, type_byte) with no range data.
+
+    Args:
+        data: Response payload bytes.
+
+    Returns:
+        List of ParamStructEntry instances (min/max always None).
+    """
+    if len(data) < 3:
+        raise ValueError(f"Struct response too short: {len(data)} bytes")
+
+    params_no = data[0]
+    first_index = struct.unpack("<H", data[1:3])[0]
+
+    entries = []
+    offset = 3
+
+    for i in range(params_no):
+        if offset >= len(data):
+            break
+
+        # Read name (null-terminated)
+        null_pos = data.find(b"\x00", offset)
+        if null_pos == -1:
+            break
+        name = data[offset:null_pos].decode("utf-8", errors="replace")
+        offset = null_pos + 1
+
+        # Read unit string (null-terminated)
+        null_pos = data.find(b"\x00", offset)
+        if null_pos == -1:
+            break
+        unit_str = data[offset:null_pos].decode("utf-8", errors="replace")
+        offset = null_pos + 1
+
+        # Read exponent and type bytes (WITHOUT_RANGE format)
+        if offset + 2 > len(data):
+            break
+        _exp, type_byte = struct.unpack("<bB", data[offset : offset + 2])
+        offset += 2
+
+        type_code = type_byte & 0x0F
+        writable = bool(type_byte & 0x20)
+
+        # No range data in WITHOUT_RANGE format
+
+        # Map unit string to code
+        unit_code = UNIT_STRING_MAP.get(unit_str, 0)
+
+        # Sanitize name: replace spaces
+        name = name.replace(" ", "_").strip()
+
+        param_index = first_index + i
+        entries.append(
+            ParamStructEntry(
+                index=param_index,
+                name=name,
+                unit=unit_code,
+                type_code=type_code,
+                writable=writable,
+            )
+        )
+
+    return entries
+
+
 def build_get_params_request(start_index: int, count: int) -> bytes:
     """Build GET_PARAMS request payload.
 
@@ -513,6 +584,7 @@ class ProtocolHandler:
         command: int,
         data: bytes = b"",
         expected_response: int | None = None,
+        also_accept_commands: list[int] | None = None,
         response_validator: Callable[[Frame], bool] | None = None,
         destination: int | None = None,
     ) -> Frame | None:
@@ -527,8 +599,12 @@ class ProtocolHandler:
             command: Command code to send.
             data: Request payload.
             expected_response: Expected response command code.
+            also_accept_commands: Additional command codes to accept as
+                terminal responses (e.g., NO_DATA, ERROR). These bypass
+                the response_validator.
             response_validator: Optional callable to validate response data.
                 If provided and returns False, the frame is skipped.
+                Only applied to expected_response frames, not also_accept.
             destination: Override destination address (default: self._destination).
 
         Returns:
@@ -542,11 +618,14 @@ class ProtocolHandler:
             logger.warning(f"Failed to send command 0x{command:02X}")
             return None
 
-        # Clear stale frames from buffer before reading response
-        self._reader.reset_buffer()
+        # Don't clear buffer between requests - the frame validation
+        # (command + first_index check) handles filtering stale frames.
+        # Clearing the buffer here can discard late-arriving responses.
 
         if expected_response is None:
             return None
+
+        accept_set = set(also_accept_commands) if also_accept_commands else set()
 
         loop = asyncio.get_event_loop()
         deadline = loop.time() + self._request_timeout
@@ -565,7 +644,7 @@ class ProtocolHandler:
             if response is None:
                 consecutive_silence += 1
                 if consecutive_silence >= 3:
-                    # 0.6s of consecutive silence - response isn't coming
+                    # 0.6s of silence - response isn't coming
                     break
                 continue
 
@@ -577,8 +656,10 @@ class ProtocolHandler:
                 skipped += 1
                 continue
 
-            # Handle panel frames addressed to us (token protocol)
-            if response.source == PANEL_ADDRESS:
+            # Handle panel protocol frames (IDENTIFY and SERVICE for token)
+            # Only intercept these specific commands; let data responses
+            # (e.g., 0x81 struct response) through when querying the panel
+            if response.source == PANEL_ADDRESS and response.command in (IDENTIFY_CMD, SERVICE_CMD):
                 await self._handle_panel_frame(response)
                 skipped += 1
                 continue
@@ -587,6 +668,11 @@ class ProtocolHandler:
             if response.source != dest and dest != 0xFFFF:
                 skipped += 1
                 continue
+
+            # Accept also_accept_commands immediately (terminal responses
+            # like NO_DATA/ERROR that don't need validation)
+            if response.command in accept_set:
+                return response
 
             # Skip wrong response commands
             if response.command != expected_response:
@@ -626,17 +712,38 @@ class ProtocolHandler:
         else:
             logger.debug("GET_SETTINGS got no response (non-critical)")
 
-    async def fetch_param_structs(self, start_index: int = 0, count: int = 50) -> list[ParamStructEntry]:
+    # Sentinel returned by fetch_param_structs when controller says "no more data"
+    _NO_MORE_DATA: list[ParamStructEntry] = []
+
+    async def fetch_param_structs(
+        self,
+        start_index: int = 0,
+        count: int = 50,
+        destination: int | None = None,
+        with_range: bool = True,
+    ) -> tuple[list[ParamStructEntry], bool]:
         """Fetch parameter structure/metadata from controller.
 
         Args:
-            start_index: Starting parameter index.
+            start_index: Starting parameter index (wire index, not stored index).
             count: Number of parameters to request.
+            destination: Override destination address.
+            with_range: If True, use GET_PARAMS_STRUCT_WITH_RANGE (0x02) which
+                returns min/max range data. If False, use GET_PARAMS_STRUCT (0x01)
+                which has exponent+type but no range. Panel params use False.
 
         Returns:
-            List of parameter structure entries.
+            Tuple of (entries, end_of_range). end_of_range is True when the
+            controller explicitly signals no more data (NO_DATA frame 0x7F).
         """
         data = build_struct_request(start_index, count)
+
+        if with_range:
+            send_cmd = Command.GET_PARAMS_STRUCT_WITH_RANGE
+            expect_cmd = Command.GET_PARAMS_STRUCT_WITH_RANGE_RESPONSE
+        else:
+            send_cmd = Command.GET_PARAMS_STRUCT
+            expect_cmd = Command.GET_PARAMS_STRUCT_RESPONSE
 
         def validate_first_index(frame: Frame) -> bool:
             if len(frame.data) < 3:
@@ -645,22 +752,37 @@ class ProtocolHandler:
             return first_index == start_index
 
         response = await self.send_and_receive(
-            Command.GET_PARAMS_STRUCT_WITH_RANGE,
+            send_cmd,
             data,
-            expected_response=Command.GET_PARAMS_STRUCT_WITH_RANGE_RESPONSE,
+            expected_response=expect_cmd,
+            also_accept_commands=[Command.NO_DATA, Command.ERROR],
             response_validator=validate_first_index,
+            destination=destination,
         )
 
         if response is None:
-            return []
+            return [], False
 
-        entries = parse_struct_response(response.data)
+        # Controller explicitly says "no more data at this index"
+        if response.command == Command.NO_DATA:
+            logger.debug("Controller returned NO_DATA for index %d", start_index)
+            return [], True
+
+        # Controller returned an error (e.g., doesn't support with-range)
+        if response.command == Command.ERROR:
+            logger.debug("Controller returned ERROR for index %d", start_index)
+            return [], True
+
+        if with_range:
+            entries = parse_struct_response(response.data)
+        else:
+            entries = parse_struct_response_no_range(response.data)
 
         for entry in entries:
             self._param_structs[entry.index] = entry
 
         logger.debug(f"Fetched {len(entries)} param structs starting at index {start_index}")
-        return entries
+        return entries, False
 
     async def fetch_param_values(self, start_index: int, count: int) -> list[tuple[int, Any]]:
         """Fetch parameter values from controller.
@@ -784,60 +906,173 @@ class ProtocolHandler:
         logger.warning(f"Failed to write parameter {name}")
         return False
 
-    async def discover_params(self, max_params: int = 20000) -> int:
-        """Discover all parameters by fetching structures.
-
-        Waits for token from the master panel (responds to IDENTIFY),
-        then sends GET_SETTINGS followed by struct requests back-to-back.
-        Returns token when done.
+    async def _discover_batch(
+        self,
+        wire_index: int,
+        store_offset: int,
+        destination: int | None,
+        with_range: bool,
+        structs: dict[int, ParamStructEntry],
+    ) -> tuple[int, bool, bool]:
+        """Try to fetch one batch of parameter structs.
 
         Args:
-            max_params: Maximum number of parameters to discover.
+            wire_index: Starting wire index for this batch.
+            store_offset: Offset added to wire index for storage.
+            destination: Destination address override.
+            with_range: Whether to use WITH_RANGE or WITHOUT_RANGE.
+            structs: Dict to add discovered entries to (mutated in place).
+
+        Returns:
+            Tuple of (next_wire_index, range_done, token_expired).
+            - next_wire_index: Where to continue from.
+            - range_done: True if controller sent NO_DATA (range exhausted).
+            - token_expired: True if request timed out (likely token expired).
+        """
+        batch_size = 100  # Match original's maxNumStructDPParams
+
+        # Try up to 2 times - first failure might be transient
+        # (bus noise, controller busy after panel communication)
+        for attempt in range(2):
+            entries, end_of_range = await self.fetch_param_structs(
+                wire_index, batch_size, destination=destination, with_range=with_range,
+            )
+            if entries or end_of_range:
+                break
+
+        if end_of_range:
+            return wire_index, True, False
+
+        if not entries:
+            return wire_index, False, True  # Token likely expired
+
+        for entry in entries:
+            stored_index = entry.index + store_offset
+            entry.index = stored_index
+            structs[stored_index] = entry
+
+        # Next batch starts after last received param (wire index)
+        next_index = entries[-1].index - store_offset + 1
+        return next_index, False, False
+
+    async def discover_params(self) -> int:
+        """Discover all parameters across multiple token grants.
+
+        The bus token has a limited time (~2s). Each token grant allows
+        a few batches of struct requests. Discovery resumes from where
+        it left off on each new token grant.
+
+        Discovers two address spaces:
+        1. Regulator params: dest=regulator, WITH_RANGE (0x02), stored at 0+
+        2. Panel params: dest=panel (100), WITHOUT_RANGE (0x01), stored at 10000+
 
         Returns:
             Total number of parameters discovered.
         """
         async with self._lock:
-            try:
-                await self._wait_for_token()
+            new_structs: dict[int, ParamStructEntry] = {}
 
-                if self._has_token:
-                    await self._send_get_settings()
+            # Discovery state for each address space
+            spaces = [
+                {
+                    "label": "regulator",
+                    "wire_index": 0,
+                    "store_offset": 0,
+                    "destination": None,
+                    "with_range": True,
+                    "done": False,
+                },
+                {
+                    "label": "panel",
+                    "wire_index": 0,
+                    "store_offset": 10000,
+                    "destination": PANEL_ADDRESS,
+                    "with_range": False,
+                    "done": False,
+                },
+            ]
 
-                new_structs: dict[int, ParamStructEntry] = {}
-                index = 0
-                batch_size = 100  # Match original's maxNumStructDPParams
-                consecutive_failures = 0
+            max_token_grants = 100  # Safety limit
+            grants_used = 0
 
-                while index < max_params:
-                    entries = None
-                    for _ in range(RETRY_ATTEMPTS):
-                        entries = await self.fetch_param_structs(index, batch_size)
-                        if entries:
-                            break
-                    if not entries:
-                        consecutive_failures += 1
-                        if consecutive_failures >= 3:
-                            # 3 consecutive failed batches = end of param range
-                            break
-                        index += batch_size
-                        continue
-                    consecutive_failures = 0
-                    for entry in entries:
-                        new_structs[entry.index] = entry
-                    index = entries[-1].index + 1
+            while any(not s["done"] for s in spaces) and grants_used < max_token_grants:
+                # Get a token from the panel
+                try:
+                    await self._wait_for_token()
+                except Exception:
+                    logger.error("Failed to get token during discovery")
+                    break
 
-                if new_structs:
-                    self._param_structs = new_structs
-                    self._total_params = len(self._param_structs)
-                    logger.info(f"Discovered {self._total_params} parameters")
-                else:
-                    logger.warning("Parameter discovery returned no results, keeping existing structures")
+                grants_used += 1
+                batches_this_grant = 0
 
-                return len(self._param_structs)
-            finally:
-                if self._has_token:
-                    await self._return_token()
+                try:
+                    # Clear reader buffer to discard any stale partial
+                    # frames from the panel's previous communication
+                    self._reader.reset_buffer()
+
+                    # Use this token grant to discover as many batches as possible
+                    for space in spaces:
+                        if space["done"]:
+                            continue
+
+                        # Send batches until token expires or range ends
+                        while True:
+                            prev_count = len(new_structs)
+                            next_idx, range_done, token_expired = await self._discover_batch(
+                                wire_index=space["wire_index"],
+                                store_offset=space["store_offset"],
+                                destination=space["destination"],
+                                with_range=space["with_range"],
+                                structs=new_structs,
+                            )
+
+                            space["wire_index"] = next_idx
+                            if len(new_structs) > prev_count:
+                                batches_this_grant += 1
+
+                            if range_done:
+                                space["done"] = True
+                                reg_count = sum(1 for k in new_structs if k < 10000)
+                                panel_count = sum(1 for k in new_structs if k >= 10000)
+                                logger.info(
+                                    "Finished %s discovery (%d params so far: %d reg, %d panel)",
+                                    space["label"], len(new_structs), reg_count, panel_count,
+                                )
+                                break
+
+                            if token_expired:
+                                logger.debug(
+                                    "Token expired during %s discovery at index %d",
+                                    space["label"], space["wire_index"],
+                                )
+                                break
+
+                    # Log progress per token grant
+                    if batches_this_grant > 0 or grants_used % 5 == 0:
+                        reg_count = sum(1 for k in new_structs if k < 10000)
+                        panel_count = sum(1 for k in new_structs if k >= 10000)
+                        logger.info(
+                            "Grant %d: %d total params so far (%d reg, %d panel)",
+                            grants_used, len(new_structs), reg_count, panel_count,
+                        )
+                finally:
+                    if self._has_token:
+                        await self._return_token()
+
+            if new_structs:
+                self._param_structs = new_structs
+                self._total_params = len(self._param_structs)
+                reg_count = sum(1 for k in new_structs if k < 10000)
+                panel_count = sum(1 for k in new_structs if k >= 10000)
+                logger.info(
+                    "Discovery complete: %d parameters (%d regulator, %d panel) in %d token grants",
+                    self._total_params, reg_count, panel_count, grants_used,
+                )
+            else:
+                logger.warning("Parameter discovery returned no results, keeping existing structures")
+
+            return len(self._param_structs)
 
     async def poll_all_params(self) -> int:
         """Poll all known parameters and update cache.
