@@ -247,6 +247,41 @@ class TestParseStructResponse:
         assert entries[0].min_value is None
         assert entries[0].max_value is None
 
+    def test_param_ref_min_max(self):
+        """Test that parameter index references are stored separately from literal values."""
+        data = struct.pack("<BH", 1, 103)
+        data += b"HDWTSetPoint\x00"
+        data += b"C\x00"
+        # type=INT16|writable (0x22), extra=0x30 (bit4=min ref, bit5=max ref)
+        data += struct.pack("<BB", 0x22, 0x30)
+        data += struct.pack("<HH", 107, 108)  # param refs, not literal values
+
+        entries = parse_struct_response(data)
+
+        assert len(entries) == 1
+        assert entries[0].index == 103
+        assert entries[0].min_value is None
+        assert entries[0].max_value is None
+        assert entries[0].min_param_ref == 107
+        assert entries[0].max_param_ref == 108
+
+    def test_mixed_literal_and_ref(self):
+        """Test literal min with referenced max."""
+        data = struct.pack("<BH", 1, 107)
+        data += b"HDWMinSetTemp\x00"
+        data += b"C\x00"
+        # type=INT16|writable (0x22), extra=0x20 (bit5=max ref, min is literal)
+        data += struct.pack("<BB", 0x22, 0x20)
+        data += struct.pack("<hH", 20, 108)  # min=20 literal, max=108 param ref
+
+        entries = parse_struct_response(data)
+
+        assert len(entries) == 1
+        assert entries[0].min_value == 20.0
+        assert entries[0].max_value is None
+        assert entries[0].min_param_ref is None
+        assert entries[0].max_param_ref == 108
+
     def test_too_short(self):
         """Test with too-short data."""
         with pytest.raises(ValueError, match="too short"):
@@ -859,6 +894,74 @@ class TestProtocolHandler:
         # Auth header is "USER-000\x004096\x00" in ASCII
         auth = data[:14]
         assert auth == b"USER-000\x004096\x00"
+
+    @pytest.mark.asyncio
+    async def test_resolve_min_max_with_param_refs(self):
+        """Test that dynamic min/max refs are resolved from cached param values."""
+        handler, conn, cache = self._make_handler()
+
+        # Set up param structs: HDWTSetPoint refs HDWMinSetTemp and HDWMaxSetTemp
+        handler._param_structs = {
+            103: ParamStructEntry(
+                index=103, name="HDWTSetPoint", unit=1, type_code=DataType.INT16,
+                writable=True, min_param_ref=107, max_param_ref=108,
+            ),
+            107: ParamStructEntry(
+                index=107, name="HDWMinSetTemp", unit=0, type_code=DataType.INT16,
+                writable=True, min_value=20.0, max_value=65.0,
+            ),
+            108: ParamStructEntry(
+                index=108, name="HDWMaxSetTemp", unit=0, type_code=DataType.INT16,
+                writable=True, min_value=35.0, max_value=80.0,
+            ),
+        }
+
+        # Cache the referenced params with their current values
+        await cache.set(Parameter(index=107, name="HDWMinSetTemp", value=35, type=2, unit=0, writable=True))
+        await cache.set(Parameter(index=108, name="HDWMaxSetTemp", value=65, type=2, unit=0, writable=True))
+
+        entry = handler._param_structs[103]
+        min_val, max_val = await handler._resolve_min_max(entry)
+
+        assert min_val == 35.0
+        assert max_val == 65.0
+
+    @pytest.mark.asyncio
+    async def test_resolve_min_max_ref_not_cached(self):
+        """Test that unresolvable refs return None."""
+        handler, conn, cache = self._make_handler()
+
+        handler._param_structs = {
+            103: ParamStructEntry(
+                index=103, name="HDWTSetPoint", unit=1, type_code=DataType.INT16,
+                writable=True, min_param_ref=107, max_param_ref=108,
+            ),
+            107: ParamStructEntry(
+                index=107, name="HDWMinSetTemp", unit=0, type_code=DataType.INT16,
+                writable=True,
+            ),
+        }
+        # Referenced params not in cache yet
+        min_val, max_val = await handler._resolve_min_max(handler._param_structs[103])
+
+        assert min_val is None
+        assert max_val is None
+
+    @pytest.mark.asyncio
+    async def test_resolve_min_max_literal_values(self):
+        """Test that literal min/max values pass through unchanged."""
+        handler, conn, cache = self._make_handler()
+
+        entry = ParamStructEntry(
+            index=0, name="Temp", unit=1, type_code=DataType.INT16,
+            writable=True, min_value=10.0, max_value=80.0,
+        )
+        handler._param_structs = {0: entry}
+
+        min_val, max_val = await handler._resolve_min_max(entry)
+
+        assert min_val == 10.0
+        assert max_val == 80.0
 
     @pytest.mark.asyncio
     async def test_discover_params(self):

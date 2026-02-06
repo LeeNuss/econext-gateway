@@ -51,6 +51,8 @@ class ParamStructEntry:
         writable: bool,
         min_value: float | None = None,
         max_value: float | None = None,
+        min_param_ref: int | None = None,
+        max_param_ref: int | None = None,
     ):
         self.index = index
         self.name = name
@@ -59,6 +61,9 @@ class ParamStructEntry:
         self.writable = writable
         self.min_value = min_value
         self.max_value = max_value
+        # Dynamic min/max: index of another parameter whose value is the limit
+        self.min_param_ref = min_param_ref
+        self.max_param_ref = max_param_ref
 
 
 # Unit string to code mapping
@@ -224,16 +229,18 @@ def parse_struct_response(data: bytes) -> list[ParamStructEntry]:
         # Parse range (4 bytes)
         min_value = None
         max_value = None
+        min_param_ref = None
+        max_param_ref = None
 
         if offset + 4 > len(data):
             break
 
         # Min value
         if extra_byte & 0x10:
-            # Original min value (unsigned)
-            min_value = float(struct.unpack("<H", data[offset : offset + 2])[0])
+            # Dynamic min: value is a parameter index reference, not a literal
+            min_param_ref = struct.unpack("<H", data[offset : offset + 2])[0]
         elif not (extra_byte & 0x40):
-            # Regular min value
+            # Literal min value
             if type_code in (DataType.UINT8, DataType.UINT16, DataType.UINT32):
                 min_value = float(struct.unpack("<H", data[offset : offset + 2])[0])
             else:
@@ -241,7 +248,8 @@ def parse_struct_response(data: bytes) -> list[ParamStructEntry]:
 
         # Max value
         if extra_byte & 0x20:
-            max_value = float(struct.unpack("<H", data[offset + 2 : offset + 4])[0])
+            # Dynamic max: value is a parameter index reference, not a literal
+            max_param_ref = struct.unpack("<H", data[offset + 2 : offset + 4])[0]
         elif not (extra_byte & 0x80):
             if type_code in (DataType.UINT8, DataType.UINT16, DataType.UINT32):
                 max_value = float(struct.unpack("<H", data[offset + 2 : offset + 4])[0])
@@ -266,6 +274,8 @@ def parse_struct_response(data: bytes) -> list[ParamStructEntry]:
                 writable=writable,
                 min_value=min_value,
                 max_value=max_value,
+                min_param_ref=min_param_ref,
+                max_param_ref=max_param_ref,
             )
         )
 
@@ -440,6 +450,31 @@ class ProtocolHandler:
         self._running = False
         self._lock = asyncio.Lock()
         self._has_token = False
+
+    async def _resolve_min_max(self, entry: ParamStructEntry) -> tuple[float | None, float | None]:
+        """Resolve min/max values, following parameter index references.
+
+        When a parameter's min/max is a reference to another parameter's index,
+        look up that parameter's current value in the cache to get the actual limit.
+        """
+        min_val = entry.min_value
+        max_val = entry.max_value
+
+        if entry.min_param_ref is not None:
+            ref = self._param_structs.get(entry.min_param_ref)
+            if ref is not None and ref.name:
+                cached = await self._cache.get(ref.name)
+                if cached is not None:
+                    min_val = float(cached.value)
+
+        if entry.max_param_ref is not None:
+            ref = self._param_structs.get(entry.max_param_ref)
+            if ref is not None and ref.name:
+                cached = await self._cache.get(ref.name)
+                if cached is not None:
+                    max_val = float(cached.value)
+
+        return min_val, max_val
 
     @property
     def connected(self) -> bool:
@@ -864,6 +899,7 @@ class ProtocolHandler:
             if entry is None or not entry.name:
                 continue
 
+            min_val, max_val = await self._resolve_min_max(entry)
             param = Parameter(
                 index=index,
                 name=entry.name,
@@ -871,8 +907,8 @@ class ProtocolHandler:
                 type=entry.type_code,
                 unit=entry.unit,
                 writable=entry.writable,
-                min_value=entry.min_value,
-                max_value=entry.max_value,
+                min_value=min_val,
+                max_value=max_val,
             )
             parameters.append(param)
 
@@ -905,11 +941,13 @@ class ProtocolHandler:
         if not entry.writable:
             raise ValueError(f"Parameter is read-only: {name}")
 
-        if entry.min_value is not None and float(value) < entry.min_value:
-            raise ValueError(f"Value {value} below minimum {entry.min_value} for {name}")
+        min_val, max_val = await self._resolve_min_max(entry)
 
-        if entry.max_value is not None and float(value) > entry.max_value:
-            raise ValueError(f"Value {value} above maximum {entry.max_value} for {name}")
+        if min_val is not None and float(value) < min_val:
+            raise ValueError(f"Value {value} below minimum {min_val} for {name}")
+
+        if max_val is not None and float(value) > max_val:
+            raise ValueError(f"Value {value} above maximum {max_val} for {name}")
 
         data = build_modify_param_request(param.index, value, entry.type_code)
 
@@ -1150,6 +1188,7 @@ class ProtocolHandler:
                         entry = self._param_structs.get(index)
                         if entry is None or not entry.name:
                             continue
+                        min_val, max_val = await self._resolve_min_max(entry)
                         param = Parameter(
                             index=index,
                             name=entry.name,
@@ -1157,8 +1196,8 @@ class ProtocolHandler:
                             type=entry.type_code,
                             unit=entry.unit,
                             writable=entry.writable,
-                            min_value=entry.min_value,
-                            max_value=entry.max_value,
+                            min_value=min_val,
+                            max_value=max_val,
                         )
                         parameters.append(param)
 
