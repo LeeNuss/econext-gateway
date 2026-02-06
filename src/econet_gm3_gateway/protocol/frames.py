@@ -153,7 +153,4 @@ class Frame:
 
     def __repr__(self) -> str:
         """String representation for debugging."""
-        return (
-            f"Frame(dest={self.destination}, src={self.source}, "
-            f"cmd=0x{self.command:02X}, data_len={len(self.data)})"
-        )
+        return f"Frame(dest={self.destination}, src={self.source}, cmd=0x{self.command:02X}, data_len={len(self.data)})"

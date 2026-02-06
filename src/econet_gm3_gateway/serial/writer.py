@@ -42,9 +42,7 @@ class FrameWriter:
         """Get writer statistics."""
         return self._stats.copy()
 
-    async def write_frame(
-        self, frame: Frame, timeout: float | None = None, flush_after: bool = False
-    ) -> bool:
+    async def write_frame(self, frame: Frame, timeout: float | None = None, flush_after: bool = False) -> bool:
         """
         Write a frame to the serial connection with retry logic.
 

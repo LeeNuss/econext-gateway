@@ -27,7 +27,6 @@ from econet_gm3_gateway.protocol.constants import (
 from econet_gm3_gateway.protocol.frames import Frame
 from econet_gm3_gateway.protocol.handler import ParamStructEntry, ProtocolHandler
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -190,10 +189,13 @@ class TestDiscoveryIntegration:
         """Struct response with 2 params is parsed and stored."""
         handler = make_handler(fake_conn, cache)
 
-        struct_data = build_struct_with_range(0, [
-            ("Temperature", "C", DataType.INT16, True, 20, 80),
-            ("Pressure", "%", DataType.UINT8, False, None, None),
-        ])
+        struct_data = build_struct_with_range(
+            0,
+            [
+                ("Temperature", "C", DataType.INT16, True, 20, 80),
+                ("Pressure", "%", DataType.UINT8, False, None, None),
+            ],
+        )
         fake_conn.queue_frame(1, Command.GET_PARAMS_STRUCT_WITH_RANGE_RESPONSE, struct_data)
         fake_conn.queue_frame(1, Command.NO_DATA)
         # Panel: no params
@@ -215,17 +217,23 @@ class TestDiscoveryIntegration:
         handler = make_handler(fake_conn, cache)
 
         # Regulator: 2 params
-        reg_data = build_struct_with_range(0, [
-            ("RegTemp", "C", DataType.INT16, True, 0, 100),
-            ("RegBool", "", DataType.BOOL, False, None, None),
-        ])
+        reg_data = build_struct_with_range(
+            0,
+            [
+                ("RegTemp", "C", DataType.INT16, True, 0, 100),
+                ("RegBool", "", DataType.BOOL, False, None, None),
+            ],
+        )
         fake_conn.queue_frame(1, Command.GET_PARAMS_STRUCT_WITH_RANGE_RESPONSE, reg_data)
         fake_conn.queue_frame(1, Command.NO_DATA)
 
         # Panel: 1 param
-        panel_data = build_struct_no_range(0, [
-            ("PanelTemp", "C", DataType.INT16, True),
-        ])
+        panel_data = build_struct_no_range(
+            0,
+            [
+                ("PanelTemp", "C", DataType.INT16, True),
+            ],
+        )
         fake_conn.queue_frame(PANEL_ADDRESS, Command.GET_PARAMS_STRUCT_RESPONSE, panel_data)
         fake_conn.queue_frame(PANEL_ADDRESS, Command.NO_DATA)
 
@@ -276,10 +284,13 @@ class TestPollIntegration:
             1: ParamStructEntry(1, "Humidity", 6, DataType.UINT8, False),
         }
 
-        resp_data = build_params_response(0, [
-            (42, DataType.INT16),
-            (75, DataType.UINT8),
-        ])
+        resp_data = build_params_response(
+            0,
+            [
+                (42, DataType.INT16),
+                (75, DataType.UINT8),
+            ],
+        )
         fake_conn.queue_frame(1, Command.GET_PARAMS_RESPONSE, resp_data)
 
         count = await handler.poll_all_params()
@@ -311,11 +322,18 @@ class TestWriteIntegration:
         handler._param_structs = {
             0: ParamStructEntry(0, "SetPoint", 1, DataType.INT16, True, 20.0, 80.0),
         }
-        await cache.set(Parameter(
-            index=0, name="SetPoint", value=50,
-            type=DataType.INT16, unit=1, writable=True,
-            min_value=20.0, max_value=80.0,
-        ))
+        await cache.set(
+            Parameter(
+                index=0,
+                name="SetPoint",
+                value=50,
+                type=DataType.INT16,
+                unit=1,
+                writable=True,
+                min_value=20.0,
+                max_value=80.0,
+            )
+        )
 
         fake_conn.queue_frame(1, Command.MODIFY_PARAM_RESPONSE, b"\x00\x00\x41\x00")
 
@@ -332,10 +350,16 @@ class TestWriteIntegration:
         handler._param_structs = {
             0: ParamStructEntry(0, "ReadOnly", 1, DataType.INT16, False),
         }
-        await cache.set(Parameter(
-            index=0, name="ReadOnly", value=42,
-            type=DataType.INT16, unit=1, writable=False,
-        ))
+        await cache.set(
+            Parameter(
+                index=0,
+                name="ReadOnly",
+                value=42,
+                type=DataType.INT16,
+                unit=1,
+                writable=False,
+            )
+        )
 
         with pytest.raises(ValueError, match="read-only"):
             await handler.write_param("ReadOnly", 99)
@@ -347,11 +371,18 @@ class TestWriteIntegration:
         handler._param_structs = {
             0: ParamStructEntry(0, "SetPoint", 1, DataType.INT16, True, 20.0, 80.0),
         }
-        await cache.set(Parameter(
-            index=0, name="SetPoint", value=50,
-            type=DataType.INT16, unit=1, writable=True,
-            min_value=20.0, max_value=80.0,
-        ))
+        await cache.set(
+            Parameter(
+                index=0,
+                name="SetPoint",
+                value=50,
+                type=DataType.INT16,
+                unit=1,
+                writable=True,
+                min_value=20.0,
+                max_value=80.0,
+            )
+        )
 
         with pytest.raises(ValueError, match="above maximum"):
             await handler.write_param("SetPoint", 100)
@@ -363,11 +394,18 @@ class TestWriteIntegration:
         handler._param_structs = {
             0: ParamStructEntry(0, "SetPoint", 1, DataType.INT16, True, 20.0, 80.0),
         }
-        await cache.set(Parameter(
-            index=0, name="SetPoint", value=50,
-            type=DataType.INT16, unit=1, writable=True,
-            min_value=20.0, max_value=80.0,
-        ))
+        await cache.set(
+            Parameter(
+                index=0,
+                name="SetPoint",
+                value=50,
+                type=DataType.INT16,
+                unit=1,
+                writable=True,
+                min_value=20.0,
+                max_value=80.0,
+            )
+        )
 
         # No response queued -> send_and_receive times out
         result = await handler.write_param("SetPoint", 65)
@@ -442,11 +480,20 @@ class TestApiIntegration:
         handler._param_structs = {
             0: ParamStructEntry(0, "Temperature", 1, DataType.INT16, True, 20.0, 80.0),
         }
-        asyncio.run(cache.set(Parameter(
-            index=0, name="Temperature", value=42,
-            type=DataType.INT16, unit=1, writable=True,
-            min_value=20.0, max_value=80.0,
-        )))
+        asyncio.run(
+            cache.set(
+                Parameter(
+                    index=0,
+                    name="Temperature",
+                    value=42,
+                    type=DataType.INT16,
+                    unit=1,
+                    writable=True,
+                    min_value=20.0,
+                    max_value=80.0,
+                )
+            )
+        )
 
         with TestClient(app, raise_server_exceptions=False) as client:
             orig = self._swap(fake_conn, cache, handler)
@@ -481,10 +528,18 @@ class TestApiIntegration:
                 assert resp.json()["controller_connected"] is True
 
                 # Add a param -> healthy
-                asyncio.run(c.set(Parameter(
-                    index=0, name="T", value=1,
-                    type=2, unit=0, writable=False,
-                )))
+                asyncio.run(
+                    c.set(
+                        Parameter(
+                            index=0,
+                            name="T",
+                            value=1,
+                            type=2,
+                            unit=0,
+                            writable=False,
+                        )
+                    )
+                )
                 resp = client.get("/health")
                 assert resp.json()["status"] == "healthy"
 

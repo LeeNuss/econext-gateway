@@ -10,7 +10,6 @@ from econet_gm3_gateway.core.cache import ParameterCache
 from econet_gm3_gateway.core.models import Parameter
 from econet_gm3_gateway.protocol.constants import (
     PANEL_ADDRESS,
-    RETRY_ATTEMPTS,
     Command,
     DataType,
 )
@@ -1090,8 +1089,10 @@ class TestDiscoverAddressSpace:
         structs: dict[int, ParamStructEntry] = {}
 
         result = await handler._discover_address_space(
-            "panel", store_offset=10000,
-            destination=PANEL_ADDRESS, with_range=False,
+            "panel",
+            store_offset=10000,
+            destination=PANEL_ADDRESS,
+            with_range=False,
             structs=structs,
         )
 
@@ -1125,8 +1126,10 @@ class TestDiscoverAddressSpace:
         structs: dict[int, ParamStructEntry] = {}
 
         result = await handler._discover_address_space(
-            "regulator", store_offset=0,
-            destination=None, with_range=True,
+            "regulator",
+            store_offset=0,
+            destination=None,
+            with_range=True,
             structs=structs,
         )
 
@@ -1146,8 +1149,10 @@ class TestDiscoverAddressSpace:
         structs: dict[int, ParamStructEntry] = {}
 
         result = await handler._discover_address_space(
-            "regulator", store_offset=0,
-            destination=None, with_range=True,
+            "regulator",
+            store_offset=0,
+            destination=None,
+            with_range=True,
             structs=structs,
         )
 
@@ -1180,8 +1185,10 @@ class TestDiscoverAddressSpace:
         structs: dict[int, ParamStructEntry] = {}
 
         result = await handler._discover_address_space(
-            "regulator", store_offset=0,
-            destination=None, with_range=True,
+            "regulator",
+            store_offset=0,
+            destination=None,
+            with_range=True,
             structs=structs,
         )
 
@@ -1221,11 +1228,13 @@ class TestDiscoverParamsAddressSpaces:
         captured_calls = []
 
         async def mock_fetch(start_index, count, destination=None, with_range=True):
-            captured_calls.append({
-                "start": start_index,
-                "dest": destination,
-                "with_range": with_range,
-            })
+            captured_calls.append(
+                {
+                    "start": start_index,
+                    "dest": destination,
+                    "with_range": with_range,
+                }
+            )
             if destination is None and start_index == 0:
                 entries = [ParamStructEntry(0, "RegA", 0, DataType.INT16, True)]
                 for e in entries:
@@ -1252,11 +1261,13 @@ class TestDiscoverParamsAddressSpaces:
         captured_calls = []
 
         async def mock_fetch(start_index, count, destination=None, with_range=True):
-            captured_calls.append({
-                "start": start_index,
-                "dest": destination,
-                "with_range": with_range,
-            })
+            captured_calls.append(
+                {
+                    "start": start_index,
+                    "dest": destination,
+                    "with_range": with_range,
+                }
+            )
             if destination is None and start_index == 0:
                 entries = [ParamStructEntry(0, "RegA", 0, DataType.INT16, True)]
                 for e in entries:

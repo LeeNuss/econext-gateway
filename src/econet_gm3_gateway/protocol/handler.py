@@ -95,7 +95,11 @@ def parse_get_params_request(data: bytes) -> tuple[int, int]:
     return count, start_index
 
 
-def parse_get_params_response(data: bytes, param_structs: dict[int, ParamStructEntry]) -> list[tuple[int, Any]]:
+def parse_get_params_response(
+    data: bytes,
+    param_structs: dict[int, ParamStructEntry],
+    store_offset: int = 0,
+) -> list[tuple[int, Any]]:
     """Parse a GET_PARAMS_RESPONSE payload.
 
     Response format:
@@ -107,9 +111,11 @@ def parse_get_params_response(data: bytes, param_structs: dict[int, ParamStructE
     Args:
         data: Response payload bytes.
         param_structs: Known parameter structure indexed by param index.
+        store_offset: Offset added to wire index for param_structs lookup
+            (0 for regulator, 10000 for panel).
 
     Returns:
-        List of (index, decoded_value) tuples.
+        List of (stored_index, decoded_value) tuples.
 
     Raises:
         ValueError: If response is malformed.
@@ -124,7 +130,7 @@ def parse_get_params_response(data: bytes, param_structs: dict[int, ParamStructE
     offset = 4  # Skip header (3 bytes) + first separator byte
 
     for i in range(params_no):
-        param_index = first_index + i
+        param_index = first_index + i + store_offset
 
         if param_index not in param_structs:
             break
@@ -498,7 +504,10 @@ class ProtocolHandler:
             if len(frame.data) >= 2:
                 func_code = struct.unpack("<H", frame.data[0:2])[0]
             logger.info(
-                "SERVICE frame: dest=%d, func=0x%04X, data=%s", frame.destination, func_code, frame.data.hex() if frame.data else "empty"
+                "SERVICE frame: dest=%d, func=0x%04X, data=%s",
+                frame.destination,
+                func_code,
+                frame.data.hex() if frame.data else "empty",
             )
             # Check if this is a token grant (GET_TOKEN function code)
             if func_code == GET_TOKEN_FUNC:
@@ -786,15 +795,24 @@ class ProtocolHandler:
         logger.debug(f"Fetched {len(entries)} param structs starting at index {start_index}")
         return entries, False
 
-    async def fetch_param_values(self, start_index: int, count: int) -> list[tuple[int, Any]]:
+    async def fetch_param_values(
+        self,
+        start_index: int,
+        count: int,
+        destination: int | None = None,
+        store_offset: int = 0,
+    ) -> list[tuple[int, Any]]:
         """Fetch parameter values from controller.
 
         Args:
-            start_index: Starting parameter index.
+            start_index: Starting wire index.
             count: Number of parameters to read.
+            destination: Override destination address (for panel params).
+            store_offset: Offset for mapping wire index to stored index
+                (0 for regulator, 10000 for panel).
 
         Returns:
-            List of (index, value) tuples.
+            List of (stored_index, value) tuples.
         """
         data = build_get_params_request(start_index, count)
 
@@ -809,13 +827,14 @@ class ProtocolHandler:
             data,
             expected_response=Command.GET_PARAMS_RESPONSE,
             response_validator=validate_first_index,
+            destination=destination,
         )
 
         if response is None:
             return []
 
-        results = parse_get_params_response(response.data, self._param_structs)
-        logger.debug(f"Fetched {len(results)} param values starting at index {start_index}")
+        results = parse_get_params_response(response.data, self._param_structs, store_offset)
+        logger.debug(f"Fetched {len(results)} param values starting at wire index {start_index}")
         return results
 
     async def read_params(self, start_index: int, count: int) -> list[Parameter]:
@@ -933,33 +952,43 @@ class ProtocolHandler:
         """
         wire_index = 0
         batch_size = 100  # maxNumStructDPParams (matches original)
+        max_retries = 10  # generous retries - token doesn't expire
         resend_counter = 0
         batches = 0
 
         while True:
             entries, end_of_range = await self.fetch_param_structs(
-                wire_index, batch_size,
-                destination=destination, with_range=with_range,
+                wire_index,
+                batch_size,
+                destination=destination,
+                with_range=with_range,
             )
 
             if end_of_range:
                 logger.info(
                     "Finished %s discovery (NO_DATA at wire index %d, %d batches)",
-                    label, wire_index, batches,
+                    label,
+                    wire_index,
+                    batches,
                 )
                 return True
 
             if not entries:
                 resend_counter += 1
-                if resend_counter > RETRY_ATTEMPTS:
+                if resend_counter > max_retries:
                     logger.error(
                         "Too many failures for %s at index %d after %d retries",
-                        label, wire_index, RETRY_ATTEMPTS,
+                        label,
+                        wire_index,
+                        max_retries,
                     )
                     return False
-                logger.info(
-                    "No response for %s index %d, resending (%d/%d)",
-                    label, wire_index, resend_counter, RETRY_ATTEMPTS,
+                logger.warning(
+                    "No response for %s index %d, retrying (%d/%d)",
+                    label,
+                    wire_index,
+                    resend_counter,
+                    max_retries,
                 )
                 continue
 
@@ -1011,8 +1040,10 @@ class ProtocolHandler:
 
                 # Discover regulator params first (WITH_RANGE to default dest)
                 await self._discover_address_space(
-                    "regulator", store_offset=0,
-                    destination=None, with_range=True,
+                    "regulator",
+                    store_offset=0,
+                    destination=None,
+                    with_range=True,
                     structs=new_structs,
                 )
 
@@ -1022,8 +1053,10 @@ class ProtocolHandler:
 
                 # Then discover panel params (WITHOUT_RANGE to panel address)
                 await self._discover_address_space(
-                    "panel", store_offset=10000,
-                    destination=PANEL_ADDRESS, with_range=False,
+                    "panel",
+                    store_offset=10000,
+                    destination=PANEL_ADDRESS,
+                    with_range=False,
                     structs=new_structs,
                 )
 
@@ -1040,7 +1073,10 @@ class ProtocolHandler:
                 panel_count = sum(1 for k in new_structs if k >= 10000)
                 logger.info(
                     "Discovery complete: %d parameters (%d regulator, %d panel) in %.1fs",
-                    self._total_params, reg_count, panel_count, elapsed,
+                    self._total_params,
+                    reg_count,
+                    panel_count,
+                    elapsed,
                 )
             else:
                 logger.warning("Parameter discovery returned no results, keeping existing structures")
@@ -1069,12 +1105,31 @@ class ProtocolHandler:
                 while current_pos < len(indices):
                     start_index = indices[current_pos]
 
-                    batch_end = min(current_pos + self._params_per_request, len(indices))
+                    # Find batch end, but don't cross address space boundaries
+                    # (regulator 0-9999 vs panel 10000+) or exceed 255 count
+                    batch_end = current_pos + 1
+                    while batch_end < min(current_pos + self._params_per_request, len(indices)):
+                        if indices[batch_end] - start_index >= 255:
+                            break
+                        if (start_index < 10000) != (indices[batch_end] < 10000):
+                            break
+                        batch_end += 1
                     count = indices[batch_end - 1] - start_index + 1
+
+                    # Panel params (10000+) use wire index and panel destination
+                    is_panel = start_index >= 10000
+                    dest = PANEL_ADDRESS if is_panel else None
+                    wire_index = start_index - 10000 if is_panel else start_index
+                    offset = 10000 if is_panel else 0
 
                     values = None
                     for _ in range(RETRY_ATTEMPTS):
-                        values = await self.fetch_param_values(start_index, count)
+                        values = await self.fetch_param_values(
+                            wire_index,
+                            count,
+                            destination=dest,
+                            store_offset=offset,
+                        )
                         if values:
                             break
 
