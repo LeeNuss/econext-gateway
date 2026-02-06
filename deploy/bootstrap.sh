@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+#
+# Bootstrap installer for econet-gm3-gateway.
+#
+# Downloads the latest (or specified) release bundle from GitHub
+# and runs the install script.
+#
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/LeeNuss/econet-gm3-gateway/main/deploy/bootstrap.sh | sudo bash
+#   curl -fsSL ... | sudo bash -s -- --version 0.1.0
+#
+
+set -euo pipefail
+
+REPO="LeeNuss/econet-gm3-gateway"
+VERSION=""
+TMPDIR=""
+
+info()  { echo "==> $*"; }
+die()   { echo "ERROR: $*" >&2; exit 1; }
+
+cleanup() {
+    [[ -n "$TMPDIR" && -d "$TMPDIR" ]] && rm -rf "$TMPDIR"
+}
+trap cleanup EXIT
+
+# Parse args
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --version|-v)
+            VERSION="$2"
+            shift 2
+            ;;
+        --help|-h)
+            echo "Usage: bootstrap.sh [--version VERSION]"
+            exit 0
+            ;;
+        *)
+            die "Unknown argument: $1"
+            ;;
+    esac
+done
+
+# Must be root
+if [[ $EUID -ne 0 ]]; then
+    die "This script must be run as root (use sudo)"
+fi
+
+# Check deps
+command -v curl >/dev/null 2>&1 || die "curl is required"
+command -v tar >/dev/null 2>&1 || die "tar is required"
+
+# Resolve version
+if [[ -z "$VERSION" ]]; then
+    info "Fetching latest release..."
+    VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+        | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
+    [[ -n "$VERSION" ]] || die "Could not determine latest version"
+fi
+info "Installing version ${VERSION}"
+
+# Download bundle
+BUNDLE_URL="https://github.com/${REPO}/releases/download/v${VERSION}/gateway-bundle-${VERSION}.tar.gz"
+TMPDIR="$(mktemp -d)"
+
+info "Downloading ${BUNDLE_URL}..."
+curl -fsSL "$BUNDLE_URL" -o "${TMPDIR}/bundle.tar.gz" || die "Download failed. Check that version ${VERSION} exists."
+
+info "Extracting..."
+tar -xzf "${TMPDIR}/bundle.tar.gz" -C "$TMPDIR"
+
+# Find the wheel
+WHEEL=$(ls "${TMPDIR}"/*.whl 2>/dev/null | head -1)
+[[ -n "$WHEEL" ]] || die "No wheel found in bundle"
+
+# Run install script with the wheel
+export ECONET_WHEEL="$WHEEL"
+bash "${TMPDIR}/deploy/install.sh"

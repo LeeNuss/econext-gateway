@@ -3,13 +3,16 @@
 # Install econet GM3 Gateway as a systemd service.
 #
 # Usage:
-#   sudo ./deploy/install.sh                  # install to /opt/econet-gm3-gateway
+#   sudo ./deploy/install.sh                  # install from source repo
 #   sudo ./deploy/install.sh /srv/econet      # custom prefix
 #   sudo ./deploy/install.sh --uninstall      # remove service and install dir
 #
+# Bundle install (used by bootstrap.sh):
+#   ECONET_WHEEL=/path/to/wheel.whl sudo ./deploy/install.sh
+#
 # What it does:
-#   1. Copies source to PREFIX (default /opt/econet-gm3-gateway)
-#   2. Creates a venv and installs the package via uv pip install .
+#   1. Creates PREFIX directory (default /opt/econet-gm3-gateway)
+#   2. Creates a venv and installs the package (from wheel or source)
 #   3. Generates and installs a systemd service unit
 #   4. Installs the udev rule for PLUM ecoLINK3 adapter
 #   5. Enables and starts the service
@@ -125,25 +128,35 @@ do_install() {
         systemctl stop "$SERVICE_NAME"
     fi
 
-    # -- copy source to prefix --
-    info "Copying source to $prefix..."
     mkdir -p "$prefix"
-    rsync -a --delete \
-        --exclude '.venv' \
-        --exclude '__pycache__' \
-        --exclude '.pytest_cache' \
-        --exclude '.git' \
-        --exclude 'logs' \
-        "$REPO_DIR/" "$prefix/"
-    chown -R "$ECONET_USER":"$ECONET_USER" "$prefix"
 
-    # -- create venv and install --
-    info "Creating venv and installing package..."
-    sudo -u "$ECONET_USER" bash -c "
-        cd '$prefix'
-        '$UV' venv --python python3 --allow-existing
-        '$UV' pip install --python .venv/bin/python .
-    "
+    if [[ -n "${ECONET_WHEEL:-}" ]]; then
+        # -- bundle install: install from pre-built wheel --
+        info "Installing from wheel: $ECONET_WHEEL"
+        chown -R "$ECONET_USER":"$ECONET_USER" "$prefix"
+        sudo -u "$ECONET_USER" bash -c "
+            cd '$prefix'
+            '$UV' venv --python python3 --allow-existing
+            '$UV' pip install --python .venv/bin/python '$ECONET_WHEEL'
+        "
+    else
+        # -- dev install: copy source and install from it --
+        info "Copying source to $prefix..."
+        rsync -a --delete \
+            --exclude '.venv' \
+            --exclude '__pycache__' \
+            --exclude '.pytest_cache' \
+            --exclude '.git' \
+            --exclude 'logs' \
+            "$REPO_DIR/" "$prefix/"
+        chown -R "$ECONET_USER":"$ECONET_USER" "$prefix"
+        info "Creating venv and installing package..."
+        sudo -u "$ECONET_USER" bash -c "
+            cd '$prefix'
+            '$UV' venv --python python3 --allow-existing
+            '$UV' pip install --python .venv/bin/python .
+        "
+    fi
 
     # -- verify install --
     local version
@@ -177,7 +190,7 @@ EOF
 
     # -- install udev rule --
     info "Installing udev rule to $UDEV_FILE..."
-    cp "$prefix/deploy/99-econet.rules" "$UDEV_FILE"
+    cp "$SCRIPT_DIR/99-econet.rules" "$UDEV_FILE"
     udevadm control --reload-rules
     udevadm trigger
 
