@@ -49,7 +49,7 @@ The GM3 protocol is a binary serial communication protocol used by ecotronic hea
 All communication uses binary frames with the following structure:
 
 ```
-[BEGIN][LEN_L][LEN_H][DA_L][DA_H][SA][RSV][CMD][DATA...][CRC_H][CRC_L][END]
+[BEGIN][LEN_L][LEN_H][DA_L][DA_H][SA_L][SA_H][CMD][DATA...][CRC_H][CRC_L][END]
 ```
 
 **Field Details:**
@@ -59,15 +59,16 @@ All communication uses binary frames with the following structure:
 | 0      | 1    | BEGIN | 0x68  | Frame start marker              |
 | 1      | 1    | LEN_L | -     | Length low byte (frame_len - 6) |
 | 2      | 1    | LEN_H | -     | Length high byte                |
-| 3      | 1    | DA_L  | -     | Destination address low byte    |
-| 4      | 1    | DA_H  | -     | Destination address high byte   |
-| 5      | 1    | SA    | 131   | Source address                  |
-| 6      | 1    | RSV   | 0x00  | Reserved byte                   |
+| 3      | 2    | DA    | -     | Destination address (16-bit LE) |
+| 5      | 2    | SA    | -     | Source address (16-bit LE)      |
 | 7      | 1    | CMD   | -     | Command/frame type              |
 | 8      | N    | DATA  | -     | Payload (variable length)       |
 | -3     | 1    | CRC_H | -     | CRC-16 high byte                |
 | -2     | 1    | CRC_L | -     | CRC-16 low byte                 |
 | -1     | 1    | END   | 0x16  | Frame end marker                |
+
+Note: Both source and destination are 16-bit little-endian. Earlier documentation
+incorrectly showed SA as 1 byte + 1 reserved byte. HW captures confirm 16-bit LE.
 
 **Length Calculation:**
 ```
@@ -115,23 +116,27 @@ To validate a received frame:
 
 The gateway initiates all communication, with the controller responding to requests.
 
-**Startup Sequence:**
-1. Connect to serial port (115200 baud)
-2. Wait for token from panel (respond to IDENTIFY probes; fallback to bus-idle after 1.5s)
-3. If token received: send GET_SETTINGS (0x00) to broadcast (0xFFFF) to initialize
-4. Discover parameters: GET_PARAMS_STRUCT_WITH_RANGE (0x02) in batches of 100
-5. Discovery completes when controller returns empty response or 3 consecutive batch failures
-6. Return token to panel
+**Startup Sequence (HW verified 2026-02-06):**
+1. Open serial port (baud toggle reset: open 9600 -> close -> open 115200)
+2. Listen for IDENTIFY (0x09) from panel (address 100)
+3. Respond with IDENTIFY_ANS (0x89) + "PLUM\x00EcoNET\x00\x00\x00\x00\x00"
+4. Wait for SERVICE 0x0801 (token grant) from panel
+5. Discovery (single token grant, ~6.6s total):
+   a. GET_PARAMS_STRUCT_WITH_RANGE(0, 100) to controller -- regulator params
+   b. Continue batches until NO_DATA (0x7F) -- ~39 batches, 1447 params in 4.3s
+   c. GET_PARAMS_STRUCT(0, 100) to panel (addr 100) -- panel params (WITHOUT_RANGE)
+   d. Continue batches until NO_DATA -- ~43 batches, 423 params in 2.3s
+6. Return token to panel (SERVICE 0x0800)
 
 **Ongoing Polling (every 10s):**
-1. Wait for token from panel (up to 15s, fallback to bus-idle)
-2. Send GET_PARAMS (0x40) in batches of 100 params
+1. Wait for token from panel (indefinite wait, panel cycles every ~10s)
+2. Send GET_PARAMS (0x40) in batches of 50 params
 3. Update parameter cache with new values
 4. Return token to panel
 
-**Observed Performance:**
-- With token: Discovery completes in ~5s, polling in ~2s (exclusive bus access)
-- Without token: Discovery takes ~60-90s, polling ~15-20s (shared bus, retries needed)
+**Measured Performance (2026-02-06):**
+- With token: Discovery 6.6s (1870 params), polling ~2s (exclusive bus access)
+- Without token: Discovery ~80s, polling ~15-20s (shared bus, retries needed)
 
 ### Token Communication (Bus Arbitration)
 
@@ -251,15 +256,17 @@ Master Panel             Gateway                  Controller
      |                      |                          |
 ```
 
-#### Timing and Behavior
+#### Timing and Behavior (HW verified)
 
 - **Bus turnaround delay:** 20ms sleep before every write (RS-485 half-duplex requirement)
-- **Response timeout:** 0.2s per read when holding token (exclusive bus access)
-- **Token wait timeout:** 5s max wait for token; falls back to sending without token
-- **Response silence threshold:** 3 consecutive 0.2s read timeouts (0.6s) = no response
-- **Retry strategy without token:** Send request, wait 0.6s silence, retry up to 5 times
+- **Response timeout:** 0.2s per read (PORT_TIMEOUT), matching original webserver
+- **Response silence threshold:** 10 consecutive 0.2s empty reads (2.0s) = no response
+  - Matches original webserver's NOT_CONNECTED_0_BYTES_GM3=10 * PORT_TIMEOUT=0.2
+- **Token wait:** Indefinite when token_required=True (like original webserver)
+- **Token does NOT expire on a timer** -- lasts until explicitly returned
 - **Panel cycle time:** ~10 seconds between token grants
-- **Token hold time:** Gateway holds token for entire operation (all batches)
+- **Token hold time:** Gateway holds token for entire operation (discovery or poll)
+- **Retry strategy without token:** Send request, wait 2.0s silence, retry up to 3 times
 
 #### Without Token (Bus-Idle Fallback)
 
@@ -304,33 +311,51 @@ Typical polling interval: 5-10 seconds
 
 ### Read Operations
 
-#### GET_PARAMS_STRUCT_WITH_RANGE (0x02)
+#### GET_PARAMS_STRUCT_WITH_RANGE (0x02) -- Regulator params
 
 Request parameter structure definitions including min/max values.
+Used for regulator params (destination = controller address).
 
 **Request:**
 ```
 CMD: 0x02
-DATA: [first_index_low][first_index_high][count_low][count_high]
+DATA: [count][first_index_low][first_index_high]
 ```
 
-**Response:**
+**Response (0x82):**
 ```
-CMD: 0x82
-DATA: For each parameter:
-  [index_low][index_high]
-  [type]
-  [unit]
-  [multiplier_offset_bytes]
-  [min_max_bytes]
-  [name_string...][0x00]
+DATA: [paramsNo][firstIndex_L][firstIndex_H]
+  For each parameter:
+    [name_string...][0x00]
+    [unit_string...][0x00]
+    [type_byte][extra_byte]    -- type: low 4 bits = type code, bit 5 = writable
+    [min_L][min_H][max_L][max_H]  -- range (4 bytes)
 ```
 
-**Example:** Request params 0-99
+#### GET_PARAMS_STRUCT (0x01) -- Panel params
+
+Request parameter structure definitions WITHOUT range data.
+Used for panel params (destination = panel address 100). Returns exponent + type
+instead of type + extra + range.
+
+**Request:**
 ```
-Request:  68 04 00 01 00 83 00 02 00 00 64 00 [CRC] 16
-Response: 68 XX XX 01 00 83 00 82 [param_data...] [CRC] 16
+CMD: 0x01
+DATA: [count][first_index_low][first_index_high]
 ```
+
+**Response (0x81):**
+```
+DATA: [paramsNo][firstIndex_L][firstIndex_H]
+  For each parameter:
+    [name_string...][0x00]
+    [unit_string...][0x00]
+    [exponent_byte][type_byte]  -- NO range data
+```
+
+**Two address spaces:**
+- Regulator: wire indices 0+, stored as 0+, use 0x02/0x82 (WITH_RANGE)
+- Panel: wire indices 0+, stored as 10000+, use 0x01/0x81 (WITHOUT_RANGE), dest=100
 
 #### GET_PARAMS (0x40)
 
@@ -596,10 +621,9 @@ def create_frame(destination, command, data):
     frame = bytearray()
     frame.append(0x68)                    # BEGIN
     frame.extend([0, 0])                  # LEN (filled later)
-    frame.extend(struct.pack('<H', destination))  # DA
-    frame.append(131)                     # SA (source)
-    frame.append(0x00)                    # Reserved
-    frame.append(command)                 # CMD
+    frame.extend(struct.pack('<H', destination))  # DA (16-bit LE)
+    frame.extend(struct.pack('<H', 131))          # SA (16-bit LE)
+    frame.append(command)                         # CMD
     if data:
         frame.extend(data)                # DATA
 
@@ -636,7 +660,7 @@ def parse_frame(raw_data):
         return None
 
     destination = struct.unpack('<H', raw_data[3:5])[0]
-    source = raw_data[5]
+    source = struct.unpack('<H', raw_data[5:7])[0]
     command = raw_data[7]
     data = raw_data[8:-3]
 
@@ -688,3 +712,5 @@ Response: 68 XX 00 83 00 01 00 80
 ## Reference
 
 This specification was derived through reverse engineering of the GM3 protocol for interoperability purposes.
+
+**Last verified on hardware: 2026-02-06** (1870 params discovered in 6.6s)

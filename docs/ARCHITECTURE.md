@@ -1,7 +1,7 @@
 # econet GM3 Gateway - Architecture & Design
 
-**Version**: 1.0 (Initial Design)
-**Date**: 2026-01-13
+**Version**: 1.1 (Updated after HW verification)
+**Date**: 2026-02-06
 
 This document describes the architecture and design decisions for the econet GM3 Gateway project - a local API server for GM3 protocol heat pump controllers.
 
@@ -21,7 +21,7 @@ This document describes the architecture and design decisions for the econet GM3
 | --------------- | ---------------- | ------- | ---------------------------------------------------- |
 | Language        | Python           | 3.11+   | Modern features, async support, type hints           |
 | Web Framework   | FastAPI          | Latest  | Async-native, auto OpenAPI docs, Pydantic validation |
-| Serial I/O      | pyserial-asyncio | Latest  | Async serial communication                           |
+| Serial I/O      | pyserial         | Latest  | Direct pyserial + run_in_executor (CP210x compatible) |
 | ASGI Server     | Uvicorn          | Latest  | High performance, async support                      |
 | Package Manager | uv               | Latest  | Fast, reliable dependency management                 |
 | Code Formatter  | Ruff             | 0.14.2  | Fast, comprehensive linting and formatting           |
@@ -100,15 +100,19 @@ This document describes the architecture and design decisions for the econet GM3
 **Responsibility**: GM3 protocol implementation, message encoding/decoding
 
 - `frames.py`: Frame construction and parsing
-- `messages.py`: Message types and handlers
-- `constants.py`: Protocol constants (frame markers, CRC polynomials)
+- `handler.py`: Protocol handler (discovery, token handling, struct parsing, polling)
+- `constants.py`: Protocol constants (frame markers, CRC polynomials, addresses)
 - `codec.py`: Parameter encoding/decoding
+- `crc.py`: CRC-16 calculation
 
 **Key Features**:
-- Frame format: `0x68 [LEN_L] [LEN_H] [DEST_L] [DEST_H] [SRC] [CMD] [...] [CRC_H] [CRC_L] 0x16`
+- Frame format: `0x68 [LEN_L] [LEN_H] [DA_L] [DA_H] [SA_L] [SA_H] [CMD] [...] [CRC_H] [CRC_L] 0x16`
+- 16-bit LE source and destination addresses
 - CRC-16 validation
 - Parameter type handling (int, float, string, bool)
-- Async message queue
+- Token-based bus arbitration (IDENTIFY handshake + SERVICE token grant/return)
+- Two address spaces: regulator (WITH_RANGE) and panel (WITHOUT_RANGE)
+- Single token grant discovery: all 1870 params in 6.6s
 
 #### 3. Serial Layer (`src/serial/`)
 **Responsibility**: Serial port communication, connection management
@@ -118,10 +122,12 @@ This document describes the architecture and design decisions for the econet GM3
 - `writer.py`: Async frame writing
 
 **Key Features**:
-- Asyncio-based I/O
-- Automatic reconnection
-- Buffer management
-- Error recovery
+- Direct pyserial with asyncio.run_in_executor() (serial_asyncio does not work with CP210x)
+- Two-stage blocking read: read(1) for first byte, then read(in_waiting) for rest (~50ms vs 200ms)
+- 20ms bus turnaround delay before every write (RS-485 half-duplex)
+- Flush RX buffer + wait TX complete after every write
+- Automatic reconnection with configurable delay
+- Buffer management and error recovery
 
 #### 4. Core (`src/core/`)
 **Responsibility**: Application state, caching, business logic
@@ -374,15 +380,19 @@ WantedBy=multi-user.target
 - Connection recovery
 - Long-running stability
 
-## Performance Targets
+## Performance (HW Measured 2026-02-06)
 
-| Metric            | Target  | Notes                         |
-| ----------------- | ------- | ----------------------------- |
-| API Response Time | < 200ms | For cached values             |
-| Serial Read Cycle | 5-10s   | Configurable polling interval |
-| Memory Usage      | < 100MB | Including Python runtime      |
-| CPU Usage (idle)  | < 5%    | On Raspberry Pi 3             |
-| Startup Time      | < 5s    | From cold start to ready      |
+| Metric              | Target  | Measured | Notes                              |
+| ------------------- | ------- | -------- | ---------------------------------- |
+| Parameter discovery | < 10s   | 6.6s     | 1870 params, single token grant    |
+| Regulator params    | -       | 4.3s     | 1447 params, 39 batches of up to 100 |
+| Panel params        | -       | 2.3s     | 423 params, 43 batches (~10/batch) |
+| Per-request latency | < 100ms | ~50ms    | Two-stage serial read              |
+| API Response Time   | < 200ms | TBD      | For cached values                  |
+| Serial Read Cycle   | 10s     | 10s      | Configurable polling interval      |
+| Memory Usage        | < 100MB | TBD      | Including Python runtime           |
+| CPU Usage (idle)    | < 5%    | TBD      | On Raspberry Pi 3                  |
+| Startup Time        | < 15s   | ~8s      | Connect + token wait + discovery   |
 
 ## Security Considerations
 
@@ -508,14 +518,14 @@ uvicorn src.main:app --reload
 ### Related Projects
 - PyPlumIO: Open-source alternative econet (EM protocol only)
 - Home Assistant: Target integration platform
+- GM3-analyze: Same GM3 protocol via Ethernet-RS485, no token management
 
 ### Standards
-- GM3 Protocol: Custom proprietary protocol
+- GM3 Protocol: Custom proprietary protocol (reverse-engineered for interoperability)
 - REST API: Standard HTTP/JSON patterns
 - OpenAPI 3.0: API documentation standard
 
 ---
 
-**Document Status**: Living document
-**Next Review**: After v1.0 implementation
-**Maintainer**: Project team
+**Document Status**: Living document, updated after HW verification
+**Last Updated**: 2026-02-06
