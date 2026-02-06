@@ -17,7 +17,7 @@ keywords = ["econet", "gm3", "heat-pump", "home-assistant", "api"]
 dependencies = [
     "fastapi>=0.109.0",
     "uvicorn>=0.27.0",
-    "pyserial-asyncio>=0.6",
+    "pyserial>=3.5",
     "pydantic>=2.5.0",
     "pydantic-settings>=2.1.0",
 ]
