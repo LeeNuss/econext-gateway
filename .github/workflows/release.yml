@@ -42,4 +42,4 @@ jobs:
           generate_release_notes: true
           files: |
             dist/*.whl
-            dist/*.tar.gz
+            dist/gateway-bundle-*.tar.gz

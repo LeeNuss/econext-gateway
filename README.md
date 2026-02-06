@@ -42,7 +42,7 @@ curl -fsSL https://raw.githubusercontent.com/LeeNuss/econet-gm3-gateway/main/dep
 
 ### Manual Install
 
-Prerequisites: Python 3.11+, [uv](https://docs.astral.sh/uv/)
+Prerequisites: Python 3.11+ (uses [uv](https://docs.astral.sh/uv/) if available, otherwise falls back to pip)
 
 ```bash
 git clone https://github.com/LeeNuss/econet-gm3-gateway.git

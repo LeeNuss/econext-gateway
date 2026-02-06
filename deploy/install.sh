@@ -19,7 +19,7 @@
 #
 # Prerequisites:
 #   - Python 3.11+
-#   - uv (https://docs.astral.sh/uv/)
+#   - uv (https://docs.astral.sh/uv/) or pip
 
 set -euo pipefail
 
@@ -52,7 +52,15 @@ check_root() {
 check_deps() {
     command -v python3 >/dev/null 2>&1 || die "python3 not found"
 
-    # Find uv - check common locations since sudo may strip PATH
+    local pyver
+    pyver="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+    if python3 -c "import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)" 2>/dev/null; then
+        info "Python $pyver found"
+    else
+        die "Python 3.11+ required (found $pyver)"
+    fi
+
+    # Find uv (optional) - check common locations since sudo may strip PATH
     UV=""
     for candidate in \
         "$(command -v uv 2>/dev/null)" \
@@ -65,15 +73,33 @@ check_deps() {
             break
         fi
     done
-    [[ -n "$UV" ]] || die "uv not found (https://docs.astral.sh/uv/)"
-    info "Using uv at $UV"
 
-    local pyver
-    pyver="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-    if python3 -c "import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)" 2>/dev/null; then
-        info "Python $pyver found"
+    if [[ -n "$UV" ]]; then
+        info "Using uv at $UV"
     else
-        die "Python 3.11+ required (found $pyver)"
+        info "uv not found, using python3 -m venv + pip"
+    fi
+}
+
+# Create venv and install a package (wheel path or "." for source install)
+# Uses uv if available, otherwise falls back to python3 venv + pip
+venv_install() {
+    local prefix="$1"
+    local package="$2"
+
+    if [[ -n "$UV" ]]; then
+        sudo -u "$ECONET_USER" bash -c "
+            cd '$prefix'
+            '$UV' venv --python python3 --allow-existing
+            '$UV' pip install --python .venv/bin/python '$package'
+        "
+    else
+        sudo -u "$ECONET_USER" bash -c "
+            cd '$prefix'
+            python3 -m venv .venv
+            .venv/bin/pip install --upgrade pip
+            .venv/bin/pip install '$package'
+        "
     fi
 }
 
@@ -134,11 +160,7 @@ do_install() {
         # -- bundle install: install from pre-built wheel --
         info "Installing from wheel: $ECONET_WHEEL"
         chown -R "$ECONET_USER":"$ECONET_USER" "$prefix"
-        sudo -u "$ECONET_USER" bash -c "
-            cd '$prefix'
-            '$UV' venv --python python3 --allow-existing
-            '$UV' pip install --python .venv/bin/python '$ECONET_WHEEL'
-        "
+        venv_install "$prefix" "$ECONET_WHEEL"
     else
         # -- dev install: copy source and install from it --
         info "Copying source to $prefix..."
@@ -151,11 +173,7 @@ do_install() {
             "$REPO_DIR/" "$prefix/"
         chown -R "$ECONET_USER":"$ECONET_USER" "$prefix"
         info "Creating venv and installing package..."
-        sudo -u "$ECONET_USER" bash -c "
-            cd '$prefix'
-            '$UV' venv --python python3 --allow-existing
-            '$UV' pip install --python .venv/bin/python .
-        "
+        venv_install "$prefix" "."
     fi
 
     # -- verify install --
