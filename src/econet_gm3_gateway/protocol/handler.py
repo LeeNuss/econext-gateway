@@ -566,7 +566,7 @@ class ProtocolHandler:
             # Special logging for SERVICE frames to us
             if frame.command == SERVICE_CMD and frame.destination == SRC_ADDRESS:
                 func_code = struct.unpack("<H", frame.data[0:2])[0] if len(frame.data) >= 2 else 0
-                logger.info("SERVICE to US (131): func=0x%04X", func_code)
+                logger.debug("SERVICE to US (131): func=0x%04X", func_code)
 
             # Only process frames addressed to us or broadcast
             if frame.destination != SRC_ADDRESS and frame.destination != 0xFFFF:

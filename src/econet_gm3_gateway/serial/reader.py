@@ -147,7 +147,7 @@ class FrameReader:
 
             # Log SERVICE frames to address 131 specially
             if frame.command == 0x68 and frame.destination == 131:
-                logger.info("RAW SERVICE to 131: %s", frame_data.hex())
+                logger.debug("SERVICE to 131: %s", frame_data.hex())
 
             # Success! Remove frame from buffer
             del self._buffer[:frame_length]

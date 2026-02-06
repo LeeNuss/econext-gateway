@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     prefixed with ECONET_ (e.g., ECONET_SERIAL_PORT).
     """
 
-    serial_port: str = "/dev/ttyUSB1"
+    serial_port: str = "/dev/econet"
     serial_baud: int = 115200
     api_host: str = "0.0.0.0"
     api_port: int = 8000

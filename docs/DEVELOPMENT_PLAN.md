@@ -268,18 +268,19 @@ This document outlines the step-by-step implementation plan, starting with core 
 
 ## Current Status
 
-**Total: 241 tests passing** (as of 2026-02-06)
+**Total: 254 tests passing** (as of 2026-02-06)
 
 - [x] Project setup and structure
 - [x] Documentation (API, Protocol, Parameters)
 - [x] Phase 1.1 - Configuration (13 tests)
 - [x] Phase 1.2 - Protocol Layer: frames (20), codec (44), crc (8), captured data (12)
 - [x] Phase 1.3 - Models (27 tests)
-- [x] Phase 2.1 - Serial Communication (23 tests)
+- [x] Phase 2.1 - Serial Communication (25 tests)
 - [x] Phase 2.2 - Parameter Cache (22 tests)
-- [x] Phase 2.3 - Protocol Handler (58 tests)
+- [x] Phase 2.3 - Protocol Handler (65 tests)
 - [x] Phase 3 - API Implementation (14 tests)
 - [x] Phase 4.1 - Unit tests (all passing)
+- [x] Phase 4.2 - Integration tests (13 tests: discovery, poll, write, token, API)
 - [x] Phase 4.3 - Hardware testing (1870 params discovered in 6.6s, 2026-02-06)
-- [ ] Phase 4.2 - Integration tests (mock serial end-to-end)
-- [ ] Phase 5 - Deployment (systemd service, udev rules)
+- [x] Phase 5.1 - Deployment artifacts (systemd service + udev rule in deploy/)
+- [ ] Phase 5.2 - Deploy to hardware and validate
