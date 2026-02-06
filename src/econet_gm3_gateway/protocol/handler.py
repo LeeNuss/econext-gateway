@@ -372,6 +372,11 @@ def build_struct_request(start_index: int, count: int) -> bytes:
 def build_modify_param_request(index: int, value: Any, type_code: int) -> bytes:
     """Build MODIFY_PARAM request payload.
 
+    Format: [AUTH_HEADER][MODE][INDEX_LO][INDEX_HI][VALUE_BYTES]
+    Auth header: "USER-000\\x004096\\x00" (14 bytes) - service authorization
+    Mode byte: 0x01
+    Matches original webserver's getAnswerForModifyParam().
+
     Args:
         index: Parameter index to modify.
         value: New value.
@@ -380,9 +385,10 @@ def build_modify_param_request(index: int, value: Any, type_code: int) -> bytes:
     Returns:
         Request payload bytes.
     """
-    index_bytes = struct.pack("<H", index)
-    value_bytes = encode_value(value, type_code)
-    return index_bytes + value_bytes
+    # Authorization header (matches original: USER-000\x004096\x00)
+    auth = b"\x55\x53\x45\x52\x2D\x30\x30\x30\x00\x34\x30\x39\x36\x00"
+    # Mode byte 0x01 + parameter index (LE 16-bit) + encoded value
+    return auth + b"\x01" + struct.pack("<H", index) + encode_value(value, type_code)
 
 
 class ProtocolHandler:
@@ -909,6 +915,8 @@ class ProtocolHandler:
 
         async with self._lock:
             try:
+                # Must hold the bus token to transmit on the RS-485 bus
+                await self._wait_for_token()
                 response = await self.send_and_receive(
                     Command.MODIFY_PARAM,
                     data,
@@ -921,10 +929,10 @@ class ProtocolHandler:
         if response is not None:
             updated_param = param.model_copy(update={"value": value})
             await self._cache.set(updated_param)
-            logger.info(f"Parameter {name} set to {value}")
+            logger.info("Parameter %s set to %s", name, value)
             return True
 
-        logger.warning(f"Failed to write parameter {name}")
+        logger.warning("Failed to write parameter %s", name)
         return False
 
     async def _discover_address_space(

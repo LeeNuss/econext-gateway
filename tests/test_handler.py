@@ -281,25 +281,32 @@ class TestBuildFunctions:
         """Test building MODIFY_PARAM request for INT16."""
         data = build_modify_param_request(index=42, value=65, type_code=DataType.INT16)
 
-        assert len(data) == 4  # 2 (index) + 2 (int16)
-        assert struct.unpack("<H", data[0:2])[0] == 42
-        assert struct.unpack("<h", data[2:4])[0] == 65
+        # 14 (auth) + 1 (mode) + 2 (index) + 2 (int16) = 19
+        assert len(data) == 19
+        assert data[:14] == b"\x55\x53\x45\x52\x2D\x30\x30\x30\x00\x34\x30\x39\x36\x00"
+        assert data[14] == 0x01  # mode byte
+        assert struct.unpack("<H", data[15:17])[0] == 42
+        assert struct.unpack("<h", data[17:19])[0] == 65
 
     def test_build_modify_param_float(self):
         """Test building MODIFY_PARAM request for FLOAT."""
         data = build_modify_param_request(index=10, value=3.14, type_code=DataType.FLOAT)
 
-        assert len(data) == 6  # 2 (index) + 4 (float)
-        assert struct.unpack("<H", data[0:2])[0] == 10
-        assert abs(struct.unpack("<f", data[2:6])[0] - 3.14) < 0.01
+        # 14 (auth) + 1 (mode) + 2 (index) + 4 (float) = 21
+        assert len(data) == 21
+        assert data[14] == 0x01
+        assert struct.unpack("<H", data[15:17])[0] == 10
+        assert abs(struct.unpack("<f", data[17:21])[0] - 3.14) < 0.01
 
     def test_build_modify_param_bool(self):
         """Test building MODIFY_PARAM request for BOOL."""
         data = build_modify_param_request(index=5, value=True, type_code=DataType.BOOL)
 
-        assert len(data) == 3  # 2 (index) + 1 (bool)
-        assert struct.unpack("<H", data[0:2])[0] == 5
-        assert data[2] == 1
+        # 14 (auth) + 1 (mode) + 2 (index) + 1 (bool) = 18
+        assert len(data) == 18
+        assert data[14] == 0x01
+        assert struct.unpack("<H", data[15:17])[0] == 5
+        assert data[17] == 1
 
 
 # ============================================================================
@@ -718,6 +725,140 @@ class TestProtocolHandler:
         # Cache should not be updated on failure
         cached = await cache.get("Temp")
         assert cached.value == 50
+
+    @pytest.mark.asyncio
+    async def test_write_param_acquires_and_returns_token(self):
+        """Test that write_param waits for token and returns it after."""
+        conn = MagicMock(spec=SerialConnection)
+        conn.connected = True
+        cache = ParameterCache()
+        handler = ProtocolHandler(
+            connection=conn,
+            cache=cache,
+            poll_interval=1.0,
+            request_timeout=0.5,
+            token_timeout=5.0,
+            token_required=True,
+        )
+
+        handler._param_structs = {
+            0: ParamStructEntry(
+                index=0,
+                name="SetPoint",
+                unit=1,
+                type_code=DataType.INT16,
+                writable=True,
+                min_value=20.0,
+                max_value=80.0,
+            ),
+        }
+        await cache.set(
+            Parameter(
+                index=0,
+                name="SetPoint",
+                value=50,
+                type=2,
+                unit=1,
+                writable=True,
+                min_value=20.0,
+                max_value=80.0,
+            )
+        )
+
+        # Mock _wait_for_token to simulate receiving token
+        async def mock_wait_for_token():
+            handler._has_token = True
+
+        handler._wait_for_token = mock_wait_for_token
+
+        # Mock _return_token to track it was called
+        return_token_called = False
+        original_return = handler._return_token
+
+        async def mock_return_token():
+            nonlocal return_token_called
+            return_token_called = True
+            await original_return()
+
+        handler._return_token = mock_return_token
+
+        response_frame = self._response_frame(Command.MODIFY_PARAM_RESPONSE)
+        handler._writer.write_frame = AsyncMock(return_value=True)
+        handler._reader.read_frame = AsyncMock(return_value=response_frame)
+
+        result = await handler.write_param("SetPoint", 65)
+
+        assert result is True
+        assert return_token_called is True
+        assert handler._has_token is False
+
+    @pytest.mark.asyncio
+    async def test_write_param_returns_token_on_failure(self):
+        """Test that token is returned even when write fails."""
+        conn = MagicMock(spec=SerialConnection)
+        conn.connected = True
+        cache = ParameterCache()
+        handler = ProtocolHandler(
+            connection=conn,
+            cache=cache,
+            poll_interval=1.0,
+            request_timeout=0.05,
+            token_timeout=5.0,
+            token_required=True,
+        )
+
+        handler._param_structs = {
+            0: ParamStructEntry(
+                index=0,
+                name="Temp",
+                unit=1,
+                type_code=DataType.INT16,
+                writable=True,
+            ),
+        }
+        await cache.set(
+            Parameter(
+                index=0,
+                name="Temp",
+                value=50,
+                type=2,
+                unit=1,
+                writable=True,
+            )
+        )
+
+        async def mock_wait_for_token():
+            handler._has_token = True
+
+        handler._wait_for_token = mock_wait_for_token
+
+        return_token_called = False
+
+        async def mock_return_token():
+            nonlocal return_token_called
+            return_token_called = True
+            handler._has_token = False
+
+        handler._return_token = mock_return_token
+
+        # Simulate no response (timeout)
+        handler._writer.write_frame = AsyncMock(return_value=True)
+        handler._reader.read_frame = AsyncMock(return_value=None)
+
+        result = await handler.write_param("Temp", 60)
+
+        assert result is False
+        assert return_token_called is True
+        assert handler._has_token is False
+
+    @pytest.mark.asyncio
+    async def test_build_modify_param_auth_header(self):
+        """Test that auth header matches original webserver format."""
+        data = build_modify_param_request(index=0, value=1, type_code=DataType.BOOL)
+
+        # Auth header is "USER-000\x004096\x00" in ASCII
+        auth = data[:14]
+        assert auth == b"USER-000\x004096\x00"
 
     @pytest.mark.asyncio
     async def test_discover_params(self):
