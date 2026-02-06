@@ -183,11 +183,34 @@ class SerialConnection:
                 await asyncio.sleep(self.reconnect_delay)
 
     def _blocking_read(self, n: int) -> bytes:
-        """Blocking read for use with run_in_executor."""
+        """Blocking read for use with run_in_executor.
+
+        Uses a two-stage approach for fast reads:
+        1. Wait for first byte (blocks up to self.timeout = 0.2s)
+        2. Read all remaining bytes already in the OS buffer
+
+        This avoids the problem where serial.read(4096) always waits
+        the full 0.2s timeout even after a complete 500-byte response,
+        because it keeps blocking trying to read 4096 bytes.
+
+        With this approach, a 500-byte response returns in ~50ms
+        (controller processing time) instead of always hitting 200ms.
+        """
         if not self._serial or not self._serial.is_open:
             raise ConnectionError("Not connected to serial port")
         try:
-            return self._serial.read(n)
+            # Stage 1: Wait for first byte (up to timeout)
+            first = self._serial.read(1)
+            if not first:
+                return b""  # Timeout - no data available
+
+            # Stage 2: Read all bytes already buffered in the OS
+            available = self._serial.in_waiting
+            if available > 0:
+                rest = self._serial.read(available)
+                return first + rest
+
+            return first
         except (OSError, SerialException) as e:
             error_str = str(e)
             # "device reports readiness to read but returned no data" is transient

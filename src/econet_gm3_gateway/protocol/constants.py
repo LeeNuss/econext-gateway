@@ -150,6 +150,6 @@ TOKEN_TIMEOUT = 5.0  # Max time to wait for token grant (seconds, ~0.5 panel cyc
 # ============================================================================
 
 SERIAL_TIMEOUT = 0.2  # Serial read timeout (seconds)
-RETRY_ATTEMPTS = 5  # Number of retry attempts for failed operations
-REQUEST_TIMEOUT = 1.5  # Request timeout (seconds)
+RETRY_ATTEMPTS = 3  # Number of retry attempts (matches original RESEND_ATTEMPTS=3)
+REQUEST_TIMEOUT = 3.0  # Request timeout (seconds, > 2s silence detection)
 POLL_INTERVAL = 10.0  # Parameter polling interval (seconds)

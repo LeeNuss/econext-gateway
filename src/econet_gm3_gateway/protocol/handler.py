@@ -590,10 +590,12 @@ class ProtocolHandler:
     ) -> Frame | None:
         """Send a frame and wait for response.
 
-        Matches the original firmware's send-one/read-one pattern:
-        sends a request, then reads frames with a short timeout (0.2s).
-        If the bus goes quiet (no frame within 0.2s), the response
-        isn't coming and we return None for the caller to retry.
+        Matches the original webserver's writeAnswer/readFrameGm3 pattern:
+        1. 20ms bus turnaround delay (RS-485 line settle time)
+        2. Write request frame
+        3. Flush serial RX buffer + clear reader buffer (fresh read)
+        4. Wait for TX complete
+        5. Read response with 2s patience (10 empty reads * 0.2s)
 
         Args:
             command: Command code to send.
@@ -613,39 +615,39 @@ class ProtocolHandler:
         dest = destination if destination is not None else self._destination
         request = Frame(destination=dest, command=command, data=data)
 
-        success = await self._writer.write_frame(request, timeout=self._request_timeout)
+        # 20ms RS-485 bus turnaround delay before transmitting
+        # (matches original writeAnswer's time.sleep(0.02))
+        await asyncio.sleep(0.02)
+
+        # Write frame, then flush serial buffers and clear reader buffer.
+        # This matches the original webserver's writeAnswer() which does
+        # clearFrameBuffer() (data_buffer="" + flushInput()) + flush()
+        # after every write, ensuring each read starts fresh.
+        success = await self._writer.write_frame(request, flush_after=True)
         if not success:
             logger.warning(f"Failed to send command 0x{command:02X}")
             return None
 
-        # Don't clear buffer between requests - the frame validation
-        # (command + first_index check) handles filtering stale frames.
-        # Clearing the buffer here can discard late-arriving responses.
+        # Clear reader's Python-level buffer (matches original's data_buffer = b"")
+        self._reader.reset_buffer()
 
         if expected_response is None:
             return None
 
         accept_set = set(also_accept_commands) if also_accept_commands else set()
 
-        loop = asyncio.get_event_loop()
-        deadline = loop.time() + self._request_timeout
         skipped = 0
         consecutive_silence = 0
+        # 10 empty reads * 0.2s = 2.0s patience per request
+        # (matches original's NOT_CONNECTED_0_BYTES_GM3=10 * PORT_TIMEOUT=0.2)
+        max_silence = 10
 
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                break
-
+        while consecutive_silence < max_silence:
             # 0.2s per-read timeout matching original PORT_TIMEOUT
-            read_timeout = min(remaining, 0.2)
-            response = await self._reader.read_frame(timeout=read_timeout)
+            response = await self._reader.read_frame(timeout=0.2)
 
             if response is None:
                 consecutive_silence += 1
-                if consecutive_silence >= 3:
-                    # 0.6s of silence - response isn't coming
-                    break
                 continue
 
             # Any frame received resets the silence counter
@@ -906,159 +908,130 @@ class ProtocolHandler:
         logger.warning(f"Failed to write parameter {name}")
         return False
 
-    async def _discover_batch(
+    async def _discover_address_space(
         self,
-        wire_index: int,
+        label: str,
         store_offset: int,
         destination: int | None,
         with_range: bool,
         structs: dict[int, ParamStructEntry],
-    ) -> tuple[int, bool, bool]:
-        """Try to fetch one batch of parameter structs.
+    ) -> bool:
+        """Discover all parameters in one address space.
+
+        Sends struct requests one at a time in a tight loop until NO_DATA.
+        Retries failed requests up to RETRY_ATTEMPTS times.
 
         Args:
-            wire_index: Starting wire index for this batch.
-            store_offset: Offset added to wire index for storage.
-            destination: Destination address override.
-            with_range: Whether to use WITH_RANGE or WITHOUT_RANGE.
+            label: Human-readable name for logging ("regulator" or "panel").
+            store_offset: Offset added to wire index for storage (0 or 10000).
+            destination: Destination address (None for default, PANEL_ADDRESS for panel).
+            with_range: If True, use WITH_RANGE command; False for WITHOUT_RANGE.
             structs: Dict to add discovered entries to (mutated in place).
 
         Returns:
-            Tuple of (next_wire_index, range_done, token_expired).
-            - next_wire_index: Where to continue from.
-            - range_done: True if controller sent NO_DATA (range exhausted).
-            - token_expired: True if request timed out (likely token expired).
+            True if all params discovered, False if failed.
         """
-        batch_size = 100  # Match original's maxNumStructDPParams
+        wire_index = 0
+        batch_size = 100  # maxNumStructDPParams (matches original)
+        resend_counter = 0
+        batches = 0
 
-        # Try up to 2 times - first failure might be transient
-        # (bus noise, controller busy after panel communication)
-        for attempt in range(2):
+        while True:
             entries, end_of_range = await self.fetch_param_structs(
-                wire_index, batch_size, destination=destination, with_range=with_range,
+                wire_index, batch_size,
+                destination=destination, with_range=with_range,
             )
-            if entries or end_of_range:
-                break
 
-        if end_of_range:
-            return wire_index, True, False
+            if end_of_range:
+                logger.info(
+                    "Finished %s discovery (NO_DATA at wire index %d, %d batches)",
+                    label, wire_index, batches,
+                )
+                return True
 
-        if not entries:
-            return wire_index, False, True  # Token likely expired
+            if not entries:
+                resend_counter += 1
+                if resend_counter > RETRY_ATTEMPTS:
+                    logger.error(
+                        "Too many failures for %s at index %d after %d retries",
+                        label, wire_index, RETRY_ATTEMPTS,
+                    )
+                    return False
+                logger.info(
+                    "No response for %s index %d, resending (%d/%d)",
+                    label, wire_index, resend_counter, RETRY_ATTEMPTS,
+                )
+                continue
 
-        for entry in entries:
-            stored_index = entry.index + store_offset
-            entry.index = stored_index
-            structs[stored_index] = entry
+            resend_counter = 0
+            batches += 1
 
-        # Next batch starts after last received param (wire index)
-        next_index = entries[-1].index - store_offset + 1
-        return next_index, False, False
+            for entry in entries:
+                stored_index = entry.index + store_offset
+                entry.index = stored_index
+                structs[stored_index] = entry
+
+            # Advance to next batch
+            last_wire = entries[-1].index - store_offset
+            wire_index = last_wire + 1
+
+        return True
 
     async def discover_params(self) -> int:
-        """Discover all parameters across multiple token grants.
+        """Discover all parameters in a single token grant.
 
-        The bus token has a limited time (~2s). Each token grant allows
-        a few batches of struct requests. Discovery resumes from where
-        it left off on each new token grant.
+        The token does NOT expire on a timer - it lasts until we
+        explicitly return it. Discovery proceeds sequentially:
+        first all regulator params, then all panel params.
 
-        Discovers two address spaces:
+        Address spaces:
         1. Regulator params: dest=regulator, WITH_RANGE (0x02), stored at 0+
         2. Panel params: dest=panel (100), WITHOUT_RANGE (0x01), stored at 10000+
 
         Returns:
             Total number of parameters discovered.
         """
+        import time as _time
+
         async with self._lock:
             new_structs: dict[int, ParamStructEntry] = {}
 
-            # Discovery state for each address space
-            spaces = [
-                {
-                    "label": "regulator",
-                    "wire_index": 0,
-                    "store_offset": 0,
-                    "destination": None,
-                    "with_range": True,
-                    "done": False,
-                },
-                {
-                    "label": "panel",
-                    "wire_index": 0,
-                    "store_offset": 10000,
-                    "destination": PANEL_ADDRESS,
-                    "with_range": False,
-                    "done": False,
-                },
-            ]
+            # Wait for token from panel
+            try:
+                await self._wait_for_token()
+            except Exception:
+                logger.error("Failed to get token during discovery")
+                return len(self._param_structs)
 
-            max_token_grants = 100  # Safety limit
-            grants_used = 0
+            start_time = _time.monotonic()
 
-            while any(not s["done"] for s in spaces) and grants_used < max_token_grants:
-                # Get a token from the panel
-                try:
-                    await self._wait_for_token()
-                except Exception:
-                    logger.error("Failed to get token during discovery")
-                    break
+            try:
+                # Clear reader buffer (fresh start after panel communication)
+                self._reader.reset_buffer()
 
-                grants_used += 1
-                batches_this_grant = 0
+                # Discover regulator params first (WITH_RANGE to default dest)
+                await self._discover_address_space(
+                    "regulator", store_offset=0,
+                    destination=None, with_range=True,
+                    structs=new_structs,
+                )
 
-                try:
-                    # Clear reader buffer to discard any stale partial
-                    # frames from the panel's previous communication
-                    self._reader.reset_buffer()
+                reg_elapsed = _time.monotonic() - start_time
+                reg_count = sum(1 for k in new_structs if k < 10000)
+                logger.info("Regulator: %d params in %.1fs", reg_count, reg_elapsed)
 
-                    # Use this token grant to discover as many batches as possible
-                    for space in spaces:
-                        if space["done"]:
-                            continue
+                # Then discover panel params (WITHOUT_RANGE to panel address)
+                await self._discover_address_space(
+                    "panel", store_offset=10000,
+                    destination=PANEL_ADDRESS, with_range=False,
+                    structs=new_structs,
+                )
 
-                        # Send batches until token expires or range ends
-                        while True:
-                            prev_count = len(new_structs)
-                            next_idx, range_done, token_expired = await self._discover_batch(
-                                wire_index=space["wire_index"],
-                                store_offset=space["store_offset"],
-                                destination=space["destination"],
-                                with_range=space["with_range"],
-                                structs=new_structs,
-                            )
+            finally:
+                if self._has_token:
+                    await self._return_token()
 
-                            space["wire_index"] = next_idx
-                            if len(new_structs) > prev_count:
-                                batches_this_grant += 1
-
-                            if range_done:
-                                space["done"] = True
-                                reg_count = sum(1 for k in new_structs if k < 10000)
-                                panel_count = sum(1 for k in new_structs if k >= 10000)
-                                logger.info(
-                                    "Finished %s discovery (%d params so far: %d reg, %d panel)",
-                                    space["label"], len(new_structs), reg_count, panel_count,
-                                )
-                                break
-
-                            if token_expired:
-                                logger.debug(
-                                    "Token expired during %s discovery at index %d",
-                                    space["label"], space["wire_index"],
-                                )
-                                break
-
-                    # Log progress per token grant
-                    if batches_this_grant > 0 or grants_used % 5 == 0:
-                        reg_count = sum(1 for k in new_structs if k < 10000)
-                        panel_count = sum(1 for k in new_structs if k >= 10000)
-                        logger.info(
-                            "Grant %d: %d total params so far (%d reg, %d panel)",
-                            grants_used, len(new_structs), reg_count, panel_count,
-                        )
-                finally:
-                    if self._has_token:
-                        await self._return_token()
+            elapsed = _time.monotonic() - start_time
 
             if new_structs:
                 self._param_structs = new_structs
@@ -1066,8 +1039,8 @@ class ProtocolHandler:
                 reg_count = sum(1 for k in new_structs if k < 10000)
                 panel_count = sum(1 for k in new_structs if k >= 10000)
                 logger.info(
-                    "Discovery complete: %d parameters (%d regulator, %d panel) in %d token grants",
-                    self._total_params, reg_count, panel_count, grants_used,
+                    "Discovery complete: %d parameters (%d regulator, %d panel) in %.1fs",
+                    self._total_params, reg_count, panel_count, elapsed,
                 )
             else:
                 logger.warning("Parameter discovery returned no results, keeping existing structures")
