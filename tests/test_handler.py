@@ -8,7 +8,12 @@ import pytest
 
 from econet_gm3_gateway.core.cache import ParameterCache
 from econet_gm3_gateway.core.models import Parameter
-from econet_gm3_gateway.protocol.constants import Command, DataType
+from econet_gm3_gateway.protocol.constants import (
+    PANEL_ADDRESS,
+    RETRY_ATTEMPTS,
+    Command,
+    DataType,
+)
 from econet_gm3_gateway.protocol.frames import Frame
 from econet_gm3_gateway.protocol.handler import (
     ParamStructEntry,
@@ -724,7 +729,7 @@ class TestProtocolHandler:
         # Third call returns 1 panel param, fourth returns NO_DATA
         call_count = 0
 
-        async def mock_fetch_structs(start_index, count, destination=None):
+        async def mock_fetch_structs(start_index, count, destination=None, with_range=True):
             nonlocal call_count
             call_count += 1
             if destination is None:
@@ -1038,3 +1043,270 @@ class TestProtocolHandler:
         assert entries[0].name == "RightParam"
         assert entries[0].index == 0
         assert end_of_range is False
+
+
+# ============================================================================
+# Test _discover_address_space
+# ============================================================================
+
+
+class TestDiscoverAddressSpace:
+    """Tests for _discover_address_space retry and store_offset logic."""
+
+    DEST_ADDR = 1
+
+    def _make_handler(self) -> tuple[ProtocolHandler, MagicMock, ParameterCache]:
+        conn = MagicMock(spec=SerialConnection)
+        conn.connected = True
+        cache = ParameterCache()
+        handler = ProtocolHandler(
+            connection=conn,
+            cache=cache,
+            poll_interval=1.0,
+            request_timeout=0.5,
+            token_timeout=0,
+            token_required=False,
+        )
+        return handler, conn, cache
+
+    @pytest.mark.asyncio
+    async def test_store_offset_applied(self):
+        """Test that store_offset is added to entry indices."""
+        handler, conn, cache = self._make_handler()
+
+        call_count = 0
+
+        async def mock_fetch(start_index, count, destination=None, with_range=True):
+            nonlocal call_count
+            call_count += 1
+            if start_index == 0:
+                return [
+                    ParamStructEntry(0, "PanelA", 0, DataType.INT16, True),
+                    ParamStructEntry(1, "PanelB", 0, DataType.UINT8, False),
+                ], False
+            return [], True  # NO_DATA
+
+        handler.fetch_param_structs = mock_fetch
+        structs: dict[int, ParamStructEntry] = {}
+
+        result = await handler._discover_address_space(
+            "panel", store_offset=10000,
+            destination=PANEL_ADDRESS, with_range=False,
+            structs=structs,
+        )
+
+        assert result is True
+        assert 10000 in structs
+        assert 10001 in structs
+        assert structs[10000].name == "PanelA"
+        assert structs[10001].name == "PanelB"
+        # Wire indices 0, 1 should not be present
+        assert 0 not in structs
+        assert 1 not in structs
+
+    @pytest.mark.asyncio
+    async def test_retry_on_empty_entries(self):
+        """Test that empty response triggers retry before giving up."""
+        handler, conn, cache = self._make_handler()
+
+        call_count = 0
+
+        async def mock_fetch(start_index, count, destination=None, with_range=True):
+            nonlocal call_count
+            call_count += 1
+            # First call: empty (transient failure), second: real data
+            if call_count == 1:
+                return [], False
+            if call_count == 2:
+                return [ParamStructEntry(0, "A", 0, DataType.INT16, True)], False
+            return [], True  # NO_DATA
+
+        handler.fetch_param_structs = mock_fetch
+        structs: dict[int, ParamStructEntry] = {}
+
+        result = await handler._discover_address_space(
+            "regulator", store_offset=0,
+            destination=None, with_range=True,
+            structs=structs,
+        )
+
+        assert result is True
+        assert 0 in structs
+        assert call_count == 3  # empty, success, NO_DATA
+
+    @pytest.mark.asyncio
+    async def test_too_many_retries_returns_false(self):
+        """Test that exceeding RETRY_ATTEMPTS returns False."""
+        handler, conn, cache = self._make_handler()
+
+        async def mock_fetch(start_index, count, destination=None, with_range=True):
+            return [], False  # Always empty but not end-of-range
+
+        handler.fetch_param_structs = mock_fetch
+        structs: dict[int, ParamStructEntry] = {}
+
+        result = await handler._discover_address_space(
+            "regulator", store_offset=0,
+            destination=None, with_range=True,
+            structs=structs,
+        )
+
+        assert result is False
+        assert len(structs) == 0
+
+    @pytest.mark.asyncio
+    async def test_resend_counter_resets_after_success(self):
+        """Test that resend counter resets after a successful batch."""
+        handler, conn, cache = self._make_handler()
+
+        call_count = 0
+
+        async def mock_fetch(start_index, count, destination=None, with_range=True):
+            nonlocal call_count
+            call_count += 1
+            if start_index == 0:
+                # Two failures then success for first batch
+                if call_count <= 2:
+                    return [], False
+                return [ParamStructEntry(0, "A", 0, DataType.INT16, True)], False
+            if start_index == 1:
+                # Two more failures then success for second batch
+                if call_count <= 5:
+                    return [], False
+                return [ParamStructEntry(1, "B", 0, DataType.UINT8, False)], False
+            return [], True  # NO_DATA
+
+        handler.fetch_param_structs = mock_fetch
+        structs: dict[int, ParamStructEntry] = {}
+
+        result = await handler._discover_address_space(
+            "regulator", store_offset=0,
+            destination=None, with_range=True,
+            structs=structs,
+        )
+
+        assert result is True
+        assert 0 in structs
+        assert 1 in structs
+
+
+# ============================================================================
+# Test discover_params address space integration
+# ============================================================================
+
+
+class TestDiscoverParamsAddressSpaces:
+    """Tests for discover_params with_range and store_offset per address space."""
+
+    def _make_handler(self) -> tuple[ProtocolHandler, MagicMock, ParameterCache]:
+        conn = MagicMock(spec=SerialConnection)
+        conn.connected = True
+        cache = ParameterCache()
+        handler = ProtocolHandler(
+            connection=conn,
+            cache=cache,
+            poll_interval=1.0,
+            request_timeout=0.5,
+            token_timeout=0,
+            token_required=False,
+        )
+        return handler, conn, cache
+
+    @pytest.mark.asyncio
+    async def test_regulator_uses_with_range_true(self):
+        """Test that regulator discovery uses with_range=True."""
+        handler, conn, cache = self._make_handler()
+        handler._has_token = True
+
+        captured_calls = []
+
+        async def mock_fetch(start_index, count, destination=None, with_range=True):
+            captured_calls.append({
+                "start": start_index,
+                "dest": destination,
+                "with_range": with_range,
+            })
+            if destination is None and start_index == 0:
+                entries = [ParamStructEntry(0, "RegA", 0, DataType.INT16, True)]
+                for e in entries:
+                    handler._param_structs[e.index] = e
+                return entries, False
+            # NO_DATA for everything else
+            return [], True
+
+        handler.fetch_param_structs = mock_fetch
+
+        await handler.discover_params()
+
+        # First call should be regulator (destination=None, with_range=True)
+        reg_calls = [c for c in captured_calls if c["dest"] is None]
+        assert len(reg_calls) >= 1
+        assert reg_calls[0]["with_range"] is True
+
+    @pytest.mark.asyncio
+    async def test_panel_uses_with_range_false_and_panel_dest(self):
+        """Test that panel discovery uses with_range=False and destination=PANEL_ADDRESS."""
+        handler, conn, cache = self._make_handler()
+        handler._has_token = True
+
+        captured_calls = []
+
+        async def mock_fetch(start_index, count, destination=None, with_range=True):
+            captured_calls.append({
+                "start": start_index,
+                "dest": destination,
+                "with_range": with_range,
+            })
+            if destination is None and start_index == 0:
+                entries = [ParamStructEntry(0, "RegA", 0, DataType.INT16, True)]
+                for e in entries:
+                    handler._param_structs[e.index] = e
+                return entries, False
+            if destination == PANEL_ADDRESS and start_index == 0:
+                entries = [ParamStructEntry(0, "PanelA", 0, DataType.UINT8, False)]
+                for e in entries:
+                    handler._param_structs[e.index + 10000] = e
+                return entries, False
+            return [], True
+
+        handler.fetch_param_structs = mock_fetch
+
+        await handler.discover_params()
+
+        panel_calls = [c for c in captured_calls if c["dest"] == PANEL_ADDRESS]
+        assert len(panel_calls) >= 1
+        assert panel_calls[0]["with_range"] is False
+
+    @pytest.mark.asyncio
+    async def test_panel_params_stored_at_10000_offset(self):
+        """Test that panel params are stored with 10000 offset."""
+        handler, conn, cache = self._make_handler()
+        handler._has_token = True
+
+        async def mock_fetch(start_index, count, destination=None, with_range=True):
+            if destination is None:
+                if start_index == 0:
+                    entries = [ParamStructEntry(0, "RegA", 0, DataType.INT16, True)]
+                    for e in entries:
+                        handler._param_structs[e.index] = e
+                    return entries, False
+                return [], True
+            else:
+                if start_index == 0:
+                    entries = [ParamStructEntry(0, "PanelX", 0, DataType.UINT8, False)]
+                    for e in entries:
+                        handler._param_structs[e.index] = e
+                    return entries, False
+                return [], True
+
+        handler.fetch_param_structs = mock_fetch
+
+        total = await handler.discover_params()
+
+        assert total == 2
+        # Regulator at index 0
+        assert 0 in handler._param_structs
+        assert handler._param_structs[0].name == "RegA"
+        # Panel at index 10000
+        assert 10000 in handler._param_structs
+        assert handler._param_structs[10000].name == "PanelX"

@@ -74,11 +74,14 @@ class TestSerialConnection:
 
     @pytest.mark.asyncio
     async def test_read_success(self):
-        """Test successful read."""
+        """Test successful read (two-stage: read(1) then read(in_waiting))."""
         with patch("econet_gm3_gateway.serial.connection.serial.Serial") as mock_serial_class:
             mock_serial = MagicMock()
             mock_serial.is_open = True
-            mock_serial.read.return_value = b"test data"
+            # Two-stage read: first read(1) returns first byte,
+            # then in_waiting reports remaining bytes, then read(N) returns rest
+            mock_serial.read.side_effect = [b"t", b"est data"]
+            mock_serial.in_waiting = 8
             mock_serial_class.return_value = mock_serial
 
             conn = SerialConnection("/dev/ttyUSB0")
@@ -87,6 +90,45 @@ class TestSerialConnection:
             data = await conn.read()
 
             assert data == b"test data"
+
+    @pytest.mark.asyncio
+    async def test_read_timeout_empty(self):
+        """Test read returns empty when first byte times out (no data on bus)."""
+        with patch("econet_gm3_gateway.serial.connection.serial.Serial") as mock_serial_class:
+            mock_serial = MagicMock()
+            mock_serial.is_open = True
+            # read(1) returns empty bytes (timeout, no data available)
+            mock_serial.read.return_value = b""
+            mock_serial_class.return_value = mock_serial
+
+            conn = SerialConnection("/dev/ttyUSB0")
+            await conn.connect()
+
+            data = await conn.read()
+
+            assert data == b""
+            # Only read(1) should have been called (stage 1 timeout)
+            mock_serial.read.assert_called_once_with(1)
+
+    @pytest.mark.asyncio
+    async def test_read_single_byte_no_waiting(self):
+        """Test read returns single byte when in_waiting is 0."""
+        with patch("econet_gm3_gateway.serial.connection.serial.Serial") as mock_serial_class:
+            mock_serial = MagicMock()
+            mock_serial.is_open = True
+            # read(1) returns one byte, but nothing else buffered
+            mock_serial.read.return_value = b"X"
+            mock_serial.in_waiting = 0
+            mock_serial_class.return_value = mock_serial
+
+            conn = SerialConnection("/dev/ttyUSB0")
+            await conn.connect()
+
+            data = await conn.read()
+
+            assert data == b"X"
+            # Only read(1) should have been called (no stage 2 since in_waiting=0)
+            mock_serial.read.assert_called_once_with(1)
 
     @pytest.mark.asyncio
     async def test_read_not_connected(self):
