@@ -30,9 +30,10 @@ async def get_parameters(
     params = await cache.get_all()
 
     parameters_dict = {}
-    for name, param in params.items():
-        parameters_dict[name] = {
+    for index_str, param in params.items():
+        parameters_dict[index_str] = {
             "index": param.index,
+            "name": param.name,
             "value": param.value,
             "type": param.type,
             "unit": param.unit,
@@ -66,7 +67,7 @@ async def set_parameter(
     if not handler.connected:
         raise HTTPException(status_code=503, detail="Controller not connected")
 
-    param = await cache.get(name)
+    param = await cache.get_by_name(name)
     if param is None:
         raise HTTPException(status_code=404, detail=f"Parameter not found: {name}")
 

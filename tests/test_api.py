@@ -163,8 +163,9 @@ class TestGetParameters:
         assert "timestamp" in data
         assert len(data["parameters"]) == 2
 
-        temp = data["parameters"]["Temperature"]
+        temp = data["parameters"]["0"]
         assert temp["index"] == 0
+        assert temp["name"] == "Temperature"
         assert temp["value"] == 55
         assert temp["type"] == 2
         assert temp["unit"] == 1
@@ -172,7 +173,8 @@ class TestGetParameters:
         assert temp["min"] == 20.0
         assert temp["max"] == 80.0
 
-        pressure = data["parameters"]["Pressure"]
+        pressure = data["parameters"]["1"]
+        assert pressure["name"] == "Pressure"
         assert pressure["value"] == 2.5
         assert pressure["writable"] is False
 

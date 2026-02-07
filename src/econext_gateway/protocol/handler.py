@@ -466,15 +466,15 @@ class ProtocolHandler:
 
         if entry.min_param_ref is not None:
             ref = self._param_structs.get(entry.min_param_ref)
-            if ref is not None and ref.name:
-                cached = await self._cache.get(ref.name)
+            if ref is not None:
+                cached = await self._cache.get(ref.index)
                 if cached is not None:
                     min_val = float(cached.value)
 
         if entry.max_param_ref is not None:
             ref = self._param_structs.get(entry.max_param_ref)
-            if ref is not None and ref.name:
-                cached = await self._cache.get(ref.name)
+            if ref is not None:
+                cached = await self._cache.get(ref.index)
                 if cached is not None:
                     max_val = float(cached.value)
 
@@ -939,7 +939,7 @@ class ProtocolHandler:
         Raises:
             ValueError: If parameter not found or not writable.
         """
-        param = await self._cache.get(name)
+        param = await self._cache.get_by_name(name)
         if param is None:
             raise ValueError(f"Parameter not found: {name}")
 

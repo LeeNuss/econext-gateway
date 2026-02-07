@@ -25,13 +25,13 @@ class TestParameterCache:
         assert cache.last_update is None
 
     @pytest.mark.asyncio
-    async def test_set_and_get(self):
-        """Test storing and retrieving a parameter."""
+    async def test_set_and_get_by_index(self):
+        """Test storing and retrieving a parameter by index."""
         cache = ParameterCache()
         param = make_param("Temperature", index=10, value=55)
 
         await cache.set(param)
-        result = await cache.get("Temperature")
+        result = await cache.get(10)
 
         assert result is not None
         assert result.name == "Temperature"
@@ -43,28 +43,29 @@ class TestParameterCache:
         """Test getting a nonexistent parameter returns None."""
         cache = ParameterCache()
 
-        result = await cache.get("NoSuchParam")
+        result = await cache.get(999)
 
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_get_by_index(self):
-        """Test retrieving a parameter by index."""
+    async def test_get_by_name(self):
+        """Test retrieving a parameter by name."""
         cache = ParameterCache()
         param = make_param("Pressure", index=42, value=100)
 
         await cache.set(param)
-        result = await cache.get_by_index(42)
+        result = await cache.get_by_name("Pressure")
 
         assert result is not None
+        assert result.index == 42
         assert result.name == "Pressure"
 
     @pytest.mark.asyncio
-    async def test_get_by_index_nonexistent(self):
-        """Test getting by nonexistent index returns None."""
+    async def test_get_by_name_nonexistent(self):
+        """Test getting by nonexistent name returns None."""
         cache = ParameterCache()
 
-        result = await cache.get_by_index(999)
+        result = await cache.get_by_name("NoSuchParam")
 
         assert result is None
 
@@ -79,7 +80,7 @@ class TestParameterCache:
 
     @pytest.mark.asyncio
     async def test_get_all(self):
-        """Test get_all returns all parameters."""
+        """Test get_all returns all parameters keyed by index string."""
         cache = ParameterCache()
         await cache.set(make_param("A", index=1, value=10))
         await cache.set(make_param("B", index=2, value=20))
@@ -87,8 +88,8 @@ class TestParameterCache:
         result = await cache.get_all()
 
         assert len(result) == 2
-        assert "A" in result
-        assert "B" in result
+        assert "1" in result
+        assert "2" in result
 
     @pytest.mark.asyncio
     async def test_get_all_returns_copy(self):
@@ -97,19 +98,19 @@ class TestParameterCache:
         await cache.set(make_param("A", index=1))
 
         result = await cache.get_all()
-        result["B"] = make_param("B", index=2)
+        result["99"] = make_param("B", index=99)
 
         assert cache.count == 1
 
     @pytest.mark.asyncio
     async def test_set_updates_existing(self):
-        """Test setting a parameter with same name updates it."""
+        """Test setting a parameter with same index updates it."""
         cache = ParameterCache()
 
         await cache.set(make_param("Temp", index=5, value=30))
         await cache.set(make_param("Temp", index=5, value=60))
 
-        result = await cache.get("Temp")
+        result = await cache.get(5)
         assert result is not None
         assert result.value == 60
         assert cache.count == 1
@@ -127,7 +128,7 @@ class TestParameterCache:
         await cache.set_many(params)
 
         assert cache.count == 3
-        a = await cache.get("A")
+        a = await cache.get(1)
         assert a is not None and a.value == 10
 
     @pytest.mark.asyncio
@@ -141,26 +142,6 @@ class TestParameterCache:
         assert cache.last_update is None
 
     @pytest.mark.asyncio
-    async def test_remove_existing(self):
-        """Test removing an existing parameter."""
-        cache = ParameterCache()
-        await cache.set(make_param("Temp", index=1))
-
-        removed = await cache.remove("Temp")
-
-        assert removed is True
-        assert cache.count == 0
-
-    @pytest.mark.asyncio
-    async def test_remove_nonexistent(self):
-        """Test removing a nonexistent parameter."""
-        cache = ParameterCache()
-
-        removed = await cache.remove("NoSuchParam")
-
-        assert removed is False
-
-    @pytest.mark.asyncio
     async def test_clear(self):
         """Test clearing the cache."""
         cache = ParameterCache()
@@ -171,21 +152,6 @@ class TestParameterCache:
 
         assert cache.count == 0
         assert cache.last_update is None
-
-    @pytest.mark.asyncio
-    async def test_contains_true(self):
-        """Test contains returns True for existing parameter."""
-        cache = ParameterCache()
-        await cache.set(make_param("Temp", index=1))
-
-        assert await cache.contains("Temp") is True
-
-    @pytest.mark.asyncio
-    async def test_contains_false(self):
-        """Test contains returns False for nonexistent parameter."""
-        cache = ParameterCache()
-
-        assert await cache.contains("NoSuch") is False
 
     @pytest.mark.asyncio
     async def test_last_update_set_on_set(self):
@@ -216,31 +182,24 @@ class TestParameterCache:
         assert cache.count == 1
         await cache.set(make_param("B", index=2))
         assert cache.count == 2
-        await cache.remove("A")
-        assert cache.count == 1
 
     @pytest.mark.asyncio
-    async def test_get_names(self):
-        """Test get_names returns all parameter names."""
+    async def test_duplicate_names_different_indices(self):
+        """Test that params with same name but different indices are stored separately."""
         cache = ParameterCache()
-        await cache.set(make_param("Alpha", index=1))
-        await cache.set(make_param("Beta", index=2))
+        await cache.set(make_param("PS", index=0, value=100))
+        await cache.set(make_param("PS", index=10010, value=200))
 
-        names = await cache.get_names()
+        assert cache.count == 2
 
-        assert set(names) == {"Alpha", "Beta"}
+        reg = await cache.get(0)
+        panel = await cache.get(10010)
+        assert reg is not None and reg.value == 100
+        assert panel is not None and panel.value == 200
 
-    @pytest.mark.asyncio
-    async def test_get_indices(self):
-        """Test get_indices returns sorted indices."""
-        cache = ParameterCache()
-        await cache.set(make_param("C", index=30))
-        await cache.set(make_param("A", index=10))
-        await cache.set(make_param("B", index=20))
-
-        indices = await cache.get_indices()
-
-        assert indices == [10, 20, 30]
+        # get_by_name returns first match
+        by_name = await cache.get_by_name("PS")
+        assert by_name is not None
 
     @pytest.mark.asyncio
     async def test_concurrent_access(self):

@@ -296,12 +296,12 @@ class TestPollIntegration:
         count = await handler.poll_all_params()
 
         assert count == 2
-        temp = await cache.get("Temperature")
+        temp = await cache.get(0)
         assert temp is not None
         assert temp.value == 42
         assert temp.writable is True
 
-        hum = await cache.get("Humidity")
+        hum = await cache.get(1)
         assert hum is not None
         assert hum.value == 75
         assert hum.writable is False
@@ -340,7 +340,7 @@ class TestWriteIntegration:
         result = await handler.write_param("SetPoint", 65)
 
         assert result is True
-        updated = await cache.get("SetPoint")
+        updated = await cache.get(0)
         assert updated.value == 65
 
     @pytest.mark.asyncio
@@ -412,7 +412,7 @@ class TestWriteIntegration:
 
         assert result is False
         # Cache should NOT be updated
-        param = await cache.get("SetPoint")
+        param = await cache.get(0)
         assert param.value == 50
 
 
@@ -502,8 +502,9 @@ class TestApiIntegration:
 
                 assert response.status_code == 200
                 data = response.json()
-                assert "Temperature" in data["parameters"]
-                temp = data["parameters"]["Temperature"]
+                assert "0" in data["parameters"]
+                temp = data["parameters"]["0"]
+                assert temp["name"] == "Temperature"
                 assert temp["value"] == 42
                 assert temp["min"] == 20.0
                 assert temp["max"] == 80.0

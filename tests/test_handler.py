@@ -573,8 +573,8 @@ class TestProtocolHandler:
         assert params[0].name == "Temp"
         assert params[0].value == 65
 
-        # Verify cache was updated
-        cached = await cache.get("Temp")
+        # Verify cache was updated (keyed by index)
+        cached = await cache.get(0)
         assert cached is not None
         assert cached.value == 65
         assert cached.min_value == 10.0
@@ -617,8 +617,8 @@ class TestProtocolHandler:
 
         assert result is True
 
-        # Verify cache was updated
-        cached = await cache.get("SetPoint")
+        # Verify cache was updated (keyed by index)
+        cached = await cache.get(0)
         assert cached is not None
         assert cached.value == 65
 
@@ -761,7 +761,7 @@ class TestProtocolHandler:
         assert result is False
 
         # Cache should not be updated on failure
-        cached = await cache.get("Temp")
+        cached = await cache.get(0)
         assert cached.value == 50
 
     @pytest.mark.asyncio
