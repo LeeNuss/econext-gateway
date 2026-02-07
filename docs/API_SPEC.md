@@ -28,22 +28,26 @@ Get all parameters from the heat pump controller.
 {
   "timestamp": "2026-01-13T12:00:00Z",
   "parameters": {
-    "OutsideTemp": {
+    "150": {
       "index": 150,
+      "name": "OutsideTemp",
       "value": 5.2,
-      "unit": "°C",
-      "type": "float",
-      "writable": false
+      "type": 2,
+      "unit": 1,
+      "writable": false,
+      "min": null,
+      "max": null
     },
-    "HDWTSetPoint": {
+    "103": {
       "index": 103,
+      "name": "HDWTSetPoint",
       "value": 45,
-      "unit": "°C",
-      "type": "int",
+      "type": 2,
+      "unit": 1,
       "writable": true,
       "min": 35,
       "max": 65
-    },
+    }
   }
 }
 ```
@@ -51,17 +55,18 @@ Get all parameters from the heat pump controller.
 **Response Fields:**
 
 - `timestamp` (string): ISO 8601 timestamp of when data was read
-- `parameters` (object): Map of parameter names to parameter objects
+- `parameters` (object): Map of parameter index (as string) to parameter objects. Keyed by index because multiple parameters can share the same name across address spaces.
 
 **Parameter Object Fields:**
 
 - `index` (integer): Protocol parameter index (0-65535)
+- `name` (string): Parameter name
 - `value` (number|string|boolean): Current parameter value
-- `unit` (string): Display unit (e.g., "°C", "%", "kW")
-- `type` (string): Data type (`float`, `int`, `bool`, `string`)
+- `type` (integer): Data type code (1=uint8, 2=int16, 3=int32, 4=bool, 5=string, 6=uint8)
+- `unit` (integer): Unit code
 - `writable` (boolean): Whether parameter can be modified
-- `min` (number, optional): Minimum allowed value (for writable parameters)
-- `max` (number, optional): Maximum allowed value (for writable parameters)
+- `min` (number|null): Minimum allowed value (null if not applicable)
+- `max` (number|null): Maximum allowed value (null if not applicable)
 
 **Status Codes:**
 
