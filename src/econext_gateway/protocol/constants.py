@@ -141,9 +141,13 @@ IDENTIFY_RESPONSE_DATA = b"PLUM\x00EcoNET\x00\x00\x00\x00\x00"  # Identity paylo
 
 # Service frames (token grant/return)
 SERVICE_CMD = 0x68  # Service frame command byte (same value as BEGIN_FRAME)
+SERVICE_ANS_CMD = 0xE8  # Service answer command byte
 GET_TOKEN_FUNC = 0x0801  # Token grant function code (LE uint16 in data[0:2])
 GIVE_BACK_TOKEN_DATA = b"\x00\x08\x00\x00"  # Token return payload
 TOKEN_TIMEOUT = 5.0  # Max time to wait for token grant (seconds, ~0.5 panel cycle)
+
+# Alarm reading
+ALARM_REQUEST_PREFIX = b"\x00\x02\x00\x00\x01\x01\x00\x01\x01\x00"
 
 # ============================================================================
 # Communication Settings

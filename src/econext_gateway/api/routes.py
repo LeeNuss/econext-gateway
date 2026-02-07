@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from econext_gateway.api.dependencies import get_cache, get_handler
 from econext_gateway.core.cache import ParameterCache
 from econext_gateway.core.models import (
+    AlarmsResponse,
     ErrorResponse,
     ParameterSetRequest,
     ParameterSetResponse,
@@ -85,3 +86,14 @@ async def set_parameter(
         old_value=old_value,
         new_value=request.value,
     )
+
+
+@router.get("/alarms", response_model=AlarmsResponse)
+async def get_alarms(
+    handler: ProtocolHandler = Depends(get_handler),
+):
+    """Get alarm history from the controller."""
+    if not handler.connected:
+        raise HTTPException(status_code=503, detail="Controller not connected")
+
+    return AlarmsResponse(alarms=handler.alarms)
