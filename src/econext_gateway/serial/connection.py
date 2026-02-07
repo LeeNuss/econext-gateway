@@ -3,7 +3,6 @@
 import asyncio
 import logging
 
-import serial
 from serial import SerialException
 
 from econext_gateway.serial.protocol import GM3Protocol
@@ -46,28 +45,6 @@ class GM3SerialTransport:
     def connected(self) -> bool:
         return self._protocol is not None and self._protocol.connected
 
-    # -- baud toggle (unchanged from original) --------------------------------
-
-    def _baud_toggle_reset(self) -> None:
-        """Perform baud rate toggle to reset RS-485 transceiver.
-
-        The original ecoNET300 webserver does this sequence at startup:
-        1. Open at 9600 baud
-        2. Close
-        3. Open at target baud rate
-        """
-        try:
-            logger.debug("Performing baud toggle reset on %s", self.port)
-            temp_port = serial.Serial()
-            temp_port.port = self.port
-            temp_port.baudrate = 9600
-            temp_port.timeout = 0.1
-            temp_port.open()
-            temp_port.close()
-            logger.debug("Baud toggle reset completed")
-        except (OSError, SerialException) as e:
-            logger.warning("Baud toggle reset failed (non-fatal): %s", e)
-
     # -- connect / disconnect -------------------------------------------------
 
     async def connect(self) -> bool:
@@ -76,8 +53,6 @@ class GM3SerialTransport:
             return True
 
         try:
-            self._baud_toggle_reset()
-
             logger.info("Connecting to serial port %s at %d baud", self.port, self.baudrate)
 
             import serial_asyncio

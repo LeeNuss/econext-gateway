@@ -299,16 +299,3 @@ class TestGM3SerialTransport:
                 assert transport.connected is True
 
             mock_transport.close.assert_called_once()
-
-    def test_baud_toggle_reset(self):
-        """Test baud toggle opens/closes at 9600."""
-        with patch("econext_gateway.serial.connection.serial.Serial") as mock_serial_class:
-            mock_serial = MagicMock()
-            mock_serial_class.return_value = mock_serial
-
-            transport = GM3SerialTransport("/dev/ttyUSB0")
-            transport._baud_toggle_reset()
-
-            mock_serial.open.assert_called_once()
-            mock_serial.close.assert_called_once()
-            assert mock_serial.baudrate == 9600
