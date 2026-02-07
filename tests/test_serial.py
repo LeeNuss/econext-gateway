@@ -228,12 +228,7 @@ class TestGM3SerialTransport:
         mock_protocol = MagicMock(spec=GM3Protocol)
         mock_protocol.connected = True
 
-        with (
-            patch("econext_gateway.serial.connection.serial.Serial") as mock_serial_class,
-            patch("serial_asyncio.create_serial_connection", new_callable=AsyncMock) as mock_create,
-        ):
-            mock_serial = MagicMock()
-            mock_serial_class.return_value = mock_serial
+        with patch("serial_asyncio.create_serial_connection", new_callable=AsyncMock) as mock_create:
             mock_create.return_value = (mock_transport, mock_protocol)
 
             transport = GM3SerialTransport("/dev/ttyUSB0")
@@ -246,12 +241,7 @@ class TestGM3SerialTransport:
     @pytest.mark.asyncio
     async def test_connect_failure(self):
         """Test connection failure."""
-        with (
-            patch("econext_gateway.serial.connection.serial.Serial") as mock_serial_class,
-            patch("serial_asyncio.create_serial_connection", new_callable=AsyncMock) as mock_create,
-        ):
-            mock_serial = MagicMock()
-            mock_serial_class.return_value = mock_serial
+        with patch("serial_asyncio.create_serial_connection", new_callable=AsyncMock) as mock_create:
             mock_create.side_effect = OSError("Port not found")
 
             transport = GM3SerialTransport("/dev/ttyUSB0")
@@ -267,10 +257,7 @@ class TestGM3SerialTransport:
         mock_protocol = MagicMock(spec=GM3Protocol)
         mock_protocol.connected = True
 
-        with (
-            patch("econext_gateway.serial.connection.serial.Serial"),
-            patch("serial_asyncio.create_serial_connection", new_callable=AsyncMock) as mock_create,
-        ):
+        with patch("serial_asyncio.create_serial_connection", new_callable=AsyncMock) as mock_create:
             mock_create.return_value = (mock_transport, mock_protocol)
 
             transport = GM3SerialTransport("/dev/ttyUSB0")
@@ -289,10 +276,7 @@ class TestGM3SerialTransport:
         mock_protocol = MagicMock(spec=GM3Protocol)
         mock_protocol.connected = True
 
-        with (
-            patch("econext_gateway.serial.connection.serial.Serial"),
-            patch("serial_asyncio.create_serial_connection", new_callable=AsyncMock) as mock_create,
-        ):
+        with patch("serial_asyncio.create_serial_connection", new_callable=AsyncMock) as mock_create:
             mock_create.return_value = (mock_transport, mock_protocol)
 
             async with GM3SerialTransport("/dev/ttyUSB0") as transport:
