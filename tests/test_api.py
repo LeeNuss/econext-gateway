@@ -10,7 +10,7 @@ from econext_gateway.core.cache import ParameterCache
 from econext_gateway.core.models import Parameter
 from econext_gateway.main import app
 from econext_gateway.protocol.handler import ProtocolHandler
-from econext_gateway.serial.connection import SerialConnection
+from econext_gateway.serial.connection import GM3SerialTransport
 
 
 @pytest.fixture
@@ -21,7 +21,7 @@ def mock_app_state():
     orig_cache = app_state.cache
     orig_handler = app_state.handler
 
-    conn = MagicMock(spec=SerialConnection)
+    conn = MagicMock(spec=GM3SerialTransport)
     conn.connected = True
 
     cache = ParameterCache()

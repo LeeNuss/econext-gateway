@@ -3,7 +3,7 @@
 from econext_gateway.core.cache import ParameterCache
 from econext_gateway.core.config import Settings
 from econext_gateway.protocol.handler import ProtocolHandler
-from econext_gateway.serial.connection import SerialConnection
+from econext_gateway.serial.connection import GM3SerialTransport
 
 
 class AppState:
@@ -14,7 +14,7 @@ class AppState:
 
     def __init__(self) -> None:
         self.settings: Settings | None = None
-        self.connection: SerialConnection | None = None
+        self.connection: GM3SerialTransport | None = None
         self.cache: ParameterCache | None = None
         self.handler: ProtocolHandler | None = None
 

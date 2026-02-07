@@ -1,8 +1,8 @@
 """Integration tests: API -> handler -> mock serial.
 
-Tests the full stack by replacing SerialConnection with a fake that
-returns pre-queued frame bytes. FrameReader, FrameWriter, ProtocolHandler,
-ParameterCache, and the FastAPI API all use real code.
+Tests the full stack by replacing GM3SerialTransport with a fake that
+operates at the Frame level. ProtocolHandler, ParameterCache, and the
+FastAPI API all use real code.
 """
 
 import asyncio
@@ -109,40 +109,61 @@ def build_params_response(start_index: int, values: list[tuple]) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Fake serial connection
+# Fake serial transport operating at the Frame level
 # ---------------------------------------------------------------------------
 
 
-class FakeConnection:
-    """Mock serial connection that returns pre-queued frame data.
+class FakeProtocol:
+    """Mock GM3Protocol that operates at the Frame level.
 
-    Frames are returned from read() in FIFO order. When the queue
-    is exhausted, read() returns b"" (causing FrameReader to timeout).
+    Frames are returned from receive_frame() in FIFO order. When the queue
+    is exhausted, receive_frame() returns None (timeout).
     """
 
     def __init__(self):
         self._connected = True
-        self._read_queue: list[bytes] = []
-        self._read_index = 0
-        self._writes: list[bytes] = []
+        self._frame_queue: asyncio.Queue[Frame | None] = asyncio.Queue()
+        self._writes: list[Frame] = []
 
     @property
     def connected(self) -> bool:
         return self._connected
 
-    async def read(self, n: int = -1) -> bytes:
-        if self._read_index < len(self._read_queue):
-            data = self._read_queue[self._read_index]
-            self._read_index += 1
-            return data
-        return b""
+    async def receive_frame(self, timeout: float | None = None) -> Frame | None:
+        try:
+            return await asyncio.wait_for(self._frame_queue.get(), timeout=timeout or 0.05)
+        except TimeoutError:
+            return None
 
-    async def write(self, data: bytes, flush_after: bool = False) -> None:
-        self._writes.append(data)
+    async def write_frame(self, frame: Frame, flush_after: bool = False) -> bool:
+        self._writes.append(frame)
+        return True
+
+    def reset_buffer(self) -> None:
+        # No-op in tests: pre-queued response frames must survive the
+        # reset_buffer() call that send_and_receive() issues after every write.
+        pass
 
     def queue_frame(self, source: int, command: int, data: bytes = b"") -> None:
         """Queue a response frame addressed to SRC_ADDRESS (131)."""
-        self._read_queue.append(make_frame(source, SRC_ADDRESS, command, data))
+        frame = Frame(destination=SRC_ADDRESS, command=command, data=data)
+        frame.source = source
+        self._frame_queue.put_nowait(frame)
+
+
+class FakeTransport:
+    """Minimal stand-in for GM3SerialTransport backed by a FakeProtocol."""
+
+    def __init__(self, protocol: FakeProtocol | None = None):
+        self._protocol = protocol or FakeProtocol()
+
+    @property
+    def protocol(self) -> FakeProtocol:
+        return self._protocol
+
+    @property
+    def connected(self) -> bool:
+        return self._protocol.connected
 
 
 # ---------------------------------------------------------------------------
@@ -151,8 +172,13 @@ class FakeConnection:
 
 
 @pytest.fixture
-def fake_conn():
-    return FakeConnection()
+def fake_proto():
+    return FakeProtocol()
+
+
+@pytest.fixture
+def fake_conn(fake_proto):
+    return FakeTransport(fake_proto)
 
 
 @pytest.fixture
@@ -161,7 +187,7 @@ def cache():
 
 
 def make_handler(conn, cache, **kwargs):
-    """Create a ProtocolHandler wired to a FakeConnection."""
+    """Create a ProtocolHandler wired to a FakeTransport."""
     defaults = dict(
         connection=conn,
         cache=cache,
@@ -185,7 +211,7 @@ class TestDiscoveryIntegration:
     """Discovery flow: struct requests -> frame parsing -> param_structs."""
 
     @pytest.mark.asyncio
-    async def test_discover_regulator_params(self, fake_conn, cache):
+    async def test_discover_regulator_params(self, fake_conn, fake_proto, cache):
         """Struct response with 2 params is parsed and stored."""
         handler = make_handler(fake_conn, cache)
 
@@ -196,10 +222,10 @@ class TestDiscoveryIntegration:
                 ("Pressure", "%", DataType.UINT8, False, None, None),
             ],
         )
-        fake_conn.queue_frame(1, Command.GET_PARAMS_STRUCT_WITH_RANGE_RESPONSE, struct_data)
-        fake_conn.queue_frame(1, Command.NO_DATA)
+        fake_proto.queue_frame(1, Command.GET_PARAMS_STRUCT_WITH_RANGE_RESPONSE, struct_data)
+        fake_proto.queue_frame(1, Command.NO_DATA)
         # Panel: no params
-        fake_conn.queue_frame(PANEL_ADDRESS, Command.NO_DATA)
+        fake_proto.queue_frame(PANEL_ADDRESS, Command.NO_DATA)
 
         total = await handler.discover_params()
 
@@ -212,7 +238,7 @@ class TestDiscoveryIntegration:
         assert handler._param_structs[1].writable is False
 
     @pytest.mark.asyncio
-    async def test_discover_both_address_spaces(self, fake_conn, cache):
+    async def test_discover_both_address_spaces(self, fake_conn, fake_proto, cache):
         """Regulator (WITH_RANGE) + panel (WITHOUT_RANGE) params discovered."""
         handler = make_handler(fake_conn, cache)
 
@@ -224,8 +250,8 @@ class TestDiscoveryIntegration:
                 ("RegBool", "", DataType.BOOL, False, None, None),
             ],
         )
-        fake_conn.queue_frame(1, Command.GET_PARAMS_STRUCT_WITH_RANGE_RESPONSE, reg_data)
-        fake_conn.queue_frame(1, Command.NO_DATA)
+        fake_proto.queue_frame(1, Command.GET_PARAMS_STRUCT_WITH_RANGE_RESPONSE, reg_data)
+        fake_proto.queue_frame(1, Command.NO_DATA)
 
         # Panel: 1 param
         panel_data = build_struct_no_range(
@@ -234,8 +260,8 @@ class TestDiscoveryIntegration:
                 ("PanelTemp", "C", DataType.INT16, True),
             ],
         )
-        fake_conn.queue_frame(PANEL_ADDRESS, Command.GET_PARAMS_STRUCT_RESPONSE, panel_data)
-        fake_conn.queue_frame(PANEL_ADDRESS, Command.NO_DATA)
+        fake_proto.queue_frame(PANEL_ADDRESS, Command.GET_PARAMS_STRUCT_RESPONSE, panel_data)
+        fake_proto.queue_frame(PANEL_ADDRESS, Command.NO_DATA)
 
         total = await handler.discover_params()
 
@@ -250,7 +276,7 @@ class TestDiscoveryIntegration:
         assert handler._param_structs[10000].min_value is None
 
     @pytest.mark.asyncio
-    async def test_discovery_preserves_existing_on_empty_result(self, fake_conn, cache):
+    async def test_discovery_preserves_existing_on_empty_result(self, fake_conn, fake_proto, cache):
         """If discovery returns nothing, existing structs are kept."""
         handler = make_handler(fake_conn, cache)
         handler._param_structs = {
@@ -258,8 +284,8 @@ class TestDiscoveryIntegration:
         }
 
         # Both address spaces return NO_DATA immediately
-        fake_conn.queue_frame(1, Command.NO_DATA)
-        fake_conn.queue_frame(PANEL_ADDRESS, Command.NO_DATA)
+        fake_proto.queue_frame(1, Command.NO_DATA)
+        fake_proto.queue_frame(PANEL_ADDRESS, Command.NO_DATA)
 
         total = await handler.discover_params()
 
@@ -276,7 +302,7 @@ class TestPollIntegration:
     """Polling flow: GET_PARAMS -> frame parsing -> cache update."""
 
     @pytest.mark.asyncio
-    async def test_poll_updates_cache(self, fake_conn, cache):
+    async def test_poll_updates_cache(self, fake_conn, fake_proto, cache):
         """Polling reads values and stores them in the cache."""
         handler = make_handler(fake_conn, cache)
         handler._param_structs = {
@@ -291,7 +317,7 @@ class TestPollIntegration:
                 (75, DataType.UINT8),
             ],
         )
-        fake_conn.queue_frame(1, Command.GET_PARAMS_RESPONSE, resp_data)
+        fake_proto.queue_frame(1, Command.GET_PARAMS_RESPONSE, resp_data)
 
         count = await handler.poll_all_params()
 
@@ -316,7 +342,7 @@ class TestWriteIntegration:
     """Write flow: MODIFY_PARAM -> response -> cache update."""
 
     @pytest.mark.asyncio
-    async def test_write_param_success(self, fake_conn, cache):
+    async def test_write_param_success(self, fake_conn, fake_proto, cache):
         """Successful write returns True and updates cache."""
         handler = make_handler(fake_conn, cache)
         handler._param_structs = {
@@ -335,7 +361,7 @@ class TestWriteIntegration:
             )
         )
 
-        fake_conn.queue_frame(1, Command.MODIFY_PARAM_RESPONSE, b"\x00\x00\x41\x00")
+        fake_proto.queue_frame(1, Command.MODIFY_PARAM_RESPONSE, b"\x00\x00\x41\x00")
 
         result = await handler.write_param("SetPoint", 65)
 
@@ -344,7 +370,7 @@ class TestWriteIntegration:
         assert updated.value == 65
 
     @pytest.mark.asyncio
-    async def test_write_read_only_raises(self, fake_conn, cache):
+    async def test_write_read_only_raises(self, fake_conn, fake_proto, cache):
         """Writing a read-only param raises ValueError."""
         handler = make_handler(fake_conn, cache)
         handler._param_structs = {
@@ -365,7 +391,7 @@ class TestWriteIntegration:
             await handler.write_param("ReadOnly", 99)
 
     @pytest.mark.asyncio
-    async def test_write_out_of_range_raises(self, fake_conn, cache):
+    async def test_write_out_of_range_raises(self, fake_conn, fake_proto, cache):
         """Writing a value outside min/max raises ValueError."""
         handler = make_handler(fake_conn, cache)
         handler._param_structs = {
@@ -388,7 +414,7 @@ class TestWriteIntegration:
             await handler.write_param("SetPoint", 100)
 
     @pytest.mark.asyncio
-    async def test_write_no_ack_returns_false(self, fake_conn, cache):
+    async def test_write_no_ack_returns_false(self, fake_conn, fake_proto, cache):
         """Write that gets no response returns False."""
         handler = make_handler(fake_conn, cache)
         handler._param_structs = {
@@ -425,25 +451,25 @@ class TestTokenIntegration:
     """Token handshake: IDENTIFY response -> SERVICE token grant."""
 
     @pytest.mark.asyncio
-    async def test_token_grant_via_identify_service(self, fake_conn, cache):
+    async def test_token_grant_via_identify_service(self, fake_conn, fake_proto, cache):
         """Handler responds to IDENTIFY, receives token, discovers, returns token."""
         handler = make_handler(fake_conn, cache, token_required=True)
 
         # Panel probes us
-        fake_conn.queue_frame(PANEL_ADDRESS, IDENTIFY_CMD)
+        fake_proto.queue_frame(PANEL_ADDRESS, IDENTIFY_CMD)
         # Panel grants token
         token_data = struct.pack("<H", GET_TOKEN_FUNC) + b"\x00\x00"
-        fake_conn.queue_frame(PANEL_ADDRESS, SERVICE_CMD, token_data)
+        fake_proto.queue_frame(PANEL_ADDRESS, SERVICE_CMD, token_data)
         # Empty discovery (both spaces)
-        fake_conn.queue_frame(1, Command.NO_DATA)
-        fake_conn.queue_frame(PANEL_ADDRESS, Command.NO_DATA)
+        fake_proto.queue_frame(1, Command.NO_DATA)
+        fake_proto.queue_frame(PANEL_ADDRESS, Command.NO_DATA)
 
         await handler.discover_params()
 
         # Token was returned at the end
         assert handler._has_token is False
         # At least 3 writes: IDENTIFY_ANS, struct request(s), token return
-        assert len(fake_conn._writes) >= 3
+        assert len(fake_proto._writes) >= 3
 
 
 # ---------------------------------------------------------------------------
@@ -516,7 +542,7 @@ class TestApiIntegration:
         """Health endpoint reflects handler connected / cache count."""
         from econext_gateway.main import app
 
-        conn = FakeConnection()
+        conn = FakeTransport()
         c = ParameterCache()
         handler = make_handler(conn, c)
 
@@ -545,7 +571,7 @@ class TestApiIntegration:
                 assert resp.json()["status"] == "healthy"
 
                 # Disconnect -> unhealthy
-                conn._connected = False
+                conn._protocol._connected = False
                 resp = client.get("/health")
                 assert resp.json()["status"] == "unhealthy"
                 assert resp.json()["controller_connected"] is False
@@ -566,11 +592,11 @@ class TestApiIntegration:
             finally:
                 self._restore(orig)
 
-    def test_get_parameters_disconnected_503(self, fake_conn, cache):
+    def test_get_parameters_disconnected_503(self, fake_conn, fake_proto, cache):
         """GET /api/parameters returns 503 when controller is disconnected."""
         from econext_gateway.main import app
 
-        fake_conn._connected = False
+        fake_proto._connected = False
         handler = make_handler(fake_conn, cache)
 
         with TestClient(app, raise_server_exceptions=False) as client:

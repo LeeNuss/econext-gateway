@@ -90,14 +90,15 @@ All settings are configured via environment variables with the `ECONEXT_` prefix
 curl http://<gateway-ip>:8000/api/parameters
 ```
 
-Returns JSON with all discovered parameters, their current values, types, units, and writable flag:
+Returns JSON with all discovered parameters keyed by index, including name, current value, type, unit, and writable flag:
 
 ```json
 {
   "timestamp": "2025-01-15T12:00:00",
   "parameters": {
-    "TempCWU": {
+    "42": {
       "index": 42,
+      "name": "TempCWU",
       "value": 45.5,
       "type": 2,
       "unit": 1,

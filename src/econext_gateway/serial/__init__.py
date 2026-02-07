@@ -1,7 +1,6 @@
 """Serial communication layer."""
 
-from econext_gateway.serial.connection import SerialConnection
-from econext_gateway.serial.reader import FrameReader
-from econext_gateway.serial.writer import FrameWriter
+from econext_gateway.serial.connection import GM3SerialTransport
+from econext_gateway.serial.protocol import GM3Protocol
 
-__all__ = ["SerialConnection", "FrameReader", "FrameWriter"]
+__all__ = ["GM3SerialTransport", "GM3Protocol"]

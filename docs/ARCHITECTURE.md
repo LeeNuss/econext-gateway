@@ -21,7 +21,7 @@ This document describes the architecture and design decisions for the ecoNEXT Ga
 | --------------- | ---------------- | ------- | ---------------------------------------------------- |
 | Language        | Python           | 3.11+   | Modern features, async support, type hints           |
 | Web Framework   | FastAPI          | Latest  | Async-native, auto OpenAPI docs, Pydantic validation |
-| Serial I/O      | pyserial         | Latest  | Direct pyserial + run_in_executor (CP210x compatible) |
+| Serial I/O      | pyserial-asyncio | 0.6+    | asyncio.Protocol-based serial via serial_asyncio      |
 | ASGI Server     | Uvicorn          | Latest  | High performance, async support                      |
 | Package Manager | uv               | Latest  | Fast, reliable dependency management                 |
 | Code Formatter  | Ruff             | 0.14.2  | Fast, comprehensive linting and formatting           |
@@ -117,17 +117,17 @@ This document describes the architecture and design decisions for the ecoNEXT Ga
 #### 3. Serial Layer (`src/serial/`)
 **Responsibility**: Serial port communication, connection management
 
-- `connection.py`: Serial port management
-- `reader.py`: Async frame reading
-- `writer.py`: Async frame writing
+- `protocol.py`: GM3Protocol (asyncio.Protocol) -- event-driven frame parser and writer
+- `connection.py`: GM3SerialTransport -- connection lifecycle and reconnection
 
 **Key Features**:
-- Direct pyserial with asyncio.run_in_executor() (serial_asyncio does not work with CP210x)
-- Two-stage blocking read: read(1) for first byte, then read(in_waiting) for rest (~50ms vs 200ms)
+- Event-driven `data_received()` via `serial_asyncio.create_serial_connection()`
+- Bounded asyncio.Queue for parsed frames (oldest-drop on overflow)
+- Write serialisation via asyncio.Lock
 - 20ms bus turnaround delay before every write (RS-485 half-duplex)
-- Flush RX buffer + wait TX complete after every write
+- Correct flush ordering for half-duplex USB-RS485: flush TX then clear RX input buffer
 - Automatic reconnection with configurable delay
-- Buffer management and error recovery
+- Baud rate toggle reset at startup (matches original ecoNET300 sequence)
 
 #### 4. Core (`src/core/`)
 **Responsibility**: Application state, caching, business logic
@@ -153,17 +153,25 @@ Get all parameters from the heat pump.
 {
   "timestamp": "2026-01-13T12:00:00Z",
   "parameters": {
-    "outdoor_temp": {
+    "150": {
+      "index": 150,
+      "name": "OutsideTemp",
       "value": 5.2,
-      "unit": "°C",
-      "writable": false
+      "type": 2,
+      "unit": 1,
+      "writable": false,
+      "min": null,
+      "max": null
     },
-    "target_temp": {
+    "103": {
+      "index": 103,
+      "name": "HDWTSetPoint",
       "value": 45.0,
-      "unit": "°C",
+      "type": 2,
+      "unit": 1,
       "writable": true,
-      "min": 20.0,
-      "max": 55.0
+      "min": 35.0,
+      "max": 65.0
     }
   }
 }

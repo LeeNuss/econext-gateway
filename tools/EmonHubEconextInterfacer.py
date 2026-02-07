@@ -176,7 +176,7 @@ class EmonHubEconextInterfacer(EmonHubInterfacer):
             data["CompressorFreq"] = params["HPStatusComprHz"]
 
         except (ValueError, KeyError) as e:
-            raise Exception(f"Invalid data from gateway: {e}")
+            raise Exception("Invalid data from gateway") from e
 
         self._log.debug("Fetched data: %s", data)
 
