@@ -3,9 +3,9 @@
 import asyncio
 import logging
 
-from econet_gm3_gateway.protocol.constants import BEGIN_FRAME, END_FRAME, FRAME_MIN_LEN
-from econet_gm3_gateway.protocol.frames import Frame
-from econet_gm3_gateway.serial.connection import SerialConnection
+from econext_gateway.protocol.constants import BEGIN_FRAME, END_FRAME, FRAME_MIN_LEN
+from econext_gateway.protocol.frames import Frame
+from econext_gateway.serial.connection import SerialConnection
 
 logger = logging.getLogger(__name__)
 

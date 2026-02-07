@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 #
-# Install econet GM3 Gateway as a systemd service.
+# Install ecoNEXT Gateway as a systemd service.
 #
 # Usage:
 #   sudo ./deploy/install.sh                  # install from source repo
-#   sudo ./deploy/install.sh /srv/econet      # custom prefix
+#   sudo ./deploy/install.sh /srv/econext      # custom prefix
 #   sudo ./deploy/install.sh --uninstall      # remove service and install dir
 #
 # Bundle install (used by bootstrap.sh):
-#   ECONET_WHEEL=/path/to/wheel.whl sudo ./deploy/install.sh
+#   ECONEXT_WHEEL=/path/to/wheel.whl sudo ./deploy/install.sh
 #
 # What it does:
-#   1. Creates PREFIX directory (default /opt/econet-gm3-gateway)
+#   1. Creates PREFIX directory (default /opt/econext-gateway)
 #   2. Creates a venv and installs the package (from wheel or source)
 #   3. Generates and installs a systemd service unit
 #   4. Installs the udev rule for PLUM ecoLINK3 adapter
@@ -26,16 +26,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-SERVICE_NAME="econet-gm3-gateway"
-DEFAULT_PREFIX="/opt/econet-gm3-gateway"
+SERVICE_NAME="econext-gateway"
+DEFAULT_PREFIX="/opt/econext-gateway"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
-UDEV_FILE="/etc/udev/rules.d/99-econet.rules"
+UDEV_FILE="/etc/udev/rules.d/99-econext.rules"
 
 # Defaults (overridable via env)
-ECONET_USER="${ECONET_USER:-$(logname 2>/dev/null || echo "$SUDO_USER")}"
-ECONET_SERIAL_PORT="${ECONET_SERIAL_PORT:-/dev/econet}"
-ECONET_LOG_LEVEL="${ECONET_LOG_LEVEL:-INFO}"
-ECONET_API_PORT="${ECONET_API_PORT:-8000}"
+ECONEXT_USER="${ECONEXT_USER:-$(logname 2>/dev/null || echo "$SUDO_USER")}"
+ECONEXT_SERIAL_PORT="${ECONEXT_SERIAL_PORT:-/dev/econext}"
+ECONEXT_LOG_LEVEL="${ECONEXT_LOG_LEVEL:-INFO}"
+ECONEXT_API_PORT="${ECONEXT_API_PORT:-8000}"
 
 # ---- helpers ---------------------------------------------------------------
 
@@ -64,8 +64,8 @@ check_deps() {
     UV=""
     for candidate in \
         "$(command -v uv 2>/dev/null)" \
-        "/home/${ECONET_USER}/.local/bin/uv" \
-        "/home/${ECONET_USER}/.cargo/bin/uv" \
+        "/home/${ECONEXT_USER}/.local/bin/uv" \
+        "/home/${ECONEXT_USER}/.cargo/bin/uv" \
         "/usr/local/bin/uv" \
         "/usr/bin/uv"; do
         if [[ -n "$candidate" && -x "$candidate" ]]; then
@@ -88,13 +88,13 @@ venv_install() {
     local package="$2"
 
     if [[ -n "$UV" ]]; then
-        sudo -u "$ECONET_USER" bash -c "
+        sudo -u "$ECONEXT_USER" bash -c "
             cd '$prefix'
             '$UV' venv --python python3 --allow-existing
             '$UV' pip install --python .venv/bin/python '$package'
         "
     else
-        sudo -u "$ECONET_USER" bash -c "
+        sudo -u "$ECONEXT_USER" bash -c "
             cd '$prefix'
             python3 -m venv .venv
             .venv/bin/pip install --upgrade pip
@@ -137,16 +137,16 @@ do_install() {
     check_root
     check_deps
 
-    if [[ -z "$ECONET_USER" ]]; then
-        die "Cannot determine install user. Set ECONET_USER=<username>"
+    if [[ -z "$ECONEXT_USER" ]]; then
+        die "Cannot determine install user. Set ECONEXT_USER=<username>"
     fi
-    id "$ECONET_USER" >/dev/null 2>&1 || die "User '$ECONET_USER' does not exist"
+    id "$ECONEXT_USER" >/dev/null 2>&1 || die "User '$ECONEXT_USER' does not exist"
 
     info "Installing ${SERVICE_NAME} to ${prefix}"
-    info "  User:        $ECONET_USER"
-    info "  Serial port: $ECONET_SERIAL_PORT"
-    info "  API port:    $ECONET_API_PORT"
-    info "  Log level:   $ECONET_LOG_LEVEL"
+    info "  User:        $ECONEXT_USER"
+    info "  Serial port: $ECONEXT_SERIAL_PORT"
+    info "  API port:    $ECONEXT_API_PORT"
+    info "  Log level:   $ECONEXT_LOG_LEVEL"
 
     # -- stop existing service if running --
     if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
@@ -156,11 +156,11 @@ do_install() {
 
     mkdir -p "$prefix"
 
-    if [[ -n "${ECONET_WHEEL:-}" ]]; then
+    if [[ -n "${ECONEXT_WHEEL:-}" ]]; then
         # -- bundle install: install from pre-built wheel --
-        info "Installing from wheel: $ECONET_WHEEL"
-        chown -R "$ECONET_USER":"$ECONET_USER" "$prefix"
-        venv_install "$prefix" "$ECONET_WHEEL"
+        info "Installing from wheel: $ECONEXT_WHEEL"
+        chown -R "$ECONEXT_USER":"$ECONEXT_USER" "$prefix"
+        venv_install "$prefix" "$ECONEXT_WHEEL"
     else
         # -- dev install: copy source and install from it --
         info "Copying source to $prefix..."
@@ -171,33 +171,33 @@ do_install() {
             --exclude '.git' \
             --exclude 'logs' \
             "$REPO_DIR/" "$prefix/"
-        chown -R "$ECONET_USER":"$ECONET_USER" "$prefix"
+        chown -R "$ECONEXT_USER":"$ECONEXT_USER" "$prefix"
         info "Creating venv and installing package..."
         venv_install "$prefix" "."
     fi
 
     # -- verify install --
     local version
-    version="$("$prefix/.venv/bin/python" -c 'from econet_gm3_gateway import __version__; print(__version__)')"
+    version="$("$prefix/.venv/bin/python" -c 'from econext_gateway import __version__; print(__version__)')"
     info "Installed version: $version"
 
     # -- install systemd service --
     info "Installing systemd service..."
     cat > "$SERVICE_FILE" <<EOF
 [Unit]
-Description=econet GM3 Gateway
+Description=ecoNEXT Gateway
 After=network.target
 Wants=network.target
 
 [Service]
 Type=simple
-User=${ECONET_USER}
+User=${ECONEXT_USER}
 WorkingDirectory=${prefix}
-ExecStart=${prefix}/.venv/bin/uvicorn econet_gm3_gateway.main:app --host 0.0.0.0 --port ${ECONET_API_PORT}
+ExecStart=${prefix}/.venv/bin/uvicorn econext_gateway.main:app --host 0.0.0.0 --port ${ECONEXT_API_PORT}
 Restart=always
 RestartSec=10
-Environment=ECONET_SERIAL_PORT=${ECONET_SERIAL_PORT}
-Environment=ECONET_LOG_LEVEL=${ECONET_LOG_LEVEL}
+Environment=ECONEXT_SERIAL_PORT=${ECONEXT_SERIAL_PORT}
+Environment=ECONEXT_LOG_LEVEL=${ECONEXT_LOG_LEVEL}
 
 [Install]
 WantedBy=multi-user.target
@@ -208,7 +208,7 @@ EOF
 
     # -- install udev rule --
     info "Installing udev rule to $UDEV_FILE..."
-    cp "$SCRIPT_DIR/99-econet.rules" "$UDEV_FILE"
+    cp "$SCRIPT_DIR/99-econext.rules" "$UDEV_FILE"
     udevadm control --reload-rules
     udevadm trigger
 
@@ -227,7 +227,7 @@ EOF
     info "Installation complete."
     echo "  Service:  systemctl status $SERVICE_NAME"
     echo "  Logs:     journalctl -u $SERVICE_NAME -f"
-    echo "  API:      http://$(hostname -I | awk '{print $1}'):${ECONET_API_PORT}/health"
+    echo "  API:      http://$(hostname -I | awk '{print $1}'):${ECONEXT_API_PORT}/health"
     echo "  Prefix:   $prefix"
 }
 

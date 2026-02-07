@@ -5,12 +5,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from econet_gm3_gateway.api.dependencies import app_state
-from econet_gm3_gateway.core.cache import ParameterCache
-from econet_gm3_gateway.core.models import Parameter
-from econet_gm3_gateway.main import app
-from econet_gm3_gateway.protocol.handler import ProtocolHandler
-from econet_gm3_gateway.serial.connection import SerialConnection
+from econext_gateway.api.dependencies import app_state
+from econext_gateway.core.cache import ParameterCache
+from econext_gateway.core.models import Parameter
+from econext_gateway.main import app
+from econext_gateway.protocol.handler import ProtocolHandler
+from econext_gateway.serial.connection import SerialConnection
 
 
 @pytest.fixture
@@ -57,7 +57,7 @@ class TestRootEndpoint:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["name"] == "econet GM3 Gateway"
+        assert data["name"] == "ecoNEXT Gateway"
         assert "version" in data
         assert data["status"] == "running"
 

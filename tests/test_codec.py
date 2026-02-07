@@ -2,8 +2,8 @@
 
 import pytest
 
-from econet_gm3_gateway.protocol.codec import decode_value, encode_value
-from econet_gm3_gateway.protocol.constants import DataType
+from econext_gateway.protocol.codec import decode_value, encode_value
+from econext_gateway.protocol.constants import DataType
 
 
 class TestEncoding:

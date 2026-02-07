@@ -2,8 +2,8 @@
 
 import pytest
 
-from econet_gm3_gateway.protocol.constants import BEGIN_FRAME, END_FRAME, SRC_ADDRESS, Command
-from econet_gm3_gateway.protocol.frames import Frame
+from econext_gateway.protocol.constants import BEGIN_FRAME, END_FRAME, SRC_ADDRESS, Command
+from econext_gateway.protocol.frames import Frame
 
 
 class TestFrameConstruction:

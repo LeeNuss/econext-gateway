@@ -8,8 +8,8 @@ from pathlib import Path
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from econet_gm3_gateway.protocol.constants import BEGIN_FRAME, END_FRAME, Command
-from econet_gm3_gateway.protocol.frames import Frame
+from econext_gateway.protocol.constants import BEGIN_FRAME, END_FRAME, Command
+from econext_gateway.protocol.frames import Frame
 
 
 def get_command_name(cmd: int) -> str:

@@ -58,7 +58,7 @@ class SerialConnection:
     def _baud_toggle_reset(self) -> None:
         """Perform baud rate toggle to reset RS-485 transceiver.
 
-        The original econet webserver does this sequence at startup:
+        The original ecoNET300 webserver does this sequence at startup:
         1. Open at 9600 baud
         2. Close
         3. Open at target baud rate

@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 #
-# Bootstrap installer for econet-gm3-gateway.
+# Bootstrap installer for ecoNEXT Gateway.
 #
 # Downloads the latest (or specified) release bundle from GitHub
 # and runs the install script.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/LeeNuss/econet-gm3-gateway/main/deploy/bootstrap.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/LeeNuss/econext-gateway/main/deploy/bootstrap.sh | sudo bash
 #   curl -fsSL ... | sudo bash -s -- --version 0.1.0
 #
 
 set -euo pipefail
 
-REPO="LeeNuss/econet-gm3-gateway"
+REPO="LeeNuss/econext-gateway"
 VERSION=""
 TMPDIR=""
 
@@ -74,5 +74,5 @@ WHEEL=$(ls "${TMPDIR}"/*.whl 2>/dev/null | head -1)
 [[ -n "$WHEEL" ]] || die "No wheel found in bundle"
 
 # Run install script with the wheel
-export ECONET_WHEEL="$WHEEL"
+export ECONEXT_WHEEL="$WHEEL"
 bash "${TMPDIR}/deploy/install.sh"

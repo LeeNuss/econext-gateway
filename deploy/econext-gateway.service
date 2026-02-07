@@ -1,22 +1,22 @@
-# Reference systemd unit for econet GM3 Gateway.
+# Reference systemd unit for ecoNEXT Gateway.
 # The install.sh script generates the actual unit with correct paths.
 # To install manually, copy this file to /etc/systemd/system/ and
 # adjust User, WorkingDirectory, ExecStart, and Environment values.
 
 [Unit]
-Description=econet GM3 Gateway
+Description=ecoNEXT Gateway
 After=network.target
 Wants=network.target
 
 [Service]
 Type=simple
 User=linus
-WorkingDirectory=/opt/econet-gm3-gateway
-ExecStart=/opt/econet-gm3-gateway/.venv/bin/uvicorn econet_gm3_gateway.main:app --host 0.0.0.0 --port 8000
+WorkingDirectory=/opt/econext-gateway
+ExecStart=/opt/econext-gateway/.venv/bin/uvicorn econext_gateway.main:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=10
-Environment=ECONET_SERIAL_PORT=/dev/econet
-Environment=ECONET_LOG_LEVEL=INFO
+Environment=ECONEXT_SERIAL_PORT=/dev/econext
+Environment=ECONEXT_LOG_LEVEL=INFO
 
 [Install]
 WantedBy=multi-user.target

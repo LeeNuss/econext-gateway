@@ -6,15 +6,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from econet_gm3_gateway.core.cache import ParameterCache
-from econet_gm3_gateway.core.models import Parameter
-from econet_gm3_gateway.protocol.constants import (
+from econext_gateway.core.cache import ParameterCache
+from econext_gateway.core.models import Parameter
+from econext_gateway.protocol.constants import (
     PANEL_ADDRESS,
     Command,
     DataType,
 )
-from econet_gm3_gateway.protocol.frames import Frame
-from econet_gm3_gateway.protocol.handler import (
+from econext_gateway.protocol.frames import Frame
+from econext_gateway.protocol.handler import (
     ParamStructEntry,
     ProtocolHandler,
     build_get_params_request,
@@ -24,7 +24,7 @@ from econet_gm3_gateway.protocol.handler import (
     parse_get_params_response,
     parse_struct_response,
 )
-from econet_gm3_gateway.serial.connection import SerialConnection
+from econext_gateway.serial.connection import SerialConnection
 
 # ============================================================================
 # Test Parse Functions
