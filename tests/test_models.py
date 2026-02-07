@@ -5,7 +5,7 @@ from datetime import datetime
 import pytest
 from pydantic import ValidationError
 
-from econet_gm3_gateway.core.models import (
+from econext_gateway.core.models import (
     ErrorResponse,
     HealthResponse,
     Parameter,

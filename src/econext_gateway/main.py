@@ -5,14 +5,14 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from econet_gm3_gateway import __version__
-from econet_gm3_gateway.api.dependencies import app_state
-from econet_gm3_gateway.api.routes import router as api_router
-from econet_gm3_gateway.core.cache import ParameterCache
-from econet_gm3_gateway.core.config import Settings, setup_logging
-from econet_gm3_gateway.core.models import HealthResponse
-from econet_gm3_gateway.protocol.handler import ProtocolHandler
-from econet_gm3_gateway.serial.connection import SerialConnection
+from econext_gateway import __version__
+from econext_gateway.api.dependencies import app_state
+from econext_gateway.api.routes import router as api_router
+from econext_gateway.core.cache import ParameterCache
+from econext_gateway.core.config import Settings, setup_logging
+from econext_gateway.core.models import HealthResponse
+from econext_gateway.protocol.handler import ProtocolHandler
+from econext_gateway.serial.connection import SerialConnection
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ async def lifespan(app: FastAPI):
     app_state.settings = settings
 
     setup_logging(settings.log_level)
-    logger.info(f"Starting econet GM3 Gateway v{__version__}")
+    logger.info(f"Starting ecoNEXT Gateway v{__version__}")
 
     # Initialize components
     app_state.cache = ParameterCache()
@@ -68,8 +68,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="econet GM3 Gateway",
-    description="Local REST API gateway for GM3 protocol heat pump controllers",
+    title="ecoNEXT Gateway",
+    description="Local REST API gateway for heat pump controllers",
     version=__version__,
     lifespan=lifespan,
 )
@@ -81,7 +81,7 @@ app.include_router(api_router)
 async def root():
     """Root endpoint."""
     return {
-        "name": "econet GM3 Gateway",
+        "name": "ecoNEXT Gateway",
         "version": __version__,
         "status": "running",
     }

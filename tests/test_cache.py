@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from econet_gm3_gateway.core.cache import ParameterCache
-from econet_gm3_gateway.core.models import Parameter
+from econext_gateway.core.cache import ParameterCache
+from econext_gateway.core.models import Parameter
 
 
 def make_param(name: str = "TestParam", index: int = 0, value: int = 42) -> Parameter:

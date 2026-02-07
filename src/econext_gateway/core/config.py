@@ -10,10 +10,10 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables.
 
     All settings can be overridden via environment variables
-    prefixed with ECONET_ (e.g., ECONET_SERIAL_PORT).
+    prefixed with ECONEXT_ (e.g., ECONEXT_SERIAL_PORT).
     """
 
-    serial_port: str = "/dev/econet"
+    serial_port: str = "/dev/econext"
     serial_baud: int = 115200
     api_host: str = "0.0.0.0"
     api_port: int = 8000
@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     params_per_request: int = 100
     token_required: bool = True
 
-    model_config = SettingsConfigDict(env_prefix="ECONET_")
+    model_config = SettingsConfigDict(env_prefix="ECONEXT_")
 
 
 def setup_logging(level: str = "INFO") -> None:

@@ -1,0 +1,10 @@
+# Stable symlink for PLUM ecoLINK3 USB-RS485 adapter.
+# Creates /dev/econext -> /dev/ttyUSBx
+#
+# Matches any PLUM ecoLINK3 adapter regardless of serial number.
+#
+# Install:
+#   sudo cp 99-econext.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger
+SUBSYSTEM=="tty", ATTRS{manufacturer}=="PLUM sp. z o.o", ATTRS{product}=="ecoLINK3", SYMLINK+="econext", MODE="0666"

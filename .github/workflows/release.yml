@@ -32,10 +32,10 @@ jobs:
           mkdir -p bundle/deploy
           cp "$WHEEL" bundle/
           cp deploy/install.sh bundle/deploy/
-          cp deploy/99-econet.rules bundle/deploy/
-          cp deploy/econet-gm3-gateway.service bundle/deploy/
+          cp deploy/99-econext.rules bundle/deploy/
+          cp deploy/econext-gateway.service bundle/deploy/
           tar -czf "dist/gateway-bundle-${VERSION}.tar.gz" -C bundle .
-          rm -f dist/econet_gm3_gateway-*.tar.gz
+          rm -f dist/econext_gateway-*.tar.gz
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2

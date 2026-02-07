@@ -3,7 +3,7 @@
 import os
 from unittest.mock import patch
 
-from econet_gm3_gateway.core.config import Settings, setup_logging
+from econext_gateway.core.config import Settings, setup_logging
 
 
 class TestSettings:
@@ -14,7 +14,7 @@ class TestSettings:
         with patch.dict(os.environ, {}, clear=True):
             settings = Settings()
 
-        assert settings.serial_port == "/dev/econet"
+        assert settings.serial_port == "/dev/econext"
         assert settings.serial_baud == 115200
         assert settings.api_host == "0.0.0.0"
         assert settings.api_port == 8000
@@ -26,49 +26,49 @@ class TestSettings:
 
     def test_env_override_serial_port(self):
         """Test serial port override from environment."""
-        with patch.dict(os.environ, {"ECONET_SERIAL_PORT": "/dev/ttyACM0"}):
+        with patch.dict(os.environ, {"ECONEXT_SERIAL_PORT": "/dev/ttyACM0"}):
             settings = Settings()
 
         assert settings.serial_port == "/dev/ttyACM0"
 
     def test_env_override_serial_baud(self):
         """Test baud rate override from environment."""
-        with patch.dict(os.environ, {"ECONET_SERIAL_BAUD": "115200"}):
+        with patch.dict(os.environ, {"ECONEXT_SERIAL_BAUD": "115200"}):
             settings = Settings()
 
         assert settings.serial_baud == 115200
 
     def test_env_override_api_host(self):
         """Test API host override from environment."""
-        with patch.dict(os.environ, {"ECONET_API_HOST": "127.0.0.1"}):
+        with patch.dict(os.environ, {"ECONEXT_API_HOST": "127.0.0.1"}):
             settings = Settings()
 
         assert settings.api_host == "127.0.0.1"
 
     def test_env_override_api_port(self):
         """Test API port override from environment."""
-        with patch.dict(os.environ, {"ECONET_API_PORT": "9000"}):
+        with patch.dict(os.environ, {"ECONEXT_API_PORT": "9000"}):
             settings = Settings()
 
         assert settings.api_port == 9000
 
     def test_env_override_log_level(self):
         """Test log level override from environment."""
-        with patch.dict(os.environ, {"ECONET_LOG_LEVEL": "DEBUG"}):
+        with patch.dict(os.environ, {"ECONEXT_LOG_LEVEL": "DEBUG"}):
             settings = Settings()
 
         assert settings.log_level == "DEBUG"
 
     def test_env_override_poll_interval(self):
         """Test poll interval override from environment."""
-        with patch.dict(os.environ, {"ECONET_POLL_INTERVAL": "5.0"}):
+        with patch.dict(os.environ, {"ECONEXT_POLL_INTERVAL": "5.0"}):
             settings = Settings()
 
         assert settings.poll_interval == 5.0
 
     def test_env_override_destination(self):
         """Test destination address override from environment."""
-        with patch.dict(os.environ, {"ECONET_DESTINATION_ADDRESS": "237"}):
+        with patch.dict(os.environ, {"ECONEXT_DESTINATION_ADDRESS": "237"}):
             settings = Settings()
 
         assert settings.destination_address == 237
@@ -78,7 +78,7 @@ class TestSettings:
         with patch.dict(os.environ, {"SERIAL_PORT": "/dev/other"}, clear=True):
             settings = Settings()
 
-        assert settings.serial_port == "/dev/econet"
+        assert settings.serial_port == "/dev/econext"
 
 
 class TestSetupLogging:

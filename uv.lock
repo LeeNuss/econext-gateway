@@ -64,7 +64,7 @@ wheels = [
 ]
 
 [[package]]
-name = "econet-gm3-gateway"
+name = "econext-gateway"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from econet_gm3_gateway.protocol.constants import BEGIN_FRAME, END_FRAME, Command
-from econet_gm3_gateway.protocol.frames import Frame
+from econext_gateway.protocol.constants import BEGIN_FRAME, END_FRAME, Command
+from econext_gateway.protocol.frames import Frame
 
 # Path to captured data
 ARTIFACTS_DIR = Path(__file__).parent / ".artifacts"

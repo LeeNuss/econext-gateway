@@ -182,7 +182,7 @@ API information.
 
 ```json
 {
-  "name": "econet GM3 Gateway",
+  "name": "ecoNEXT Gateway",
   "version": "0.1.0",
   "status": "running"
 }

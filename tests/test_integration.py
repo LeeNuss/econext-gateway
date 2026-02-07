@@ -11,11 +11,11 @@ import struct
 import pytest
 from fastapi.testclient import TestClient
 
-from econet_gm3_gateway.api.dependencies import app_state
-from econet_gm3_gateway.core.cache import ParameterCache
-from econet_gm3_gateway.core.models import Parameter
-from econet_gm3_gateway.protocol.codec import encode_value
-from econet_gm3_gateway.protocol.constants import (
+from econext_gateway.api.dependencies import app_state
+from econext_gateway.core.cache import ParameterCache
+from econext_gateway.core.models import Parameter
+from econext_gateway.protocol.codec import encode_value
+from econext_gateway.protocol.constants import (
     GET_TOKEN_FUNC,
     IDENTIFY_CMD,
     PANEL_ADDRESS,
@@ -24,8 +24,8 @@ from econet_gm3_gateway.protocol.constants import (
     Command,
     DataType,
 )
-from econet_gm3_gateway.protocol.frames import Frame
-from econet_gm3_gateway.protocol.handler import ParamStructEntry, ProtocolHandler
+from econext_gateway.protocol.frames import Frame
+from econext_gateway.protocol.handler import ParamStructEntry, ProtocolHandler
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -474,7 +474,7 @@ class TestApiIntegration:
 
     def test_get_parameters_returns_cached_data(self, fake_conn, cache):
         """GET /api/parameters returns params stored in cache by handler."""
-        from econet_gm3_gateway.main import app
+        from econext_gateway.main import app
 
         handler = make_handler(fake_conn, cache)
         handler._param_structs = {
@@ -513,7 +513,7 @@ class TestApiIntegration:
 
     def test_health_reflects_connection_state(self):
         """Health endpoint reflects handler connected / cache count."""
-        from econet_gm3_gateway.main import app
+        from econext_gateway.main import app
 
         conn = FakeConnection()
         c = ParameterCache()
@@ -553,7 +553,7 @@ class TestApiIntegration:
 
     def test_post_parameter_not_found(self, fake_conn, cache):
         """POST to nonexistent parameter returns 404."""
-        from econet_gm3_gateway.main import app
+        from econext_gateway.main import app
 
         handler = make_handler(fake_conn, cache)
 
@@ -567,7 +567,7 @@ class TestApiIntegration:
 
     def test_get_parameters_disconnected_503(self, fake_conn, cache):
         """GET /api/parameters returns 503 when controller is disconnected."""
-        from econet_gm3_gateway.main import app
+        from econext_gateway.main import app
 
         fake_conn._connected = False
         handler = make_handler(fake_conn, cache)

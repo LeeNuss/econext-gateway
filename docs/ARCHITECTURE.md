@@ -1,9 +1,9 @@
-# econet GM3 Gateway - Architecture & Design
+# ecoNEXT Gateway - Architecture & Design
 
 **Version**: 1.1 (Updated after HW verification)
 **Date**: 2026-02-06
 
-This document describes the architecture and design decisions for the econet GM3 Gateway project - a local API server for GM3 protocol heat pump controllers.
+This document describes the architecture and design decisions for the ecoNEXT Gateway project - a local API server for GM3 protocol heat pump controllers.
 
 ## Project Goals
 
@@ -307,7 +307,7 @@ CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```yaml
 version: '3.8'
 services:
-  econet-gateway:
+  econext-gateway:
     build: .
     devices:
       - /dev/ttyUSB0:/dev/ttyUSB0
@@ -325,14 +325,14 @@ For direct installation on Raspberry Pi or similar:
 
 ```ini
 [Unit]
-Description=econet GM3 Gateway
+Description=ecoNEXT Gateway
 After=network.target
 
 [Service]
 Type=simple
-User=econet
-WorkingDirectory=/opt/econet-gateway
-ExecStart=/opt/econet-gateway/.venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8000
+User=econext
+WorkingDirectory=/opt/econext-gateway
+ExecStart=/opt/econext-gateway/.venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=10
 
@@ -444,7 +444,7 @@ WantedBy=multi-user.target
 
 ### Project Structure
 ```
-econet-gm3-gateway/
+econext-gateway/
 ├── src/
 │   ├── api/              # FastAPI routes and models
 │   ├── protocol/         # GM3 protocol implementation
@@ -516,9 +516,9 @@ uvicorn src.main:app --reload
 ## References
 
 ### Related Projects
-- PyPlumIO: Open-source alternative econet (EM protocol only)
+- PyPlumIO: Open-source alternative for other plum controller not using GM3 protocol
 - Home Assistant: Target integration platform
-- GM3-analyze: Same GM3 protocol via Ethernet-RS485, no token management
+- GM3-analyze: Same GM3 protocol via Ethernet-RS485
 
 ### Standards
 - GM3 Protocol: Custom proprietary protocol (reverse-engineered for interoperability)

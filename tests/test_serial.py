@@ -5,11 +5,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from econet_gm3_gateway.protocol.constants import Command
-from econet_gm3_gateway.protocol.frames import Frame
-from econet_gm3_gateway.serial.connection import SerialConnection
-from econet_gm3_gateway.serial.reader import FrameReader
-from econet_gm3_gateway.serial.writer import FrameWriter
+from econext_gateway.protocol.constants import Command
+from econext_gateway.protocol.frames import Frame
+from econext_gateway.serial.connection import SerialConnection
+from econext_gateway.serial.reader import FrameReader
+from econext_gateway.serial.writer import FrameWriter
 
 
 class TestSerialConnection:
@@ -28,7 +28,7 @@ class TestSerialConnection:
     @pytest.mark.asyncio
     async def test_connect_success(self):
         """Test successful connection."""
-        with patch("econet_gm3_gateway.serial.connection.serial.Serial") as mock_serial_class:
+        with patch("econext_gateway.serial.connection.serial.Serial") as mock_serial_class:
             mock_serial = MagicMock()
             mock_serial.is_open = True
             mock_serial_class.return_value = mock_serial
@@ -44,7 +44,7 @@ class TestSerialConnection:
     @pytest.mark.asyncio
     async def test_connect_failure(self):
         """Test connection failure."""
-        with patch("econet_gm3_gateway.serial.connection.serial.Serial") as mock_serial_class:
+        with patch("econext_gateway.serial.connection.serial.Serial") as mock_serial_class:
             mock_serial = MagicMock()
             mock_serial.open.side_effect = OSError("Port not found")
             mock_serial_class.return_value = mock_serial
@@ -58,7 +58,7 @@ class TestSerialConnection:
     @pytest.mark.asyncio
     async def test_disconnect(self):
         """Test disconnection."""
-        with patch("econet_gm3_gateway.serial.connection.serial.Serial") as mock_serial_class:
+        with patch("econext_gateway.serial.connection.serial.Serial") as mock_serial_class:
             mock_serial = MagicMock()
             mock_serial.is_open = True
             mock_serial_class.return_value = mock_serial
@@ -75,7 +75,7 @@ class TestSerialConnection:
     @pytest.mark.asyncio
     async def test_read_success(self):
         """Test successful read (two-stage: read(1) then read(in_waiting))."""
-        with patch("econet_gm3_gateway.serial.connection.serial.Serial") as mock_serial_class:
+        with patch("econext_gateway.serial.connection.serial.Serial") as mock_serial_class:
             mock_serial = MagicMock()
             mock_serial.is_open = True
             # Two-stage read: first read(1) returns first byte,
@@ -94,7 +94,7 @@ class TestSerialConnection:
     @pytest.mark.asyncio
     async def test_read_timeout_empty(self):
         """Test read returns empty when first byte times out (no data on bus)."""
-        with patch("econet_gm3_gateway.serial.connection.serial.Serial") as mock_serial_class:
+        with patch("econext_gateway.serial.connection.serial.Serial") as mock_serial_class:
             mock_serial = MagicMock()
             mock_serial.is_open = True
             # read(1) returns empty bytes (timeout, no data available)
@@ -113,7 +113,7 @@ class TestSerialConnection:
     @pytest.mark.asyncio
     async def test_read_single_byte_no_waiting(self):
         """Test read returns single byte when in_waiting is 0."""
-        with patch("econet_gm3_gateway.serial.connection.serial.Serial") as mock_serial_class:
+        with patch("econext_gateway.serial.connection.serial.Serial") as mock_serial_class:
             mock_serial = MagicMock()
             mock_serial.is_open = True
             # read(1) returns one byte, but nothing else buffered
@@ -141,7 +141,7 @@ class TestSerialConnection:
     @pytest.mark.asyncio
     async def test_write_success(self):
         """Test successful write."""
-        with patch("econet_gm3_gateway.serial.connection.serial.Serial") as mock_serial_class:
+        with patch("econext_gateway.serial.connection.serial.Serial") as mock_serial_class:
             mock_serial = MagicMock()
             mock_serial.is_open = True
             mock_serial_class.return_value = mock_serial
@@ -164,7 +164,7 @@ class TestSerialConnection:
     @pytest.mark.asyncio
     async def test_context_manager(self):
         """Test async context manager."""
-        with patch("econet_gm3_gateway.serial.connection.serial.Serial") as mock_serial_class:
+        with patch("econext_gateway.serial.connection.serial.Serial") as mock_serial_class:
             mock_serial = MagicMock()
             mock_serial.is_open = True
             mock_serial_class.return_value = mock_serial

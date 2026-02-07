@@ -3,7 +3,7 @@
 import asyncio
 from datetime import datetime
 
-from econet_gm3_gateway.core.models import Parameter
+from econext_gateway.core.models import Parameter
 
 
 class ParameterCache:

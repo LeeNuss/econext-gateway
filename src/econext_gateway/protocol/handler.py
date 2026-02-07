@@ -10,10 +10,10 @@ import struct
 from collections.abc import Callable
 from typing import Any
 
-from econet_gm3_gateway.core.cache import ParameterCache
-from econet_gm3_gateway.core.models import Parameter
-from econet_gm3_gateway.protocol.codec import decode_value, encode_value
-from econet_gm3_gateway.protocol.constants import (
+from econext_gateway.core.cache import ParameterCache
+from econext_gateway.core.models import Parameter
+from econext_gateway.protocol.codec import decode_value, encode_value
+from econext_gateway.protocol.constants import (
     DEST_ADDRESSES,
     GET_TOKEN_FUNC,
     GIVE_BACK_TOKEN_DATA,
@@ -31,10 +31,10 @@ from econet_gm3_gateway.protocol.constants import (
     Command,
     DataType,
 )
-from econet_gm3_gateway.protocol.frames import Frame
-from econet_gm3_gateway.serial.connection import SerialConnection
-from econet_gm3_gateway.serial.reader import FrameReader
-from econet_gm3_gateway.serial.writer import FrameWriter
+from econext_gateway.protocol.frames import Frame
+from econext_gateway.serial.connection import SerialConnection
+from econext_gateway.serial.reader import FrameReader
+from econext_gateway.serial.writer import FrameWriter
 
 logger = logging.getLogger(__name__)
 

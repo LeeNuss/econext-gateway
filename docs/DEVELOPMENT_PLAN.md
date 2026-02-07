@@ -1,6 +1,6 @@
 # Development Plan
 
-Implementation roadmap for the econet GM3 Gateway project.
+Implementation roadmap for the ecoNEXT Gateway project.
 
 ## Overview
 
@@ -186,7 +186,7 @@ This document outlines the step-by-step implementation plan, starting with core 
 
 ### 3.2 Main Application
 
-**Files:** `src/econet_gm3_gateway/main.py`
+**Files:** `src/econext_gateway/main.py`
 
 **Tasks:**
 - FastAPI app initialization
