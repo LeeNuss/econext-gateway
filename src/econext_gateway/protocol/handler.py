@@ -35,9 +35,7 @@ from econext_gateway.protocol.constants import (
     DataType,
 )
 from econext_gateway.protocol.frames import Frame
-from econext_gateway.serial.connection import SerialConnection
-from econext_gateway.serial.reader import FrameReader
-from econext_gateway.serial.writer import FrameWriter
+from econext_gateway.serial.connection import GM3SerialTransport
 
 logger = logging.getLogger(__name__)
 
@@ -413,7 +411,7 @@ class ProtocolHandler:
 
     def __init__(
         self,
-        connection: SerialConnection,
+        connection: GM3SerialTransport,
         cache: ParameterCache,
         destination: int = DEST_ADDRESSES[0],
         poll_interval: float = POLL_INTERVAL,
@@ -443,9 +441,6 @@ class ProtocolHandler:
         self._params_per_request = params_per_request
         self._token_timeout = token_timeout
         self._token_required = token_required
-
-        self._reader = FrameReader(connection)
-        self._writer = FrameWriter(connection)
 
         self._param_structs: dict[int, ParamStructEntry] = {}
         self._total_params: int = 0
@@ -545,7 +540,7 @@ class ProtocolHandler:
             # 1. Clears RX buffer (flushInput) to discard any garbage during turnaround
             # 2. Waits for TX buffer to empty (flush) to ensure data is fully transmitted
             # This matches the original webserver's clearFrameBuffer() + flush() sequence
-            await self._writer.write_frame(response, flush_after=True)
+            await self._connection.protocol.write_frame(response, flush_after=True)
             logger.info("Responded to IDENTIFY from panel")
 
         elif frame.command == SERVICE_CMD:
@@ -566,12 +561,14 @@ class ProtocolHandler:
 
     async def _return_token(self) -> None:
         """Return token to master panel after completing bus operations."""
+        # 20ms RS-485 bus turnaround delay before transmitting
+        await asyncio.sleep(0.02)
         token_frame = Frame(
             destination=PANEL_ADDRESS,
             command=SERVICE_CMD,
             data=GIVE_BACK_TOKEN_DATA,
         )
-        await self._writer.write_frame(token_frame)
+        await self._connection.protocol.write_frame(token_frame)
         self._has_token = False
         logger.info("Token returned to master panel")
 
@@ -608,7 +605,7 @@ class ProtocolHandler:
             else:
                 read_timeout = 0.5
 
-            frame = await self._reader.read_frame(timeout=read_timeout)
+            frame = await self._connection.protocol.receive_frame(timeout=read_timeout)
 
             if frame is None:
                 continue
@@ -682,13 +679,13 @@ class ProtocolHandler:
         # This matches the original webserver's writeAnswer() which does
         # clearFrameBuffer() (data_buffer="" + flushInput()) + flush()
         # after every write, ensuring each read starts fresh.
-        success = await self._writer.write_frame(request, flush_after=True)
+        success = await self._connection.protocol.write_frame(request, flush_after=True)
         if not success:
             logger.warning(f"Failed to send command 0x{command:02X}")
             return None
 
         # Clear reader's Python-level buffer (matches original's data_buffer = b"")
-        self._reader.reset_buffer()
+        self._connection.protocol.reset_buffer()
 
         if expected_response is None:
             return None
@@ -703,7 +700,7 @@ class ProtocolHandler:
 
         while consecutive_silence < max_silence:
             # 0.2s per-read timeout matching original PORT_TIMEOUT
-            response = await self._reader.read_frame(timeout=0.2)
+            response = await self._connection.protocol.receive_frame(timeout=0.2)
 
             if response is None:
                 consecutive_silence += 1
@@ -1177,7 +1174,7 @@ class ProtocolHandler:
 
             try:
                 # Clear reader buffer (fresh start after panel communication)
-                self._reader.reset_buffer()
+                self._connection.protocol.reset_buffer()
 
                 # Discover regulator params first (WITH_RANGE to default dest)
                 await self._discover_address_space(

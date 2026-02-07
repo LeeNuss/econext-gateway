@@ -12,7 +12,7 @@ from econext_gateway.core.cache import ParameterCache
 from econext_gateway.core.config import Settings, setup_logging
 from econext_gateway.core.models import HealthResponse
 from econext_gateway.protocol.handler import ProtocolHandler
-from econext_gateway.serial.connection import SerialConnection
+from econext_gateway.serial.connection import GM3SerialTransport
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ async def lifespan(app: FastAPI):
 
     # Initialize components
     app_state.cache = ParameterCache()
-    app_state.connection = SerialConnection(
+    app_state.connection = GM3SerialTransport(
         port=settings.serial_port,
         baudrate=settings.serial_baud,
     )

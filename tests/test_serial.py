@@ -1,4 +1,4 @@
-"""Unit tests for serial communication layer."""
+"""Unit tests for serial communication layer (GM3Protocol + GM3SerialTransport)."""
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -7,361 +7,308 @@ import pytest
 
 from econext_gateway.protocol.constants import Command
 from econext_gateway.protocol.frames import Frame
-from econext_gateway.serial.connection import SerialConnection
-from econext_gateway.serial.reader import FrameReader
-from econext_gateway.serial.writer import FrameWriter
+from econext_gateway.serial.connection import GM3SerialTransport
+from econext_gateway.serial.protocol import GM3Protocol
+
+# ============================================================================
+# TestGM3Protocol
+# ============================================================================
 
 
-class TestSerialConnection:
-    """Tests for SerialConnection class."""
+class TestGM3Protocol:
+    """Tests for GM3Protocol -- asyncio.Protocol for GM3 framing."""
+
+    def _make_protocol(self) -> tuple[GM3Protocol, MagicMock]:
+        """Create a protocol with a mock transport."""
+        protocol = GM3Protocol()
+        transport = MagicMock()
+        transport.serial = MagicMock()
+        protocol.connection_made(transport)
+        return protocol, transport
+
+    def test_connection_made(self):
+        """connection_made stores transport and sets connected."""
+        protocol = GM3Protocol()
+        assert protocol.connected is False
+
+        transport = MagicMock()
+        protocol.connection_made(transport)
+
+        assert protocol.connected is True
+
+    def test_connection_lost(self):
+        """connection_lost clears transport and pushes sentinel."""
+        protocol, transport = self._make_protocol()
+        assert protocol.connected is True
+
+        protocol.connection_lost(None)
+
+        assert protocol.connected is False
 
     @pytest.mark.asyncio
-    async def test_connection_init(self):
-        """Test connection initialization."""
-        conn = SerialConnection("/dev/ttyUSB0", baudrate=9600, timeout=2.0)
+    async def test_connection_lost_pushes_sentinel(self):
+        """connection_lost pushes None onto the frame queue."""
+        protocol, _ = self._make_protocol()
+        protocol.connection_lost(None)
 
-        assert conn.port == "/dev/ttyUSB0"
-        assert conn.baudrate == 9600
-        assert conn.timeout == 2.0
-        assert not conn.connected
+        frame = await asyncio.wait_for(protocol._frame_queue.get(), timeout=0.1)
+        assert frame is None
+
+    @pytest.mark.asyncio
+    async def test_complete_frame_arrives_on_queue(self):
+        """Feed a complete frame via data_received -> appears on queue."""
+        protocol, _ = self._make_protocol()
+
+        frame = Frame(destination=1, command=Command.GET_PARAMS, data=b"\x00\x00\x01\x00")
+        protocol.data_received(frame.to_bytes())
+
+        result = await asyncio.wait_for(protocol._frame_queue.get(), timeout=0.1)
+        assert result is not None
+        assert result.destination == 1
+        assert result.command == Command.GET_PARAMS
+        assert protocol.stats["frames_read"] == 1
+
+    @pytest.mark.asyncio
+    async def test_partial_then_complete(self):
+        """Feed partial data, then the rest -- frame appears after second call."""
+        protocol, _ = self._make_protocol()
+
+        frame_bytes = Frame(destination=1, command=Command.GET_PARAMS, data=b"\x01\x02").to_bytes()
+        mid = len(frame_bytes) // 2
+
+        protocol.data_received(frame_bytes[:mid])
+        assert protocol._frame_queue.empty()
+
+        protocol.data_received(frame_bytes[mid:])
+        result = await asyncio.wait_for(protocol._frame_queue.get(), timeout=0.1)
+        assert result is not None
+        assert result.command == Command.GET_PARAMS
+
+    @pytest.mark.asyncio
+    async def test_garbage_before_frame(self):
+        """Garbage bytes before a valid frame are discarded."""
+        protocol, _ = self._make_protocol()
+
+        frame_bytes = Frame(destination=1, command=Command.GET_PARAMS, data=b"").to_bytes()
+        protocol.data_received(b"\xff\xfe\xfd" + frame_bytes)
+
+        result = await asyncio.wait_for(protocol._frame_queue.get(), timeout=0.1)
+        assert result is not None
+        assert result.command == Command.GET_PARAMS
+
+    @pytest.mark.asyncio
+    async def test_invalid_crc_rejected(self):
+        """Frame with corrupted CRC is rejected and counted."""
+        protocol, _ = self._make_protocol()
+
+        frame_bytes = bytearray(Frame(destination=1, command=Command.GET_PARAMS, data=b"").to_bytes())
+        frame_bytes[-3] ^= 0xFF  # corrupt CRC
+        protocol.data_received(bytes(frame_bytes))
+
+        assert protocol._frame_queue.empty()
+        assert protocol.stats["frames_invalid"] >= 1
+
+    @pytest.mark.asyncio
+    async def test_receive_frame_timeout(self):
+        """receive_frame returns None on timeout."""
+        protocol, _ = self._make_protocol()
+
+        result = await protocol.receive_frame(timeout=0.05)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_receive_frame_returns_frame(self):
+        """receive_frame returns a parsed frame from the queue."""
+        protocol, _ = self._make_protocol()
+
+        frame = Frame(destination=1, command=Command.GET_PARAMS, data=b"\x01")
+        protocol.data_received(frame.to_bytes())
+
+        result = await protocol.receive_frame(timeout=0.1)
+        assert result is not None
+        assert result.command == Command.GET_PARAMS
+
+    @pytest.mark.asyncio
+    async def test_write_frame_calls_transport_write(self):
+        """write_frame calls transport.write with correct bytes."""
+        protocol, transport = self._make_protocol()
+
+        frame = Frame(destination=1, command=Command.GET_PARAMS, data=b"")
+        result = await protocol.write_frame(frame)
+
+        assert result is True
+        transport.write.assert_called_once_with(frame.to_bytes())
+        assert protocol.stats["frames_written"] == 1
+
+    @pytest.mark.asyncio
+    async def test_write_frame_flush_after(self):
+        """write_frame with flush_after=True flushes TX then clears RX."""
+        protocol, transport = self._make_protocol()
+
+        frame = Frame(destination=1, command=Command.GET_PARAMS, data=b"")
+        await protocol.write_frame(frame, flush_after=True)
+
+        transport.serial.flush.assert_called_once()
+        transport.serial.reset_input_buffer.assert_called_once()
+        # flush() must come before reset_input_buffer() for half-duplex RS-485
+        calls = transport.serial.method_calls
+        flush_idx = next(i for i, c in enumerate(calls) if c[0] == "flush")
+        reset_idx = next(i for i, c in enumerate(calls) if c[0] == "reset_input_buffer")
+        assert flush_idx < reset_idx, "flush() must be called before reset_input_buffer()"
+
+    @pytest.mark.asyncio
+    async def test_write_frame_no_transport(self):
+        """write_frame returns False when not connected."""
+        protocol = GM3Protocol()
+
+        frame = Frame(destination=1, command=Command.GET_PARAMS, data=b"")
+        result = await protocol.write_frame(frame)
+
+        assert result is False
+
+    def test_reset_buffer(self):
+        """reset_buffer clears rx buffer and drains queue."""
+        protocol, _ = self._make_protocol()
+
+        # Add data to buffer and queue
+        frame = Frame(destination=1, command=Command.GET_PARAMS, data=b"")
+        protocol.data_received(frame.to_bytes())
+        protocol._rx_buffer.extend(b"leftover data")
+
+        assert not protocol._frame_queue.empty()
+
+        protocol.reset_buffer()
+
+        assert len(protocol._rx_buffer) == 0
+        assert protocol._frame_queue.empty()
+
+    @pytest.mark.asyncio
+    async def test_queue_full_drops_oldest(self):
+        """When queue is full, oldest frame is dropped to make room."""
+        protocol, _ = self._make_protocol()
+
+        # Fill queue to capacity
+        frame = Frame(destination=1, command=Command.GET_PARAMS, data=b"")
+        frame_bytes = frame.to_bytes()
+        for _ in range(64):
+            protocol.data_received(frame_bytes)
+
+        assert protocol._frame_queue.full()
+
+        # One more should succeed (dropping oldest)
+        new_frame = Frame(destination=2, command=Command.GET_PARAMS_RESPONSE, data=b"\x01")
+        protocol.data_received(new_frame.to_bytes())
+
+        # Queue is still full, and the newest frame is there
+        assert protocol._frame_queue.full()
+        assert protocol.stats["frames_read"] == 65
+
+
+# ============================================================================
+# TestGM3SerialTransport
+# ============================================================================
+
+
+class TestGM3SerialTransport:
+    """Tests for GM3SerialTransport."""
+
+    @pytest.mark.asyncio
+    async def test_init(self):
+        """Test transport initialization."""
+        transport = GM3SerialTransport("/dev/ttyUSB0", baudrate=9600)
+
+        assert transport.port == "/dev/ttyUSB0"
+        assert transport.baudrate == 9600
+        assert not transport.connected
 
     @pytest.mark.asyncio
     async def test_connect_success(self):
-        """Test successful connection."""
-        with patch("econext_gateway.serial.connection.serial.Serial") as mock_serial_class:
-            mock_serial = MagicMock()
-            mock_serial.is_open = True
-            mock_serial_class.return_value = mock_serial
+        """Test successful connection via serial_asyncio."""
+        mock_transport = MagicMock()
+        mock_protocol = MagicMock(spec=GM3Protocol)
+        mock_protocol.connected = True
 
-            conn = SerialConnection("/dev/ttyUSB0")
-            result = await conn.connect()
+        with (
+            patch("econext_gateway.serial.connection.serial.Serial") as mock_serial_class,
+            patch("serial_asyncio.create_serial_connection", new_callable=AsyncMock) as mock_create,
+        ):
+            mock_serial = MagicMock()
+            mock_serial_class.return_value = mock_serial
+            mock_create.return_value = (mock_transport, mock_protocol)
+
+            transport = GM3SerialTransport("/dev/ttyUSB0")
+            result = await transport.connect()
 
             assert result is True
-            assert conn.connected is True
-            # Called twice: once for baud toggle, once for actual connection
-            assert mock_serial.open.call_count >= 1
+            assert transport.connected is True
+            mock_create.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_connect_failure(self):
         """Test connection failure."""
-        with patch("econext_gateway.serial.connection.serial.Serial") as mock_serial_class:
+        with (
+            patch("econext_gateway.serial.connection.serial.Serial") as mock_serial_class,
+            patch("serial_asyncio.create_serial_connection", new_callable=AsyncMock) as mock_create,
+        ):
             mock_serial = MagicMock()
-            mock_serial.open.side_effect = OSError("Port not found")
             mock_serial_class.return_value = mock_serial
+            mock_create.side_effect = OSError("Port not found")
 
-            conn = SerialConnection("/dev/ttyUSB0")
-            result = await conn.connect()
+            transport = GM3SerialTransport("/dev/ttyUSB0")
+            result = await transport.connect()
 
             assert result is False
-            assert conn.connected is False
+            assert transport.connected is False
 
     @pytest.mark.asyncio
     async def test_disconnect(self):
-        """Test disconnection."""
-        with patch("econext_gateway.serial.connection.serial.Serial") as mock_serial_class:
-            mock_serial = MagicMock()
-            mock_serial.is_open = True
-            mock_serial_class.return_value = mock_serial
+        """Test disconnection closes the transport."""
+        mock_transport = MagicMock()
+        mock_protocol = MagicMock(spec=GM3Protocol)
+        mock_protocol.connected = True
 
-            conn = SerialConnection("/dev/ttyUSB0")
-            await conn.connect()
-            assert conn.connected is True
+        with (
+            patch("econext_gateway.serial.connection.serial.Serial"),
+            patch("serial_asyncio.create_serial_connection", new_callable=AsyncMock) as mock_create,
+        ):
+            mock_create.return_value = (mock_transport, mock_protocol)
 
-            await conn.disconnect()
+            transport = GM3SerialTransport("/dev/ttyUSB0")
+            await transport.connect()
+            assert transport.connected is True
 
-            assert conn.connected is False
-            assert mock_serial.close.call_count >= 1
+            await transport.disconnect()
 
-    @pytest.mark.asyncio
-    async def test_read_success(self):
-        """Test successful read (two-stage: read(1) then read(in_waiting))."""
-        with patch("econext_gateway.serial.connection.serial.Serial") as mock_serial_class:
-            mock_serial = MagicMock()
-            mock_serial.is_open = True
-            # Two-stage read: first read(1) returns first byte,
-            # then in_waiting reports remaining bytes, then read(N) returns rest
-            mock_serial.read.side_effect = [b"t", b"est data"]
-            mock_serial.in_waiting = 8
-            mock_serial_class.return_value = mock_serial
-
-            conn = SerialConnection("/dev/ttyUSB0")
-            await conn.connect()
-
-            data = await conn.read()
-
-            assert data == b"test data"
-
-    @pytest.mark.asyncio
-    async def test_read_timeout_empty(self):
-        """Test read returns empty when first byte times out (no data on bus)."""
-        with patch("econext_gateway.serial.connection.serial.Serial") as mock_serial_class:
-            mock_serial = MagicMock()
-            mock_serial.is_open = True
-            # read(1) returns empty bytes (timeout, no data available)
-            mock_serial.read.return_value = b""
-            mock_serial_class.return_value = mock_serial
-
-            conn = SerialConnection("/dev/ttyUSB0")
-            await conn.connect()
-
-            data = await conn.read()
-
-            assert data == b""
-            # Only read(1) should have been called (stage 1 timeout)
-            mock_serial.read.assert_called_once_with(1)
-
-    @pytest.mark.asyncio
-    async def test_read_single_byte_no_waiting(self):
-        """Test read returns single byte when in_waiting is 0."""
-        with patch("econext_gateway.serial.connection.serial.Serial") as mock_serial_class:
-            mock_serial = MagicMock()
-            mock_serial.is_open = True
-            # read(1) returns one byte, but nothing else buffered
-            mock_serial.read.return_value = b"X"
-            mock_serial.in_waiting = 0
-            mock_serial_class.return_value = mock_serial
-
-            conn = SerialConnection("/dev/ttyUSB0")
-            await conn.connect()
-
-            data = await conn.read()
-
-            assert data == b"X"
-            # Only read(1) should have been called (no stage 2 since in_waiting=0)
-            mock_serial.read.assert_called_once_with(1)
-
-    @pytest.mark.asyncio
-    async def test_read_not_connected(self):
-        """Test read when not connected raises error."""
-        conn = SerialConnection("/dev/ttyUSB0")
-
-        with pytest.raises(ConnectionError):
-            await conn.read()
-
-    @pytest.mark.asyncio
-    async def test_write_success(self):
-        """Test successful write."""
-        with patch("econext_gateway.serial.connection.serial.Serial") as mock_serial_class:
-            mock_serial = MagicMock()
-            mock_serial.is_open = True
-            mock_serial_class.return_value = mock_serial
-
-            conn = SerialConnection("/dev/ttyUSB0")
-            await conn.connect()
-
-            await conn.write(b"test data")
-
-            mock_serial.write.assert_called_once_with(b"test data")
-
-    @pytest.mark.asyncio
-    async def test_write_not_connected(self):
-        """Test write when not connected raises error."""
-        conn = SerialConnection("/dev/ttyUSB0")
-
-        with pytest.raises(ConnectionError):
-            await conn.write(b"test")
+            mock_transport.close.assert_called_once()
+            assert transport.connected is False
 
     @pytest.mark.asyncio
     async def test_context_manager(self):
         """Test async context manager."""
+        mock_transport = MagicMock()
+        mock_protocol = MagicMock(spec=GM3Protocol)
+        mock_protocol.connected = True
+
+        with (
+            patch("econext_gateway.serial.connection.serial.Serial"),
+            patch("serial_asyncio.create_serial_connection", new_callable=AsyncMock) as mock_create,
+        ):
+            mock_create.return_value = (mock_transport, mock_protocol)
+
+            async with GM3SerialTransport("/dev/ttyUSB0") as transport:
+                assert transport.connected is True
+
+            mock_transport.close.assert_called_once()
+
+    def test_baud_toggle_reset(self):
+        """Test baud toggle opens/closes at 9600."""
         with patch("econext_gateway.serial.connection.serial.Serial") as mock_serial_class:
             mock_serial = MagicMock()
-            mock_serial.is_open = True
             mock_serial_class.return_value = mock_serial
 
-            async with SerialConnection("/dev/ttyUSB0") as conn:
-                assert conn.connected is True
+            transport = GM3SerialTransport("/dev/ttyUSB0")
+            transport._baud_toggle_reset()
 
-            assert conn.connected is False
-
-
-class TestFrameReader:
-    """Tests for FrameReader class."""
-
-    @pytest.mark.asyncio
-    async def test_reader_init(self):
-        """Test reader initialization."""
-        conn = SerialConnection("/dev/ttyUSB0")
-        reader = FrameReader(conn, buffer_size=2048)
-
-        assert reader.connection == conn
-        assert reader.buffer_size == 2048
-        assert reader.stats["frames_read"] == 0
-
-    @pytest.mark.asyncio
-    async def test_read_frame_success(self):
-        """Test successful frame read."""
-        # Create a valid frame
-        frame = Frame(destination=1, command=Command.GET_PARAMS, data=b"\x00\x00\x01\x00")
-        frame_bytes = frame.to_bytes()
-
-        # Create mock connection with mocked read
-        conn = MagicMock(spec=SerialConnection)
-        conn.read = AsyncMock(return_value=frame_bytes)
-
-        reader = FrameReader(conn)
-        result = await reader.read_frame(timeout=1.0)
-
-        assert result is not None
-        assert result.destination == 1
-        assert result.command == Command.GET_PARAMS
-        assert reader.stats["frames_read"] == 1
-
-    @pytest.mark.asyncio
-    async def test_read_frame_timeout(self):
-        """Test frame read timeout."""
-        # Create mock connection that returns empty data (simulating no data)
-        conn = MagicMock(spec=SerialConnection)
-        conn.read = AsyncMock(return_value=b"")
-
-        reader = FrameReader(conn)
-        result = await reader.read_frame(timeout=0.1)
-
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_read_frame_invalid_crc(self):
-        """Test frame with invalid CRC is rejected."""
-        # Create frame with corrupted CRC
-        frame = Frame(destination=1, command=Command.GET_PARAMS, data=b"")
-        frame_bytes = bytearray(frame.to_bytes())
-        frame_bytes[-3] ^= 0xFF  # Corrupt CRC
-        corrupted_bytes = bytes(frame_bytes)
-
-        # Mock connection - first return corrupted data, then timeout
-        call_count = 0
-
-        async def mock_read(n):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return corrupted_bytes
-            # After first call, return empty to trigger timeout
-            await asyncio.sleep(0.2)
-            return b""
-
-        conn = MagicMock(spec=SerialConnection)
-        conn.read = mock_read
-
-        reader = FrameReader(conn)
-        result = await reader.read_frame(timeout=0.3)
-
-        assert result is None
-        assert reader.stats["frames_invalid"] >= 1
-
-    @pytest.mark.asyncio
-    async def test_reset_buffer(self):
-        """Test buffer reset."""
-        conn = MagicMock(spec=SerialConnection)
-        reader = FrameReader(conn)
-
-        reader._buffer.extend(b"some data")
-        assert len(reader._buffer) > 0
-
-        reader.reset_buffer()
-        assert len(reader._buffer) == 0
-
-    @pytest.mark.asyncio
-    async def test_reset_stats(self):
-        """Test statistics reset."""
-        conn = MagicMock(spec=SerialConnection)
-        reader = FrameReader(conn)
-
-        reader._stats["frames_read"] = 10
-        reader._stats["frames_invalid"] = 5
-
-        reader.reset_stats()
-
-        assert reader.stats["frames_read"] == 0
-        assert reader.stats["frames_invalid"] == 0
-
-
-class TestFrameWriter:
-    """Tests for FrameWriter class."""
-
-    @pytest.mark.asyncio
-    async def test_writer_init(self):
-        """Test writer initialization."""
-        conn = MagicMock(spec=SerialConnection)
-        writer = FrameWriter(conn, max_retries=5, retry_delay=0.2)
-
-        assert writer.connection == conn
-        assert writer.max_retries == 5
-        assert writer.retry_delay == 0.2
-        assert writer.stats["frames_written"] == 0
-
-    @pytest.mark.asyncio
-    async def test_write_frame_success(self):
-        """Test successful frame write."""
-        conn = MagicMock(spec=SerialConnection)
-        conn.write = AsyncMock()
-
-        writer = FrameWriter(conn)
-        frame = Frame(destination=1, command=Command.GET_PARAMS, data=b"")
-        result = await writer.write_frame(frame, timeout=1.0)
-
-        assert result is True
-        assert writer.stats["frames_written"] == 1
-        assert writer.stats["frames_failed"] == 0
-        conn.write.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_write_frame_retry(self):
-        """Test frame write with retry."""
-        conn = MagicMock(spec=SerialConnection)
-        # Fail first attempt, succeed on second
-        conn.write = AsyncMock(side_effect=[TimeoutError(), None])
-
-        writer = FrameWriter(conn, max_retries=3, retry_delay=0.01)
-        frame = Frame(destination=1, command=Command.GET_PARAMS, data=b"")
-        result = await writer.write_frame(frame, timeout=0.5)
-
-        assert result is True
-        assert writer.stats["frames_written"] == 1
-        assert writer.stats["retries"] == 1
-
-    @pytest.mark.asyncio
-    async def test_write_frame_all_retries_fail(self):
-        """Test frame write when all retries fail."""
-        conn = MagicMock(spec=SerialConnection)
-        conn.write = AsyncMock(side_effect=TimeoutError())
-
-        writer = FrameWriter(conn, max_retries=3, retry_delay=0.01)
-        frame = Frame(destination=1, command=Command.GET_PARAMS, data=b"")
-        result = await writer.write_frame(frame, timeout=0.1)
-
-        assert result is False
-        assert writer.stats["frames_written"] == 0
-        assert writer.stats["frames_failed"] == 1
-
-    @pytest.mark.asyncio
-    async def test_write_frames_multiple(self):
-        """Test writing multiple frames."""
-        conn = MagicMock(spec=SerialConnection)
-        conn.write = AsyncMock()
-
-        writer = FrameWriter(conn)
-        frames = [
-            Frame(destination=1, command=Command.GET_PARAMS, data=b""),
-            Frame(destination=1, command=Command.GET_PARAMS, data=b""),
-            Frame(destination=1, command=Command.GET_PARAMS, data=b""),
-        ]
-
-        written = await writer.write_frames(frames, timeout=1.0)
-
-        assert written == 3
-        assert writer.stats["frames_written"] == 3
-
-    @pytest.mark.asyncio
-    async def test_reset_stats(self):
-        """Test statistics reset."""
-        conn = MagicMock(spec=SerialConnection)
-        writer = FrameWriter(conn)
-
-        writer._stats["frames_written"] = 10
-        writer._stats["frames_failed"] = 5
-
-        writer.reset_stats()
-
-        assert writer.stats["frames_written"] == 0
-        assert writer.stats["frames_failed"] == 0
+            mock_serial.open.assert_called_once()
+            mock_serial.close.assert_called_once()
+            assert mock_serial.baudrate == 9600

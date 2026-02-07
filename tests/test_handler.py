@@ -27,7 +27,8 @@ from econext_gateway.protocol.handler import (
     parse_get_params_response,
     parse_struct_response,
 )
-from econext_gateway.serial.connection import SerialConnection
+from econext_gateway.serial.connection import GM3SerialTransport
+from econext_gateway.serial.protocol import GM3Protocol
 
 # ============================================================================
 # Test Parse Functions
@@ -359,8 +360,12 @@ class TestProtocolHandler:
 
     def _make_handler(self) -> tuple[ProtocolHandler, MagicMock, ParameterCache]:
         """Create handler with mocked connection."""
-        conn = MagicMock(spec=SerialConnection)
+        conn = MagicMock(spec=GM3SerialTransport)
         conn.connected = True
+        conn.protocol = MagicMock(spec=GM3Protocol)
+        conn.protocol.write_frame = AsyncMock(return_value=True)
+        conn.protocol.receive_frame = AsyncMock(return_value=None)
+        conn.protocol.reset_buffer = MagicMock()
         cache = ParameterCache()
         handler = ProtocolHandler(
             connection=conn,
@@ -406,8 +411,8 @@ class TestProtocolHandler:
 
         # Mock writer and reader
         response_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, b"\x01\x00\x00\x2d\x00")
-        handler._writer.write_frame = AsyncMock(return_value=True)
-        handler._reader.read_frame = AsyncMock(return_value=response_frame)
+        handler._connection.protocol.write_frame = AsyncMock(return_value=True)
+        handler._connection.protocol.receive_frame = AsyncMock(return_value=response_frame)
 
         result = await handler.send_and_receive(
             Command.GET_PARAMS,
@@ -423,7 +428,7 @@ class TestProtocolHandler:
         """Test send failure."""
         handler, conn, cache = self._make_handler()
 
-        handler._writer.write_frame = AsyncMock(return_value=False)
+        handler._connection.protocol.write_frame = AsyncMock(return_value=False)
 
         result = await handler.send_and_receive(
             Command.GET_PARAMS,
@@ -443,8 +448,8 @@ class TestProtocolHandler:
             await asyncio.sleep(0.02)
             return None
 
-        handler._writer.write_frame = AsyncMock(return_value=True)
-        handler._reader.read_frame = AsyncMock(side_effect=simulated_read)
+        handler._connection.protocol.write_frame = AsyncMock(return_value=True)
+        handler._connection.protocol.receive_frame = AsyncMock(side_effect=simulated_read)
 
         result = await handler.send_and_receive(
             Command.GET_PARAMS,
@@ -471,8 +476,8 @@ class TestProtocolHandler:
             await asyncio.sleep(0.02)
             return None
 
-        handler._writer.write_frame = AsyncMock(return_value=True)
-        handler._reader.read_frame = AsyncMock(side_effect=read_wrong_then_silent)
+        handler._connection.protocol.write_frame = AsyncMock(return_value=True)
+        handler._connection.protocol.receive_frame = AsyncMock(side_effect=read_wrong_then_silent)
 
         result = await handler.send_and_receive(
             Command.GET_PARAMS,
@@ -495,8 +500,8 @@ class TestProtocolHandler:
         response_data += struct.pack("<hh", 0, 100)
 
         response_frame = self._response_frame(Command.GET_PARAMS_STRUCT_WITH_RANGE_RESPONSE, response_data)
-        handler._writer.write_frame = AsyncMock(return_value=True)
-        handler._reader.read_frame = AsyncMock(return_value=response_frame)
+        handler._connection.protocol.write_frame = AsyncMock(return_value=True)
+        handler._connection.protocol.receive_frame = AsyncMock(return_value=response_frame)
 
         entries, end_of_range = await handler.fetch_param_structs(0, 50)
 
@@ -512,8 +517,8 @@ class TestProtocolHandler:
         handler, conn, cache = self._make_handler()
 
         no_data_frame = self._response_frame(Command.NO_DATA, b"")
-        handler._writer.write_frame = AsyncMock(return_value=True)
-        handler._reader.read_frame = AsyncMock(return_value=no_data_frame)
+        handler._connection.protocol.write_frame = AsyncMock(return_value=True)
+        handler._connection.protocol.receive_frame = AsyncMock(return_value=no_data_frame)
 
         entries, end_of_range = await handler.fetch_param_structs(500, 100)
 
@@ -536,8 +541,8 @@ class TestProtocolHandler:
         response_data += b"\xc2" + struct.pack("<B", 80)  # sep + Pressure = 80
 
         response_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, response_data)
-        handler._writer.write_frame = AsyncMock(return_value=True)
-        handler._reader.read_frame = AsyncMock(return_value=response_frame)
+        handler._connection.protocol.write_frame = AsyncMock(return_value=True)
+        handler._connection.protocol.receive_frame = AsyncMock(return_value=response_frame)
 
         results = await handler.fetch_param_values(0, 2)
 
@@ -564,8 +569,8 @@ class TestProtocolHandler:
 
         response_data = struct.pack("<BH", 1, 0) + b"\xc2" + struct.pack("<h", 65)
         response_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, response_data)
-        handler._writer.write_frame = AsyncMock(return_value=True)
-        handler._reader.read_frame = AsyncMock(return_value=response_frame)
+        handler._connection.protocol.write_frame = AsyncMock(return_value=True)
+        handler._connection.protocol.receive_frame = AsyncMock(return_value=response_frame)
 
         params = await handler.read_params(0, 1)
 
@@ -610,8 +615,8 @@ class TestProtocolHandler:
         )
 
         response_frame = self._response_frame(Command.MODIFY_PARAM_RESPONSE)
-        handler._writer.write_frame = AsyncMock(return_value=True)
-        handler._reader.read_frame = AsyncMock(return_value=response_frame)
+        handler._connection.protocol.write_frame = AsyncMock(return_value=True)
+        handler._connection.protocol.receive_frame = AsyncMock(return_value=response_frame)
 
         result = await handler.write_param("SetPoint", 65)
 
@@ -753,8 +758,8 @@ class TestProtocolHandler:
             await asyncio.sleep(0.02)
             return None
 
-        handler._writer.write_frame = AsyncMock(return_value=True)
-        handler._reader.read_frame = AsyncMock(side_effect=simulated_read)
+        handler._connection.protocol.write_frame = AsyncMock(return_value=True)
+        handler._connection.protocol.receive_frame = AsyncMock(side_effect=simulated_read)
 
         result = await handler.write_param("Temp", 60)
 
@@ -767,7 +772,7 @@ class TestProtocolHandler:
     @pytest.mark.asyncio
     async def test_write_param_acquires_and_returns_token(self):
         """Test that write_param waits for token and returns it after."""
-        conn = MagicMock(spec=SerialConnection)
+        conn = MagicMock(spec=GM3SerialTransport)
         conn.connected = True
         cache = ParameterCache()
         handler = ProtocolHandler(
@@ -821,8 +826,8 @@ class TestProtocolHandler:
         handler._return_token = mock_return_token
 
         response_frame = self._response_frame(Command.MODIFY_PARAM_RESPONSE)
-        handler._writer.write_frame = AsyncMock(return_value=True)
-        handler._reader.read_frame = AsyncMock(return_value=response_frame)
+        handler._connection.protocol.write_frame = AsyncMock(return_value=True)
+        handler._connection.protocol.receive_frame = AsyncMock(return_value=response_frame)
 
         result = await handler.write_param("SetPoint", 65)
 
@@ -833,7 +838,7 @@ class TestProtocolHandler:
     @pytest.mark.asyncio
     async def test_write_param_returns_token_on_failure(self):
         """Test that token is returned even when write fails."""
-        conn = MagicMock(spec=SerialConnection)
+        conn = MagicMock(spec=GM3SerialTransport)
         conn.connected = True
         cache = ParameterCache()
         handler = ProtocolHandler(
@@ -880,8 +885,8 @@ class TestProtocolHandler:
         handler._return_token = mock_return_token
 
         # Simulate no response (timeout)
-        handler._writer.write_frame = AsyncMock(return_value=True)
-        handler._reader.read_frame = AsyncMock(return_value=None)
+        handler._connection.protocol.write_frame = AsyncMock(return_value=True)
+        handler._connection.protocol.receive_frame = AsyncMock(return_value=None)
 
         result = await handler.write_param("Temp", 60)
 
@@ -1052,8 +1057,8 @@ class TestProtocolHandler:
         response_data += b"\xc2" + struct.pack("<B", 99)
 
         response_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, response_data)
-        handler._writer.write_frame = AsyncMock(return_value=True)
-        handler._reader.read_frame = AsyncMock(return_value=response_frame)
+        handler._connection.protocol.write_frame = AsyncMock(return_value=True)
+        handler._connection.protocol.receive_frame = AsyncMock(return_value=response_frame)
 
         total = await handler.poll_all_params()
 
@@ -1085,8 +1090,8 @@ class TestProtocolHandler:
         response2_data += b"\xc2" + struct.pack("<h", 40)
         response2 = self._response_frame(Command.GET_PARAMS_RESPONSE, response2_data)
 
-        handler._writer.write_frame = AsyncMock(return_value=True)
-        handler._reader.read_frame = AsyncMock(side_effect=[response1, response2])
+        handler._connection.protocol.write_frame = AsyncMock(return_value=True)
+        handler._connection.protocol.receive_frame = AsyncMock(side_effect=[response1, response2])
 
         total = await handler.poll_all_params()
 
@@ -1106,7 +1111,7 @@ class TestProtocolHandler:
         """Test send without expecting response (fire-and-forget)."""
         handler, conn, cache = self._make_handler()
 
-        handler._writer.write_frame = AsyncMock(return_value=True)
+        handler._connection.protocol.write_frame = AsyncMock(return_value=True)
 
         result = await handler.send_and_receive(
             Command.GET_PARAMS,
@@ -1115,7 +1120,7 @@ class TestProtocolHandler:
         )
 
         assert result is None
-        handler._writer.write_frame.assert_called_once()
+        handler._connection.protocol.write_frame.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_discover_params_keeps_existing_on_failure(self):
@@ -1249,8 +1254,8 @@ class TestProtocolHandler:
         rejected_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, b"\x01\x64\x00")
         accepted_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, b"\x01\x00\x00\x2d\x00")
 
-        handler._writer.write_frame = AsyncMock(return_value=True)
-        handler._reader.read_frame = AsyncMock(side_effect=[rejected_frame, accepted_frame])
+        handler._connection.protocol.write_frame = AsyncMock(return_value=True)
+        handler._connection.protocol.receive_frame = AsyncMock(side_effect=[rejected_frame, accepted_frame])
 
         def validator(frame: Frame) -> bool:
             first_index = struct.unpack("<H", frame.data[1:3])[0]
@@ -1265,7 +1270,7 @@ class TestProtocolHandler:
 
         assert result is not None
         assert result is accepted_frame
-        assert handler._reader.read_frame.call_count == 2
+        assert handler._connection.protocol.receive_frame.call_count == 2
 
     @pytest.mark.asyncio
     async def test_fetch_param_values_skips_wrong_first_index(self):
@@ -1284,8 +1289,8 @@ class TestProtocolHandler:
         correct_response_data = struct.pack("<BH", 1, 0) + b"\xc2" + struct.pack("<h", 42)
         correct_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, correct_response_data)
 
-        handler._writer.write_frame = AsyncMock(return_value=True)
-        handler._reader.read_frame = AsyncMock(side_effect=[wrong_frame, correct_frame])
+        handler._connection.protocol.write_frame = AsyncMock(return_value=True)
+        handler._connection.protocol.receive_frame = AsyncMock(side_effect=[wrong_frame, correct_frame])
 
         results = await handler.fetch_param_values(0, 1)
 
@@ -1311,8 +1316,8 @@ class TestProtocolHandler:
         correct_data += struct.pack("<hh", 0, 100)
         correct_frame = self._response_frame(Command.GET_PARAMS_STRUCT_WITH_RANGE_RESPONSE, correct_data)
 
-        handler._writer.write_frame = AsyncMock(return_value=True)
-        handler._reader.read_frame = AsyncMock(side_effect=[wrong_frame, correct_frame])
+        handler._connection.protocol.write_frame = AsyncMock(return_value=True)
+        handler._connection.protocol.receive_frame = AsyncMock(side_effect=[wrong_frame, correct_frame])
 
         entries, end_of_range = await handler.fetch_param_structs(0, 50)
 
@@ -1333,7 +1338,7 @@ class TestDiscoverAddressSpace:
     DEST_ADDR = 1
 
     def _make_handler(self) -> tuple[ProtocolHandler, MagicMock, ParameterCache]:
-        conn = MagicMock(spec=SerialConnection)
+        conn = MagicMock(spec=GM3SerialTransport)
         conn.connected = True
         cache = ParameterCache()
         handler = ProtocolHandler(
@@ -1484,8 +1489,12 @@ class TestDiscoverParamsAddressSpaces:
     """Tests for discover_params with_range and store_offset per address space."""
 
     def _make_handler(self) -> tuple[ProtocolHandler, MagicMock, ParameterCache]:
-        conn = MagicMock(spec=SerialConnection)
+        conn = MagicMock(spec=GM3SerialTransport)
         conn.connected = True
+        conn.protocol = MagicMock(spec=GM3Protocol)
+        conn.protocol.write_frame = AsyncMock(return_value=True)
+        conn.protocol.receive_frame = AsyncMock(return_value=None)
+        conn.protocol.reset_buffer = MagicMock()
         cache = ParameterCache()
         handler = ProtocolHandler(
             connection=conn,
@@ -1653,13 +1662,10 @@ class TestReadAlarms:
 
     @pytest.fixture
     def handler(self):
-        conn = MagicMock(spec=SerialConnection)
+        conn = MagicMock(spec=GM3SerialTransport)
         conn.connected = True
         cache = ParameterCache()
         h = ProtocolHandler(conn, cache, token_required=False, token_timeout=0)
-        h._reader = MagicMock()
-        h._writer = MagicMock()
-        h._writer.write_frame = AsyncMock(return_value=True)
         return h
 
     @pytest.mark.asyncio
