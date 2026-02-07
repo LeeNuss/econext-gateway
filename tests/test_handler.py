@@ -7,9 +7,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from econext_gateway.core.cache import ParameterCache
-from econext_gateway.core.models import Parameter
+from econext_gateway.core.models import Alarm, Parameter
 from econext_gateway.protocol.constants import (
+    ALARM_REQUEST_PREFIX,
     PANEL_ADDRESS,
+    SERVICE_ANS_CMD,
+    SERVICE_CMD,
     Command,
     DataType,
 )
@@ -318,7 +321,7 @@ class TestBuildFunctions:
 
         # 14 (auth) + 1 (mode) + 2 (index) + 2 (int16) = 19
         assert len(data) == 19
-        assert data[:14] == b"\x55\x53\x45\x52\x2D\x30\x30\x30\x00\x34\x30\x39\x36\x00"
+        assert data[:14] == b"\x55\x53\x45\x52\x2d\x30\x30\x30\x00\x34\x30\x39\x36\x00"
         assert data[14] == 0x01  # mode byte
         assert struct.unpack("<H", data[15:17])[0] == 42
         assert struct.unpack("<h", data[17:19])[0] == 65
@@ -903,16 +906,31 @@ class TestProtocolHandler:
         # Set up param structs: HDWTSetPoint refs HDWMinSetTemp and HDWMaxSetTemp
         handler._param_structs = {
             103: ParamStructEntry(
-                index=103, name="HDWTSetPoint", unit=1, type_code=DataType.INT16,
-                writable=True, min_param_ref=107, max_param_ref=108,
+                index=103,
+                name="HDWTSetPoint",
+                unit=1,
+                type_code=DataType.INT16,
+                writable=True,
+                min_param_ref=107,
+                max_param_ref=108,
             ),
             107: ParamStructEntry(
-                index=107, name="HDWMinSetTemp", unit=0, type_code=DataType.INT16,
-                writable=True, min_value=20.0, max_value=65.0,
+                index=107,
+                name="HDWMinSetTemp",
+                unit=0,
+                type_code=DataType.INT16,
+                writable=True,
+                min_value=20.0,
+                max_value=65.0,
             ),
             108: ParamStructEntry(
-                index=108, name="HDWMaxSetTemp", unit=0, type_code=DataType.INT16,
-                writable=True, min_value=35.0, max_value=80.0,
+                index=108,
+                name="HDWMaxSetTemp",
+                unit=0,
+                type_code=DataType.INT16,
+                writable=True,
+                min_value=35.0,
+                max_value=80.0,
             ),
         }
 
@@ -933,11 +951,19 @@ class TestProtocolHandler:
 
         handler._param_structs = {
             103: ParamStructEntry(
-                index=103, name="HDWTSetPoint", unit=1, type_code=DataType.INT16,
-                writable=True, min_param_ref=107, max_param_ref=108,
+                index=103,
+                name="HDWTSetPoint",
+                unit=1,
+                type_code=DataType.INT16,
+                writable=True,
+                min_param_ref=107,
+                max_param_ref=108,
             ),
             107: ParamStructEntry(
-                index=107, name="HDWMinSetTemp", unit=0, type_code=DataType.INT16,
+                index=107,
+                name="HDWMinSetTemp",
+                unit=0,
+                type_code=DataType.INT16,
                 writable=True,
             ),
         }
@@ -953,8 +979,13 @@ class TestProtocolHandler:
         handler, conn, cache = self._make_handler()
 
         entry = ParamStructEntry(
-            index=0, name="Temp", unit=1, type_code=DataType.INT16,
-            writable=True, min_value=10.0, max_value=80.0,
+            index=0,
+            name="Temp",
+            unit=1,
+            type_code=DataType.INT16,
+            writable=True,
+            min_value=10.0,
+            max_value=80.0,
         )
         handler._param_structs = {0: entry}
 
@@ -1138,6 +1169,7 @@ class TestProtocolHandler:
         discover_mock = AsyncMock(return_value=2)
         handler.discover_params = discover_mock
         handler.poll_all_params = AsyncMock(return_value=2)
+        handler.read_alarms = AsyncMock(return_value=[])
 
         await handler.start()
         await asyncio.sleep(0.03)
@@ -1170,6 +1202,7 @@ class TestProtocolHandler:
             return 1
 
         handler.poll_all_params = failing_poll
+        handler.read_alarms = AsyncMock(return_value=[])
 
         await handler.start()
         await asyncio.sleep(0.08)
@@ -1198,6 +1231,7 @@ class TestProtocolHandler:
             return 1
 
         handler.poll_all_params = sometimes_failing_poll
+        handler.read_alarms = AsyncMock(return_value=[])
 
         await handler.start()
         await asyncio.sleep(0.05)
@@ -1565,3 +1599,160 @@ class TestDiscoverParamsAddressSpaces:
         # Panel at index 10000
         assert 10000 in handler._param_structs
         assert handler._param_structs[10000].name == "PanelX"
+
+
+# ============================================================================
+# Alarm Tests
+# ============================================================================
+
+
+class TestDecodeAlarmDate:
+    """Tests for _decode_alarm_date static method."""
+
+    def test_valid_date(self):
+        # 2025-06-15 14:30:45 -> year=2025 as LE16, month=6, day=15, hour=14, min=30, sec=45
+        data = struct.pack("<h", 2025) + bytes([6, 15, 14, 30, 45])
+        result = ProtocolHandler._decode_alarm_date(data)
+        assert result is not None
+        assert result.year == 2025
+        assert result.month == 6
+        assert result.day == 15
+        assert result.hour == 14
+        assert result.minute == 30
+        assert result.second == 45
+
+    def test_null_date_all_ff(self):
+        data = b"\xff\xff\xff\xff\xff\xff\xff"
+        result = ProtocolHandler._decode_alarm_date(data)
+        assert result is None
+
+    def test_short_data(self):
+        result = ProtocolHandler._decode_alarm_date(b"\x01\x02\x03")
+        assert result is None
+
+    def test_invalid_month(self):
+        data = struct.pack("<h", 2025) + bytes([13, 15, 14, 30, 45])
+        result = ProtocolHandler._decode_alarm_date(data)
+        assert result is None
+
+    def test_invalid_day(self):
+        data = struct.pack("<h", 2025) + bytes([6, 0, 14, 30, 45])
+        result = ProtocolHandler._decode_alarm_date(data)
+        assert result is None
+
+    def test_year_2000_offset(self):
+        # Year stored as absolute LE16, not offset from 2000
+        data = struct.pack("<h", 2000) + bytes([1, 1, 0, 0, 0])
+        result = ProtocolHandler._decode_alarm_date(data)
+        assert result is not None
+        assert result.year == 2000
+
+
+class TestReadAlarms:
+    """Tests for read_alarms method."""
+
+    @pytest.fixture
+    def handler(self):
+        conn = MagicMock(spec=SerialConnection)
+        conn.connected = True
+        cache = ParameterCache()
+        h = ProtocolHandler(conn, cache, token_required=False, token_timeout=0)
+        h._reader = MagicMock()
+        h._writer = MagicMock()
+        h._writer.write_frame = AsyncMock(return_value=True)
+        return h
+
+    @pytest.mark.asyncio
+    async def test_read_two_alarms_then_end(self, handler):
+        """Read 2 alarms, then null date ends the list."""
+        # Alarm 0: code=42, from=2025-06-15 14:30:00, to=2025-06-15 15:00:00
+        from_date_0 = struct.pack("<h", 2025) + bytes([6, 15, 14, 30, 0])
+        to_date_0 = struct.pack("<h", 2025) + bytes([6, 15, 15, 0, 0])
+        alarm_0_data = bytes([42]) + from_date_0 + to_date_0
+
+        # Alarm 1: code=17, from=2026-01-10 08:00:00, to=None (active)
+        from_date_1 = struct.pack("<h", 2026) + bytes([1, 10, 8, 0, 0])
+        to_date_1 = b"\xff\xff\xff\xff\xff\xff\xff"
+        alarm_1_data = bytes([17]) + from_date_1 + to_date_1
+
+        # End marker: null from_date
+        null_data = bytes([0]) + b"\xff\xff\xff\xff\xff\xff\xff" + b"\xff\xff\xff\xff\xff\xff\xff"
+
+        call_count = 0
+
+        async def mock_send(command, data, expected_response=None, destination=None, **kwargs):
+            nonlocal call_count
+            resp_data = [alarm_0_data, alarm_1_data, null_data][call_count]
+            call_count += 1
+            return Frame(destination=131, command=SERVICE_ANS_CMD, data=resp_data)
+
+        handler.send_and_receive = mock_send
+
+        alarms = await handler.read_alarms()
+
+        assert len(alarms) == 2
+        assert call_count == 3
+        # Sorted newest first
+        assert alarms[0].code == 17  # 2026 is newer
+        assert alarms[0].to_date is None  # active
+        assert alarms[1].code == 42  # 2025
+
+    @pytest.mark.asyncio
+    async def test_read_alarms_empty(self, handler):
+        """First alarm is null -> empty list."""
+        null_data = bytes([0]) + b"\xff\xff\xff\xff\xff\xff\xff" + b"\xff\xff\xff\xff\xff\xff\xff"
+
+        async def mock_send(command, data, expected_response=None, destination=None, **kwargs):
+            frame = Frame(destination=131, command=SERVICE_ANS_CMD, data=null_data)
+            frame.source = PANEL_ADDRESS
+            return frame
+
+        handler.send_and_receive = mock_send
+
+        alarms = await handler.read_alarms()
+        assert len(alarms) == 0
+
+    @pytest.mark.asyncio
+    async def test_read_alarms_no_response(self, handler):
+        """No response from controller -> empty list."""
+
+        async def mock_send(command, data, expected_response=None, destination=None, **kwargs):
+            return None
+
+        handler.send_and_receive = mock_send
+
+        alarms = await handler.read_alarms()
+        assert len(alarms) == 0
+
+    @pytest.mark.asyncio
+    async def test_read_alarms_request_format(self, handler):
+        """Verify the alarm request frame format."""
+        sent_commands = []
+
+        async def mock_send(command, data, expected_response=None, destination=None, **kwargs):
+            sent_commands.append((command, data, destination))
+            null_data = bytes([0]) + b"\xff\xff\xff\xff\xff\xff\xff" + b"\xff\xff\xff\xff\xff\xff\xff"
+            frame = Frame(destination=131, command=SERVICE_ANS_CMD, data=null_data)
+            frame.source = PANEL_ADDRESS
+            return frame
+
+        handler.send_and_receive = mock_send
+
+        await handler.read_alarms()
+
+        assert len(sent_commands) == 1
+        cmd, data, dest = sent_commands[0]
+        assert cmd == SERVICE_CMD
+        assert dest == PANEL_ADDRESS
+        assert data == ALARM_REQUEST_PREFIX + bytes([0])  # index 0
+
+    @pytest.mark.asyncio
+    async def test_alarms_property_returns_copy(self, handler):
+        """alarms property returns a copy of the internal list."""
+        handler._alarms = [
+            Alarm(index=0, code=1, from_date="2025-01-01T00:00:00", to_date=None),
+        ]
+        result = handler.alarms
+        assert len(result) == 1
+        result.clear()
+        assert len(handler._alarms) == 1  # original unchanged

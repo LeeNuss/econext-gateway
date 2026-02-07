@@ -8,12 +8,14 @@ import asyncio
 import logging
 import struct
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
 from econext_gateway.core.cache import ParameterCache
-from econext_gateway.core.models import Parameter
+from econext_gateway.core.models import Alarm, Parameter
 from econext_gateway.protocol.codec import decode_value, encode_value
 from econext_gateway.protocol.constants import (
+    ALARM_REQUEST_PREFIX,
     DEST_ADDRESSES,
     GET_TOKEN_FUNC,
     GIVE_BACK_TOKEN_DATA,
@@ -24,6 +26,7 @@ from econext_gateway.protocol.constants import (
     POLL_INTERVAL,
     REQUEST_TIMEOUT,
     RETRY_ATTEMPTS,
+    SERVICE_ANS_CMD,
     SERVICE_CMD,
     SRC_ADDRESS,
     TOKEN_TIMEOUT,
@@ -396,7 +399,7 @@ def build_modify_param_request(index: int, value: Any, type_code: int) -> bytes:
         Request payload bytes.
     """
     # Authorization header (matches original: USER-000\x004096\x00)
-    auth = b"\x55\x53\x45\x52\x2D\x30\x30\x30\x00\x34\x30\x39\x36\x00"
+    auth = b"\x55\x53\x45\x52\x2d\x30\x30\x30\x00\x34\x30\x39\x36\x00"
     # Mode byte 0x01 + parameter index (LE 16-bit) + encoded value
     return auth + b"\x01" + struct.pack("<H", index) + encode_value(value, type_code)
 
@@ -446,6 +449,7 @@ class ProtocolHandler:
 
         self._param_structs: dict[int, ParamStructEntry] = {}
         self._total_params: int = 0
+        self._alarms: list[Alarm] = []
         self._poll_task: asyncio.Task | None = None
         self._running = False
         self._lock = asyncio.Lock()
@@ -485,6 +489,11 @@ class ProtocolHandler:
     def param_count(self) -> int:
         """Number of known parameter structures."""
         return len(self._param_structs)
+
+    @property
+    def alarms(self) -> list[Alarm]:
+        """Get cached alarm history."""
+        return list(self._alarms)
 
     @property
     def running(self) -> bool:
@@ -973,6 +982,92 @@ class ProtocolHandler:
         logger.warning("Failed to write parameter %s", name)
         return False
 
+    @staticmethod
+    def _decode_alarm_date(data: bytes) -> datetime | None:
+        """Decode a 7-byte alarm date from the controller.
+
+        Format: year(LE16), month, day, hour, minute, second.
+        All 0xFF bytes means no date (null/end marker).
+
+        Returns:
+            datetime if valid, None for null/invalid dates.
+        """
+        if len(data) < 7:
+            return None
+        if all(b == 0xFF for b in data[:7]):
+            return None
+        try:
+            year = struct.unpack("<h", data[0:2])[0]
+            month, day, hour, minute, second = data[2], data[3], data[4], data[5], data[6]
+            if year < 1 or month < 1 or month > 12 or day < 1 or day > 31:
+                return None
+            return datetime(year=year, month=month, day=day, hour=hour, minute=minute, second=second)
+        except (ValueError, OverflowError):
+            return None
+
+    async def read_alarms(self) -> list[Alarm]:
+        """Read alarm history from the controller.
+
+        Sequentially reads alarms by index using SERVICE frames to the panel.
+        Stops when a null date is returned (no more alarms at that index).
+
+        Returns:
+            List of Alarm objects sorted by from_date (newest first).
+        """
+        alarms: list[Alarm] = []
+
+        async with self._lock:
+            try:
+                await self._wait_for_token()
+
+                alarm_index = 0
+                while True:
+                    data = ALARM_REQUEST_PREFIX + bytes([alarm_index & 0xFF])
+                    response = await self.send_and_receive(
+                        SERVICE_CMD,
+                        data,
+                        expected_response=SERVICE_ANS_CMD,
+                        destination=PANEL_ADDRESS,
+                    )
+
+                    if response is None or len(response.data) < 15:
+                        logger.debug("No alarm response at index %d, stopping", alarm_index)
+                        break
+
+                    code = response.data[0]
+                    from_date = self._decode_alarm_date(response.data[1:8])
+
+                    if from_date is None:
+                        logger.debug("Null alarm at index %d, end of list", alarm_index)
+                        break
+
+                    to_date = self._decode_alarm_date(response.data[8:15])
+
+                    alarm = Alarm(
+                        index=alarm_index,
+                        code=code,
+                        from_date=from_date,
+                        to_date=to_date,
+                    )
+                    alarms.append(alarm)
+                    logger.debug(
+                        "Alarm #%d: code=%d, from=%s, to=%s",
+                        alarm_index,
+                        code,
+                        from_date,
+                        to_date,
+                    )
+                    alarm_index += 1
+
+            finally:
+                if self._has_token:
+                    await self._return_token()
+
+        alarms.sort(key=lambda a: a.from_date, reverse=True)
+        self._alarms = alarms
+        logger.info("Read %d alarms from controller", len(alarms))
+        return alarms
+
     async def _discover_address_space(
         self,
         label: str,
@@ -1221,6 +1316,8 @@ class ProtocolHandler:
         """Background polling loop with reconnection support."""
         consecutive_errors = 0
         was_connected = self.connected
+        poll_count = 0
+        alarm_poll_interval = 5  # Read alarms every N poll cycles
 
         while self._running:
             try:
@@ -1235,12 +1332,19 @@ class ProtocolHandler:
                     logger.info("Connection restored, re-discovering parameters...")
                     was_connected = True
                     await self.discover_params()
+                    await self.read_alarms()
 
                 # Discover params on first poll if needed
                 if not self._param_structs:
                     await self.discover_params()
+                    await self.read_alarms()
 
                 await self.poll_all_params()
+                poll_count += 1
+
+                if poll_count % alarm_poll_interval == 0:
+                    await self.read_alarms()
+
                 consecutive_errors = 0
 
             except asyncio.CancelledError:

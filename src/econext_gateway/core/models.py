@@ -51,6 +51,21 @@ class Parameter(BaseModel):
     )
 
 
+class Alarm(BaseModel):
+    """Represents a single alarm from the controller history."""
+
+    index: int = Field(..., ge=0, description="Alarm index in the log")
+    code: int = Field(..., ge=0, description="Alarm type code")
+    from_date: datetime = Field(..., description="When the alarm started")
+    to_date: datetime | None = Field(None, description="When the alarm was resolved (None = still active)")
+
+
+class AlarmsResponse(BaseModel):
+    """Response model for GET /api/alarms."""
+
+    alarms: list[Alarm] = Field(default_factory=list, description="Alarm history entries")
+
+
 class ParameterCollection(BaseModel):
     """Collection of parameters with metadata."""
 
