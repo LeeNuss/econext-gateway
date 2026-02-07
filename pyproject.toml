@@ -15,9 +15,8 @@ authors = [
 keywords = ["econext", "heat-pump", "home-assistant", "api"]
 
 dependencies = [
-    "fastapi>=0.109.0",
+    "fastapi>=0.128.4",
     "uvicorn>=0.27.0",
-    "pyserial>=3.5",
     "pyserial-asyncio>=0.6",
     "pydantic>=2.5.0",
     "pydantic-settings>=2.1.0",
