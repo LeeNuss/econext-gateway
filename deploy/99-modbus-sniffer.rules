@@ -1,0 +1,10 @@
+# Stable symlink for Waveshare USB-RS485 adapter (FTDI FT232RL) used to
+# sniff the Modbus bus between the ecoNET controller and the heat pump.
+#
+# Creates /dev/modbus_sniff -> /dev/ttyUSBx
+#
+# Install:
+#   sudo cp 99-modbus-sniffer.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", SYMLINK+="heatpump", MODE="0666"

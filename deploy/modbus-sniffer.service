@@ -1,0 +1,15 @@
+[Unit]
+Description=Modbus RTU bus sniffer (passive capture)
+After=dev-heatpump.device
+BindsTo=dev-heatpump.device
+
+[Service]
+Type=simple
+User=pi
+ExecStartPre=+/bin/bash -c 'DEV=$(readlink -f /dev/heatpump); TTYNAME=$(basename $DEV); echo 1 > /sys/bus/usb-serial/devices/$TTYNAME/latency_timer'
+ExecStart=/opt/modbus-sniffer/.venv/bin/python /opt/modbus-sniffer/modbus_sniffer.py capture --port /dev/heatpump --baud 9600 --stopbits 2 --parity N --db /mnt/nas/modbus/modbus_capture.db
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
