@@ -6,8 +6,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from econext_gateway import __version__
+from econext_gateway.api.cycling_routes import router as cycling_router
 from econext_gateway.api.dependencies import app_state
 from econext_gateway.api.routes import router as api_router
+from econext_gateway.control.cycling import CompressorMonitor
 from econext_gateway.core.cache import ParameterCache
 from econext_gateway.core.config import Settings, setup_logging
 from econext_gateway.core.models import HealthResponse
@@ -42,6 +44,9 @@ async def lifespan(app: FastAPI):
         token_required=settings.token_required,
     )
 
+    # Initialize compressor monitor
+    app_state.monitor = CompressorMonitor(app_state.cache)
+
     # Connect and start polling
     connected = await app_state.connection.connect()
     if connected:
@@ -51,6 +56,9 @@ async def lifespan(app: FastAPI):
 
     # Start reconnect loop (handles connection drops and initial failures)
     await app_state.connection.start_reconnect_loop()
+
+    # Wire poll callback for compressor monitoring
+    app_state.handler.on_poll_callback = app_state.monitor.update
 
     # Always start handler - poll loop waits for connection
     await app_state.handler.start()
@@ -75,6 +83,7 @@ app = FastAPI(
 )
 
 app.include_router(api_router)
+app.include_router(cycling_router)
 
 
 @app.get("/")

@@ -1,5 +1,6 @@
 """FastAPI dependency injection for shared application state."""
 
+from econext_gateway.control.cycling import CompressorMonitor
 from econext_gateway.core.cache import ParameterCache
 from econext_gateway.core.config import Settings
 from econext_gateway.protocol.handler import ProtocolHandler
@@ -17,6 +18,7 @@ class AppState:
         self.connection: GM3SerialTransport | None = None
         self.cache: ParameterCache | None = None
         self.handler: ProtocolHandler | None = None
+        self.monitor: CompressorMonitor | None = None
 
 
 # Global app state singleton
@@ -39,3 +41,9 @@ def get_settings() -> Settings:
     """Get the settings instance."""
     assert app_state.settings is not None, "App not initialized"
     return app_state.settings
+
+
+def get_monitor() -> CompressorMonitor:
+    """Get the compressor monitor instance."""
+    assert app_state.monitor is not None, "App not initialized"
+    return app_state.monitor

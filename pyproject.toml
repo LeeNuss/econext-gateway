@@ -46,6 +46,7 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.lint.per-file-ignores]
 "src/econext_gateway/api/routes.py" = ["B008"]
+"src/econext_gateway/api/cycling_routes.py" = ["B008"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["econext_gateway"]

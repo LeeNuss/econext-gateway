@@ -207,3 +207,52 @@ class HealthResponse(BaseModel):
             }
         }
     )
+
+
+# ============================================================================
+# Cycling / Anti-cycling Models
+# ============================================================================
+
+
+class CyclingMetricsResponse(BaseModel):
+    """Response model for GET /api/cycling/metrics."""
+
+    compressor_on: bool | None = Field(None, description="Current compressor state (None if unknown)")
+    current_state_seconds: float = Field(0.0, description="Seconds in current state")
+    last_run_seconds: float | None = Field(None, description="Duration of last completed run")
+    starts_last_hour: int = Field(0, description="Compressor starts in last hour")
+    starts_last_24h: int = Field(0, description="Compressor starts in last 24h")
+    avg_run_seconds_1h: float | None = Field(None, description="Average run duration in last hour")
+    short_cycle_count_1h: int = Field(0, description="Runs < 5 min in last hour")
+    min_work_time: int | None = Field(None, description="Controller minWorkTime setting (minutes)")
+    min_break_time: int | None = Field(None, description="Controller minBreakTime setting (minutes)")
+    counter_min_work: float | None = Field(None, description="Controller counterMinWork countdown")
+    counter_min_break: float | None = Field(None, description="Controller counterMinBreak countdown")
+    temp_outlet: float | None = Field(None, description="Outlet temperature")
+    temp_return: float | None = Field(None, description="Return temperature")
+    temp_weather: float | None = Field(None, description="Outside temperature")
+    preset_temp: float | None = Field(None, description="Current preset/target temperature")
+
+
+class CycleEventResponse(BaseModel):
+    """A single compressor state transition event."""
+
+    timestamp: datetime = Field(..., description="When the transition occurred")
+    turned_on: bool = Field(..., description="True = compressor started, False = stopped")
+    duration: float = Field(..., description="How long the previous state lasted (seconds)")
+
+
+class AntiCyclingSettingsResponse(BaseModel):
+    """Response model for GET /api/cycling/settings."""
+
+    anticycling_enabled: bool = Field(..., description="Whether anti-cycling is enabled in config")
+    min_work_time: int | None = Field(None, description="Current minWorkTime from controller (minutes)")
+    min_break_time: int | None = Field(None, description="Current minBreakTime from controller (minutes)")
+    compressor_min_times_sett: int | None = Field(None, description="compressorMinTimesSett from controller")
+
+
+class AntiCyclingSettingsRequest(BaseModel):
+    """Request model for POST /api/cycling/settings."""
+
+    min_work_time: int | None = Field(None, ge=0, le=60, description="New minWorkTime (minutes)")
+    min_break_time: int | None = Field(None, ge=0, le=60, description="New minBreakTime (minutes)")

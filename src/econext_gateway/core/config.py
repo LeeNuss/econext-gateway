@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     destination_address: int = 1
     params_per_request: int = 100
     token_required: bool = True
+    anticycling_enabled: bool = True
+    anticycling_min_work: int = 10   # minutes
+    anticycling_min_break: int = 10  # minutes
 
     model_config = SettingsConfigDict(env_prefix="ECONEXT_")
 

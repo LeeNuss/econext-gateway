@@ -449,6 +449,8 @@ class ProtocolHandler:
         self._running = False
         self._lock = asyncio.Lock()
         self._has_token = False
+        self.on_poll_callback: Callable[[], Any] | None = None
+        self._anticycling_applied = False
 
     async def _resolve_min_max(self, entry: ParamStructEntry) -> tuple[float | None, float | None]:
         """Resolve min/max values, following parameter index references.
@@ -1338,6 +1340,25 @@ class ProtocolHandler:
 
                 await self.poll_all_params()
                 poll_count += 1
+
+                # Apply anti-cycling defaults once after first successful poll
+                if not self._anticycling_applied and self._param_structs:
+                    from econext_gateway.control.anticycling import apply_anticycling_defaults
+                    from econext_gateway.core.config import Settings
+
+                    try:
+                        settings = Settings()
+                        await apply_anticycling_defaults(self, self._cache, settings)
+                    except Exception as e:
+                        logger.error("Anti-cycling defaults error: %s", e)
+                    self._anticycling_applied = True
+
+                # Notify poll callback (e.g. CompressorMonitor)
+                if self.on_poll_callback is not None:
+                    try:
+                        await self.on_poll_callback()
+                    except Exception as e:
+                        logger.error("Poll callback error: %s", e)
 
                 if poll_count % alarm_poll_interval == 0:
                     await self.read_alarms()
