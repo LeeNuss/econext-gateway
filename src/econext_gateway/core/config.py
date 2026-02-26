@@ -24,7 +24,6 @@ class Settings(BaseSettings):
     destination_address: int = 1
     params_per_request: int = 100
     token_required: bool = True
-    coexistence_mode: bool = False
     state_dir: str = "/var/lib/econext-gateway"
 
     model_config = SettingsConfigDict(env_prefix="ECONEXT_")

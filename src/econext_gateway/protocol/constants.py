@@ -21,7 +21,7 @@ PANEL_ADDRESS = 100  # Display panel address
 
 # Addresses that should not be claimed during auto-registration
 # Controllers (1, 2, 237), panel range (100-110), default gateway/ecoNET300 (131), broadcast
-RESERVED_ADDRESSES = {1, 2, *range(100, 111), 131, 237, 0xFFFF}
+RESERVED_ADDRESSES = {1, 2, *range(100, 105), 131, 237, 0xFFFF}
 
 # ============================================================================
 # Command Codes

@@ -40,7 +40,7 @@ The GM3 protocol is a binary serial communication protocol used by ecotronic hea
 ### Addressing
 - **Controller Address:** 1, 2, or 237 (standard addresses)
 - **Panel Address:** 100 (display panel)
-- **Gateway Address:** 131 (default, configurable via `ECONEXT_SOURCE_ADDRESS`)
+- **Gateway Address:** Auto-registered via panel IDENTIFY scan (persisted to state dir)
 - **Broadcast Address:** 65535 (0xFFFF)
 
 ## Frame Structure
@@ -151,8 +151,7 @@ need to communicate with the same controller.
 | ------- | -------------- | ------------------------------------------------------------------------------ |
 | 1       | Controller     | Responds to GET_PARAMS, GET_PARAMS_STRUCT, MODIFY_PARAM                        |
 | 100     | Master Panel   | Sends IDENTIFY probes, SERVICE frames, MODIFY_PARAM to controller              |
-| 131     | Gateway        | Default gateway address - responds to IDENTIFY, sends param requests           |
-| *       | Gateway (coex) | Auto-claimed address in coexistence mode (persisted to state dir)              |
+| *       | Gateway        | Auto-claimed address via panel IDENTIFY scan (persisted to state dir)          |
 | 165     | Thermostat     | Room thermostat - panel queries with GET_PARAMS (0x40), responds with 0xC0/0x7F |
 | 255     | Polling module | Continuously sends GET_PARAMS to controller (responses go to broadcast 0xFFFF) |
 
@@ -307,10 +306,10 @@ Panel probes: [known addr 1] [known addr 2] ... [scanning addr N]
                                                    ^ increments each cycle
 ```
 
-**Gateway auto-registration (coexistence mode):**
+**Gateway auto-registration:**
 
 The gateway intercepts the panel's scanning IDENTIFY probe to claim a free address.
-When `ECONEXT_COEXISTENCE_MODE=true` and no persisted address exists:
+When no persisted address exists:
 
 1. Gateway listens passively to all bus traffic in `_wait_for_token()`
 2. Panel sends IDENTIFY (0x09) to scanning address N

@@ -40,7 +40,6 @@ async def lifespan(app: FastAPI):
         request_timeout=settings.request_timeout,
         params_per_request=settings.params_per_request,
         token_required=settings.token_required,
-        coexistence_mode=settings.coexistence_mode,
         paired_address_file=settings.paired_address_file,
     )
 

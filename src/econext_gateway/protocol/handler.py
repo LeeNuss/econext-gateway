@@ -30,7 +30,6 @@ from econext_gateway.protocol.constants import (
     RETRY_ATTEMPTS,
     SERVICE_ANS_CMD,
     SERVICE_CMD,
-    SRC_ADDRESS,
     TOKEN_TIMEOUT,
     TYPE_SIZES,
     Command,
@@ -421,7 +420,6 @@ class ProtocolHandler:
         params_per_request: int = 50,
         token_timeout: float = TOKEN_TIMEOUT,
         token_required: bool = True,
-        coexistence_mode: bool = False,
         paired_address_file: Path | None = None,
     ):
         """Initialize protocol handler.
@@ -436,36 +434,31 @@ class ProtocolHandler:
             token_timeout: Seconds to wait for token before fallback.
             token_required: If True, wait indefinitely for token (like original).
                 If False, use token_timeout as maximum wait time.
-            coexistence_mode: If True, auto-register at a free bus address
-                to coexist with another device at the default address (131).
-                The claimed address is persisted to paired_address_file.
-            paired_address_file: Path to persist panel-assigned address.
-                Only used when coexistence_mode is True. Delete the file
-                and restart to re-pair at a new address.
+            paired_address_file: Path to persist panel-assigned bus address.
+                On first boot the gateway claims a free address via the
+                panel's IDENTIFY scan and persists it here.  Delete the
+                file and restart to re-pair at a new address.
         """
         self._connection = connection
         self._cache = cache
         self._destination = destination
-        self._source_address = SRC_ADDRESS
         self._poll_interval = poll_interval
         self._request_timeout = request_timeout
         self._params_per_request = params_per_request
         self._token_timeout = token_timeout
         self._token_required = token_required
-        self._paired_address_file = paired_address_file if coexistence_mode else None
+        self._paired_address_file = paired_address_file
 
-        if coexistence_mode:
-            # Load persisted address from previous auto-registration
-            paired_addr = self._load_paired_address()
-            if paired_addr is not None:
-                logger.info("Loaded paired address %d from %s", paired_addr, paired_address_file)
-                self._source_address = paired_addr
-                self._paired = True
-            else:
-                self._paired = False
-                logger.info("Coexistence mode: will auto-register at next free address")
+        # Load persisted address from previous auto-registration
+        paired_addr = self._load_paired_address()
+        if paired_addr is not None:
+            logger.info("Loaded paired address %d from %s", paired_addr, paired_address_file)
+            self._source_address = paired_addr
+            self._paired = True
         else:
-            self._paired = True  # Default mode: use SRC_ADDRESS, no auto-registration
+            self._source_address = 0  # Placeholder; set during auto-registration
+            self._paired = False
+            logger.info("No paired address found, will auto-register at next free address")
 
         self._param_structs: dict[int, ParamStructEntry] = {}
         self._total_params: int = 0
