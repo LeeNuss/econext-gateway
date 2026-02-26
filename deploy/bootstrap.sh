@@ -7,13 +7,15 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/LeeNuss/econext-gateway/main/deploy/bootstrap.sh | sudo bash
-#   curl -fsSL ... | sudo bash -s -- --version 0.1.0
+#   curl -fsSL ... | sudo bash -s -- --version 0.2.0
+#   curl -fsSL ... | sudo bash -s -- --pre
 #
 
 set -euo pipefail
 
 REPO="LeeNuss/econext-gateway"
 VERSION=""
+PRE_RELEASE=false
 TMPDIR=""
 
 info()  { echo "==> $*"; }
@@ -31,8 +33,12 @@ while [[ $# -gt 0 ]]; do
             VERSION="$2"
             shift 2
             ;;
+        --pre|--prerelease)
+            PRE_RELEASE=true
+            shift
+            ;;
         --help|-h)
-            echo "Usage: bootstrap.sh [--version VERSION]"
+            echo "Usage: bootstrap.sh [--version VERSION] [--pre]"
             exit 0
             ;;
         *)
@@ -52,9 +58,15 @@ command -v tar >/dev/null 2>&1 || die "tar is required"
 
 # Resolve version
 if [[ -z "$VERSION" ]]; then
-    info "Fetching latest release..."
-    VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-        | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
+    if [[ "$PRE_RELEASE" == true ]]; then
+        info "Fetching latest pre-release..."
+        VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases" \
+            | grep '"tag_name"' | head -1 | sed -E 's/.*"v([^"]+)".*/\1/')
+    else
+        info "Fetching latest release..."
+        VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+            | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
+    fi
     [[ -n "$VERSION" ]] || die "Could not determine latest version"
 fi
 info "Installing version ${VERSION}"
