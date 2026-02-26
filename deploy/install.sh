@@ -196,6 +196,7 @@ WorkingDirectory=${prefix}
 ExecStart=${prefix}/.venv/bin/uvicorn econext_gateway.main:app --host 0.0.0.0 --port ${ECONEXT_API_PORT}
 Restart=always
 RestartSec=10
+StateDirectory=econext-gateway
 Environment=ECONEXT_SERIAL_PORT=${ECONEXT_SERIAL_PORT}
 Environment=ECONEXT_LOG_LEVEL=${ECONEXT_LOG_LEVEL}
 

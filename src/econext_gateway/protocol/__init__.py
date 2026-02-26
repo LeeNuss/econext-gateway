@@ -4,7 +4,6 @@ from econext_gateway.protocol.codec import decode_value, encode_value
 from econext_gateway.protocol.constants import (
     BEGIN_FRAME,
     END_FRAME,
-    SRC_ADDRESS,
     UNIT_NAMES,
     Command,
     DataType,
@@ -34,7 +33,6 @@ __all__ = [
     "decode_value",
     "BEGIN_FRAME",
     "END_FRAME",
-    "SRC_ADDRESS",
     "Command",
     "DataType",
     "Unit",

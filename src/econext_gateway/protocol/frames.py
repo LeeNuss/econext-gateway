@@ -21,7 +21,7 @@ class Frame:
         data: Payload data
     """
 
-    def __init__(self, destination: int, command: int, data: bytes = b""):
+    def __init__(self, destination: int, command: int, data: bytes = b"", source: int = SRC_ADDRESS):
         """
         Initialize a frame.
 
@@ -29,9 +29,10 @@ class Frame:
             destination: Destination address (0-65535)
             command: Command byte (0-255)
             data: Optional payload data
+            source: Source address (0-65535), defaults to SRC_ADDRESS (131)
         """
         self.destination = destination
-        self.source = SRC_ADDRESS
+        self.source = source
         self.command = command
         self.data = data
 

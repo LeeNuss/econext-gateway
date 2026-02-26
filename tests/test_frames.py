@@ -43,12 +43,20 @@ class TestFrameConstruction:
         assert frame_bytes[4] == 0x01
 
     def test_frame_source_address(self):
-        """Test source address is set correctly."""
+        """Test source address defaults to SRC_ADDRESS."""
         frame = Frame(destination=1, command=0x00, data=b"")
         frame_bytes = frame.to_bytes()
 
-        # Byte 5 is source address
+        # Byte 5 is source address low byte
         assert frame_bytes[5] == SRC_ADDRESS
+
+    def test_frame_custom_source_address(self):
+        """Test source address can be overridden."""
+        frame = Frame(destination=1, command=0x00, data=b"", source=200)
+        frame_bytes = frame.to_bytes()
+
+        assert frame_bytes[5] == 200
+        assert frame_bytes[6] == 0  # high byte of 16-bit source
 
     def test_frame_command(self):
         """Test command byte is encoded correctly."""

@@ -7,6 +7,8 @@ FastAPI API all use real code.
 
 import asyncio
 import struct
+import tempfile
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,12 +22,14 @@ from econext_gateway.protocol.constants import (
     IDENTIFY_CMD,
     PANEL_ADDRESS,
     SERVICE_CMD,
-    SRC_ADDRESS,
     Command,
     DataType,
 )
 from econext_gateway.protocol.frames import Frame
 from econext_gateway.protocol.handler import ParamStructEntry, ProtocolHandler
+
+# Must match conftest.TEST_BUS_ADDRESS
+TEST_BUS_ADDRESS = 200
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -145,8 +149,8 @@ class FakeProtocol:
         pass
 
     def queue_frame(self, source: int, command: int, data: bytes = b"") -> None:
-        """Queue a response frame addressed to SRC_ADDRESS (131)."""
-        frame = Frame(destination=SRC_ADDRESS, command=command, data=data)
+        """Queue a response frame addressed to the test bus address."""
+        frame = Frame(destination=TEST_BUS_ADDRESS, command=command, data=data)
         frame.source = source
         self._frame_queue.put_nowait(frame)
 
@@ -186,6 +190,14 @@ def cache():
     return ParameterCache()
 
 
+def _make_paired_file() -> Path:
+    """Create a temporary paired address file for tests."""
+    d = Path(tempfile.mkdtemp())
+    f = d / "paired_address"
+    f.write_text(str(TEST_BUS_ADDRESS))
+    return f
+
+
 def make_handler(conn, cache, **kwargs):
     """Create a ProtocolHandler wired to a FakeTransport."""
     defaults = dict(
@@ -197,6 +209,7 @@ def make_handler(conn, cache, **kwargs):
         params_per_request=50,
         token_required=False,
         token_timeout=0,
+        paired_address_file=_make_paired_file(),
     )
     defaults.update(kwargs)
     return ProtocolHandler(**defaults)

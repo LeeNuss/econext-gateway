@@ -2,6 +2,7 @@
 
 import logging
 import sys
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -23,8 +24,14 @@ class Settings(BaseSettings):
     destination_address: int = 1
     params_per_request: int = 100
     token_required: bool = True
+    state_dir: str = "/var/lib/econext-gateway"
 
     model_config = SettingsConfigDict(env_prefix="ECONEXT_")
+
+    @property
+    def paired_address_file(self) -> Path:
+        """Path to the file storing the panel-assigned bus address."""
+        return Path(self.state_dir) / "paired_address"
 
 
 def setup_logging(level: str = "INFO") -> None:

@@ -30,6 +30,9 @@ from econext_gateway.protocol.handler import (
 from econext_gateway.serial.connection import GM3SerialTransport
 from econext_gateway.serial.protocol import GM3Protocol
 
+# Must match conftest.TEST_BUS_ADDRESS
+TEST_BUS_ADDRESS = 200
+
 # ============================================================================
 # Test Parse Functions
 # ============================================================================
@@ -358,6 +361,10 @@ class TestProtocolHandler:
 
     DEST_ADDR = 1  # Default controller address
 
+    @pytest.fixture(autouse=True)
+    def _paired_file(self, paired_address_file):
+        self._paired_address_file = paired_address_file
+
     def _make_handler(self) -> tuple[ProtocolHandler, MagicMock, ParameterCache]:
         """Create handler with mocked connection."""
         conn = MagicMock(spec=GM3SerialTransport)
@@ -374,12 +381,13 @@ class TestProtocolHandler:
             request_timeout=0.5,
             token_timeout=0,
             token_required=False,
+            paired_address_file=self._paired_address_file,
         )
         return handler, conn, cache
 
     def _response_frame(self, command: int, data: bytes = b"") -> Frame:
         """Create a mock response frame from the controller."""
-        frame = Frame(destination=131, command=command, data=data)
+        frame = Frame(destination=TEST_BUS_ADDRESS, command=command, data=data)
         frame.source = self.DEST_ADDR  # Response comes FROM the controller
         return frame
 
@@ -782,6 +790,7 @@ class TestProtocolHandler:
             request_timeout=0.5,
             token_timeout=5.0,
             token_required=True,
+            paired_address_file=self._paired_address_file,
         )
 
         handler._param_structs = {
@@ -848,6 +857,7 @@ class TestProtocolHandler:
             request_timeout=0.05,
             token_timeout=5.0,
             token_required=True,
+            paired_address_file=self._paired_address_file,
         )
 
         handler._param_structs = {
@@ -1337,6 +1347,10 @@ class TestDiscoverAddressSpace:
 
     DEST_ADDR = 1
 
+    @pytest.fixture(autouse=True)
+    def _paired_file(self, paired_address_file):
+        self._paired_address_file = paired_address_file
+
     def _make_handler(self) -> tuple[ProtocolHandler, MagicMock, ParameterCache]:
         conn = MagicMock(spec=GM3SerialTransport)
         conn.connected = True
@@ -1348,6 +1362,7 @@ class TestDiscoverAddressSpace:
             request_timeout=0.5,
             token_timeout=0,
             token_required=False,
+            paired_address_file=self._paired_address_file,
         )
         return handler, conn, cache
 
@@ -1488,6 +1503,10 @@ class TestDiscoverAddressSpace:
 class TestDiscoverParamsAddressSpaces:
     """Tests for discover_params with_range and store_offset per address space."""
 
+    @pytest.fixture(autouse=True)
+    def _paired_file(self, paired_address_file):
+        self._paired_address_file = paired_address_file
+
     def _make_handler(self) -> tuple[ProtocolHandler, MagicMock, ParameterCache]:
         conn = MagicMock(spec=GM3SerialTransport)
         conn.connected = True
@@ -1503,6 +1522,7 @@ class TestDiscoverParamsAddressSpaces:
             request_timeout=0.5,
             token_timeout=0,
             token_required=False,
+            paired_address_file=self._paired_address_file,
         )
         return handler, conn, cache
 
@@ -1661,11 +1681,14 @@ class TestReadAlarms:
     """Tests for read_alarms method."""
 
     @pytest.fixture
-    def handler(self):
+    def handler(self, paired_address_file):
         conn = MagicMock(spec=GM3SerialTransport)
         conn.connected = True
         cache = ParameterCache()
-        h = ProtocolHandler(conn, cache, token_required=False, token_timeout=0)
+        h = ProtocolHandler(
+            conn, cache, token_required=False, token_timeout=0,
+            paired_address_file=paired_address_file,
+        )
         return h
 
     @pytest.mark.asyncio
@@ -1690,7 +1713,7 @@ class TestReadAlarms:
             nonlocal call_count
             resp_data = [alarm_0_data, alarm_1_data, null_data][call_count]
             call_count += 1
-            return Frame(destination=131, command=SERVICE_ANS_CMD, data=resp_data)
+            return Frame(destination=TEST_BUS_ADDRESS, command=SERVICE_ANS_CMD, data=resp_data)
 
         handler.send_and_receive = mock_send
 
@@ -1709,7 +1732,7 @@ class TestReadAlarms:
         null_data = bytes([0]) + b"\xff\xff\xff\xff\xff\xff\xff" + b"\xff\xff\xff\xff\xff\xff\xff"
 
         async def mock_send(command, data, expected_response=None, destination=None, **kwargs):
-            frame = Frame(destination=131, command=SERVICE_ANS_CMD, data=null_data)
+            frame = Frame(destination=TEST_BUS_ADDRESS, command=SERVICE_ANS_CMD, data=null_data)
             frame.source = PANEL_ADDRESS
             return frame
 
@@ -1738,7 +1761,7 @@ class TestReadAlarms:
         async def mock_send(command, data, expected_response=None, destination=None, **kwargs):
             sent_commands.append((command, data, destination))
             null_data = bytes([0]) + b"\xff\xff\xff\xff\xff\xff\xff" + b"\xff\xff\xff\xff\xff\xff\xff"
-            frame = Frame(destination=131, command=SERVICE_ANS_CMD, data=null_data)
+            frame = Frame(destination=TEST_BUS_ADDRESS, command=SERVICE_ANS_CMD, data=null_data)
             frame.source = PANEL_ADDRESS
             return frame
 

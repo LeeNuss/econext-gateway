@@ -37,10 +37,21 @@ jobs:
           tar -czf "dist/gateway-bundle-${VERSION}.tar.gz" -C bundle .
           rm -f dist/econext_gateway-*.tar.gz
 
+      - name: Detect pre-release
+        id: prerelease
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          if [[ "$VERSION" =~ (a|b|rc)[0-9]+ ]]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          prerelease: ${{ steps.prerelease.outputs.is_prerelease == 'true' }}
           files: |
             dist/*.whl
             dist/gateway-bundle-*.tar.gz

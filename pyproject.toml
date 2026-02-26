@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "econext-gateway"
-version = "0.1.0"
+version = "0.2.0a1"
 description = "Local REST API gateway for heat pump controllers using GM3 protocol"
 readme = "README.md"
 requires-python = ">=3.11"
