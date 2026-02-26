@@ -81,6 +81,11 @@ All settings are configured via environment variables with the `ECONEXT_` prefix
 | `ECONEXT_LOG_LEVEL` | `INFO` | Log level (DEBUG, INFO, WARNING, ERROR) |
 | `ECONEXT_POLL_INTERVAL` | `10.0` | Parameter poll interval in seconds |
 | `ECONEXT_TOKEN_REQUIRED` | `true` | Wait for bus token before sending requests |
+| `ECONEXT_DESTINATION_ADDRESS` | `1` | Controller address |
+| `ECONEXT_REQUEST_TIMEOUT` | `1.5` | Timeout for individual requests in seconds |
+| `ECONEXT_PARAMS_PER_REQUEST` | `100` | Parameters to fetch per poll cycle |
+| `ECONEXT_COEXISTENCE_MODE` | `false` | Auto-register at a free bus address (see [Running Alongside ecoNET300](#running-alongside-econet300)) |
+| `ECONEXT_STATE_DIR` | `/var/lib/econext-gateway` | Directory for persistent state (paired address) |
 
 ## API
 
@@ -161,6 +166,57 @@ sudo systemctl restart econext-gateway
 sudo systemctl stop econext-gateway
 ```
 
+## Running Alongside ecoNET300
+
+By default the gateway uses bus address 131 -- the standard slot for ecoNET gateway devices. If you also have an ecoNET300 (which uses the same address), enable coexistence mode so the gateway automatically claims a free address.
+
+### Hardware setup
+
+You need a **separate USB-to-RS-485 converter** for the gateway. Connect it to the **G1 socket** on the controller in parallel with the touch panel. Update the udev rule in `deploy/99-econext.rules` to match your USB device's vendor/product ID.
+
+### Enable coexistence mode
+
+```bash
+sudo systemctl edit econext-gateway
+```
+
+Add:
+
+```ini
+[Service]
+Environment="ECONEXT_COEXISTENCE_MODE=true"
+```
+
+Then reload and restart:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart econext-gateway
+```
+
+### What happens
+
+1. On first startup, the gateway watches the bus for the panel's scanning IDENTIFY probe
+2. When the panel probes a free address, the gateway claims it and responds
+3. The panel registers the gateway and grants it a token in the same cycle
+4. The claimed address is persisted to `/var/lib/econext-gateway/paired_address`
+5. On subsequent restarts, the gateway loads the persisted address and operates immediately
+
+### Re-pairing
+
+To force the gateway to claim a new address, delete the persisted address file and restart:
+
+```bash
+sudo rm /var/lib/econext-gateway/paired_address
+sudo systemctl restart econext-gateway
+```
+
+### Notes
+
+- Auto-registration typically completes within one bus cycle (~10 seconds).
+- The gateway avoids reserved addresses (1, 2, 100-110, 131, 237).
+- Set `ECONEXT_LOG_LEVEL=DEBUG` to see all bus traffic, including IDENTIFY probes and token grants.
+
 ## Troubleshooting
 
 **Service won't start**
@@ -172,6 +228,11 @@ sudo systemctl stop econext-gateway
 - Make sure the no other process uese the RS-485 device
 - Check `ECONEXT_LOG_LEVEL=DEBUG` for bus traffic details
 - Verify the ecoLINK3 adapter is plugged in: `lsusb | grep -i plum` or `dmesg | grep ttyUSB`
+
+**Gateway stuck at "Waiting for token from panel"**
+- The panel doesn't know the gateway's address. Follow the [pairing procedure](#step-3-pair-with-the-panel)
+- If using a non-default address, make sure `ECONEXT_SOURCE_ADDRESS` is set correctly
+- Enable `ECONEXT_LOG_LEVEL=DEBUG` to see which addresses the panel is probing with IDENTIFY
 
 **Stale parameter values**
 - The gateway polls every `ECONEXT_POLL_INTERVAL` seconds (default 10)

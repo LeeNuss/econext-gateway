@@ -40,7 +40,8 @@ The GM3 protocol is a binary serial communication protocol used by ecotronic hea
 ### Addressing
 - **Controller Address:** 1, 2, or 237 (standard addresses)
 - **Panel Address:** 100 (display panel)
-- **Source Address:** 131 (gateway device)
+- **Gateway Address:** 131 (default, configurable via `ECONEXT_SOURCE_ADDRESS`)
+- **Broadcast Address:** 65535 (0xFFFF)
 
 ## Frame Structure
 
@@ -150,8 +151,9 @@ need to communicate with the same controller.
 | ------- | -------------- | ------------------------------------------------------------------------------ |
 | 1       | Controller     | Responds to GET_PARAMS, GET_PARAMS_STRUCT, MODIFY_PARAM                        |
 | 100     | Master Panel   | Sends IDENTIFY probes, SERVICE frames, MODIFY_PARAM to controller              |
-| 131     | Gateway        | Our device - responds to IDENTIFY, sends param requests                        |
-| 165     | Unknown device | Panel queries it with GET_PARAMS (0x40), responds with 0xC0/0x7F               |
+| 131     | Gateway        | Default gateway address - responds to IDENTIFY, sends param requests           |
+| *       | Gateway (coex) | Auto-claimed address in coexistence mode (persisted to state dir)              |
+| 165     | Thermostat     | Room thermostat - panel queries with GET_PARAMS (0x40), responds with 0xC0/0x7F |
 | 255     | Polling module | Continuously sends GET_PARAMS to controller (responses go to broadcast 0xFFFF) |
 
 #### Device Identification (IDENTIFY)
@@ -183,11 +185,12 @@ code is encoded as a little-endian uint16 in the first 2 bytes of the data paylo
 
 **Observed Service Functions:**
 
-| Function | Direction          | Destination          | Description                                        |
-| -------- | ------------------ | -------------------- | -------------------------------------------------- |
-| 0x0801   | Panel -> Device    | Device address (131) | Token grant                                        |
-| 0x0023   | Panel -> Broadcast | 0xFFFF               | Clock/timer sync (20 bytes, includes date/time)    |
-| 0x2001   | Panel -> Broadcast | 0xFFFF               | Status broadcast (16 bytes, includes temperatures) |
+| Function | Direction          | Destination          | Description                                              |
+| -------- | ------------------ | -------------------- | -------------------------------------------------------- |
+| 0x0801   | Panel -> Device    | Device address       | Token grant                                              |
+| 0x0023   | Panel -> Broadcast | 0xFFFF               | Clock/timer sync (20 bytes, includes date/time + flags)  |
+| 0x2001   | Panel -> Broadcast | 0xFFFF               | Device table broadcast (paired addresses + temperatures) |
+| 0x2004   | Panel -> Broadcast | 0xFFFF               | Pairing beacon (sent rapidly when panel is in pairing mode) |
 
 **Token Grant (panel -> gateway):**
 - Source: 100 (master panel)
@@ -291,6 +294,61 @@ falls back to opportunistic communication:
 - **Device 255 traffic creates noise.** Its GET_PARAMS responses go to broadcast
   (0xFFFF) and pass through destination filters. The response validator (checking
   start_index) is essential to distinguish our responses from device 255's.
+
+#### Device Registration (Reverse-Engineered)
+
+The panel maintains a persistent list of known device addresses. During normal operation,
+it only sends IDENTIFY probes to addresses on this list plus one "scanning" address that
+increments slowly each bus cycle (~10s per address).
+
+**Normal IDENTIFY cycle:**
+```
+Panel probes: [known addr 1] [known addr 2] ... [scanning addr N]
+                                                   ^ increments each cycle
+```
+
+**Gateway auto-registration (coexistence mode):**
+
+The gateway intercepts the panel's scanning IDENTIFY probe to claim a free address.
+When `ECONEXT_COEXISTENCE_MODE=true` and no persisted address exists:
+
+1. Gateway listens passively to all bus traffic in `_wait_for_token()`
+2. Panel sends IDENTIFY (0x09) to scanning address N
+3. Gateway switches its source address to N and responds with IDENTIFY_ANS (0x89)
+4. Panel adds address N to its known device list
+5. Panel sends token grant (SERVICE 0x0801) to address N in the same cycle
+6. Gateway persists address N to `/var/lib/econext-gateway/paired_address`
+7. Subsequent restarts load the persisted address (no re-registration needed)
+
+Reserved addresses (1, 2, 100-110, 131, 237, 0xFFFF) are never claimed.
+
+**Thermostat pairing protocol (SERVICE beacons):**
+
+The panel uses a separate beacon-based protocol (SERVICE `func=0x2004`/`0x2005`) for
+thermostat pairing. Devices registered this way receive direct data commands (0x02) but
+do NOT receive IDENTIFY probes or token grants. The gateway does not use this protocol.
+
+Observed thermostat pairing sequence (2026-02-26):
+
+1. Panel broadcasts SERVICE `func=0x2004` to 0xFFFF (pairing beacon, rapid repeat)
+2. Thermostat responds (method unknown -- not captured)
+3. Panel broadcasts SERVICE `func=0x0023` to 0xFFFF (config/time sync, 20 bytes)
+   - Contains flags, timestamp, and device type byte
+4. Panel writes MODIFY_PARAM (0x29) to controller to register the new device
+5. Panel broadcasts SERVICE `func=0x2001` to 0xFFFF (device table)
+   - Contains paired device addresses and temperature values (IEEE 754 floats)
+6. New thermostat (src=0xFFFF) downloads all parameters from controller via GET_PARAMS
+7. Panel broadcasts updated `func=0x2001` with the new device in the table
+8. Normal IDENTIFY cycle resumes, but thermostat-paired devices only get direct data commands
+
+**SERVICE 0x2001 device table format (partial decode):**
+```
+[func_lo][func_hi][0x00][0x00][panel_addr_lo][panel_addr_hi]
+[float: temp1]
+[device_addr_lo][device_addr_hi]
+[float: temp2]
+...
+```
 
 ### Request-Response Cycle
 

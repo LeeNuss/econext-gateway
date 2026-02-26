@@ -9,6 +9,7 @@ import logging
 import struct
 from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from econext_gateway.core.cache import ParameterCache
@@ -25,6 +26,7 @@ from econext_gateway.protocol.constants import (
     PANEL_ADDRESS,
     POLL_INTERVAL,
     REQUEST_TIMEOUT,
+    RESERVED_ADDRESSES,
     RETRY_ATTEMPTS,
     SERVICE_ANS_CMD,
     SERVICE_CMD,
@@ -419,6 +421,8 @@ class ProtocolHandler:
         params_per_request: int = 50,
         token_timeout: float = TOKEN_TIMEOUT,
         token_required: bool = True,
+        coexistence_mode: bool = False,
+        paired_address_file: Path | None = None,
     ):
         """Initialize protocol handler.
 
@@ -432,15 +436,36 @@ class ProtocolHandler:
             token_timeout: Seconds to wait for token before fallback.
             token_required: If True, wait indefinitely for token (like original).
                 If False, use token_timeout as maximum wait time.
+            coexistence_mode: If True, auto-register at a free bus address
+                to coexist with another device at the default address (131).
+                The claimed address is persisted to paired_address_file.
+            paired_address_file: Path to persist panel-assigned address.
+                Only used when coexistence_mode is True. Delete the file
+                and restart to re-pair at a new address.
         """
         self._connection = connection
         self._cache = cache
         self._destination = destination
+        self._source_address = SRC_ADDRESS
         self._poll_interval = poll_interval
         self._request_timeout = request_timeout
         self._params_per_request = params_per_request
         self._token_timeout = token_timeout
         self._token_required = token_required
+        self._paired_address_file = paired_address_file if coexistence_mode else None
+
+        if coexistence_mode:
+            # Load persisted address from previous auto-registration
+            paired_addr = self._load_paired_address()
+            if paired_addr is not None:
+                logger.info("Loaded paired address %d from %s", paired_addr, paired_address_file)
+                self._source_address = paired_addr
+                self._paired = True
+            else:
+                self._paired = False
+                logger.info("Coexistence mode: will auto-register at next free address")
+        else:
+            self._paired = True  # Default mode: use SRC_ADDRESS, no auto-registration
 
         self._param_structs: dict[int, ParamStructEntry] = {}
         self._total_params: int = 0
@@ -449,6 +474,27 @@ class ProtocolHandler:
         self._running = False
         self._lock = asyncio.Lock()
         self._has_token = False
+
+    def _load_paired_address(self) -> int | None:
+        """Load persisted paired address from file."""
+        if self._paired_address_file is None:
+            return None
+        try:
+            text = self._paired_address_file.read_text().strip()
+            return int(text)
+        except (FileNotFoundError, ValueError):
+            return None
+
+    def _save_paired_address(self, address: int) -> None:
+        """Persist the panel-assigned address to file."""
+        if self._paired_address_file is None:
+            return
+        try:
+            self._paired_address_file.parent.mkdir(parents=True, exist_ok=True)
+            self._paired_address_file.write_text(str(address))
+            logger.info("Saved paired address %d to %s", address, self._paired_address_file)
+        except OSError as e:
+            logger.warning("Failed to save paired address: %s", e)
 
     async def _resolve_min_max(self, entry: ParamStructEntry) -> tuple[float | None, float | None]:
         """Resolve min/max values, following parameter index references.
@@ -535,6 +581,7 @@ class ProtocolHandler:
                 destination=PANEL_ADDRESS,
                 command=IDENTIFY_ANS_CMD,
                 data=IDENTIFY_RESPONSE_DATA,
+                source=self._source_address,
             )
             # flush_after=True ensures proper RS-485 handling:
             # 1. Clears RX buffer (flushInput) to discard any garbage during turnaround
@@ -567,6 +614,7 @@ class ProtocolHandler:
             destination=PANEL_ADDRESS,
             command=SERVICE_CMD,
             data=GIVE_BACK_TOKEN_DATA,
+            source=self._source_address,
         )
         await self._connection.protocol.write_frame(token_frame)
         self._has_token = False
@@ -620,12 +668,36 @@ class ProtocolHandler:
             )
 
             # Special logging for SERVICE frames to us
-            if frame.command == SERVICE_CMD and frame.destination == SRC_ADDRESS:
+            if frame.command == SERVICE_CMD and frame.destination == self._source_address:
                 func_code = struct.unpack("<H", frame.data[0:2])[0] if len(frame.data) >= 2 else 0
-                logger.debug("SERVICE to US (131): func=0x%04X", func_code)
+                logger.debug("SERVICE to US (%d): func=0x%04X", self._source_address, func_code)
+
+            # Auto-registration: when not yet paired, intercept IDENTIFY
+            # probes from the panel to ANY address (the panel scans one new
+            # address per cycle). Respond to claim that address, then persist.
+            if (
+                not self._paired
+                and frame.source == PANEL_ADDRESS
+                and frame.command == IDENTIFY_CMD
+                and frame.destination != self._source_address
+                and frame.destination not in RESERVED_ADDRESSES
+            ):
+                target = frame.destination
+                logger.info(
+                    "Scanning IDENTIFY to %d detected, claiming address", target,
+                )
+                self._source_address = target
+                self._paired = True
+                self._save_paired_address(target)
+                # Respond to this IDENTIFY immediately
+                await self._handle_panel_frame(frame)
+                if self._has_token:
+                    logger.info("Token received, proceeding immediately")
+                    return
+                continue
 
             # Only process frames addressed to us or broadcast
-            if frame.destination != SRC_ADDRESS and frame.destination != 0xFFFF:
+            if frame.destination != self._source_address and frame.destination != 0xFFFF:
                 continue
 
             # Handle panel frames (IDENTIFY and token grant)
@@ -669,7 +741,7 @@ class ProtocolHandler:
             Response frame, or None on timeout.
         """
         dest = destination if destination is not None else self._destination
-        request = Frame(destination=dest, command=command, data=data)
+        request = Frame(destination=dest, command=command, data=data, source=self._source_address)
 
         # 20ms RS-485 bus turnaround delay before transmitting
         # (matches original writeAnswer's time.sleep(0.02))
@@ -710,7 +782,7 @@ class ProtocolHandler:
             consecutive_silence = 0
 
             # Skip frames not addressed to us
-            if response.destination != SRC_ADDRESS and response.destination != 0xFFFF:
+            if response.destination != self._source_address and response.destination != 0xFFFF:
                 skipped += 1
                 continue
 
