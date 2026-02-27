@@ -19,6 +19,22 @@ Fetch metrics from econext-gateway (RS-485 gateway for GM3 based heat pump contr
 
 
 class EmonHubEconextInterfacer(EmonHubInterfacer):
+
+    # Default parameter mappings: (gateway_name, emoncms_name)
+    # Config entries with matching gateway_name override the emoncms_name.
+    # DHWStatus and CHStatus are computed from flapValveStates and always included.
+    DEFAULT_PARAMETERS = [
+        ("TempWthr", "OutdoorTemp"),
+        ("Circuit2CalcTemp", "Circuit2TargetTemp"),
+        ("HDWTSetPoint", "DHWSetPoint"),
+        ("TempCWU", "DHWTemp"),
+        ("Circuit2thermostatTemp", "RoomTemp"),
+        ("HeatSourceCalcPresetTemp", "TargetTemp"),
+        ("currentFlow", "FlowRate"),
+        ("HPStatusFanRPM", "FanSpeed"),
+        ("HPStatusComprHz", "CompressorFreq"),
+    ]
+
     def __init__(self, name, host="", port=8000, pollinterval=60, nodeid=30):
         """Initialize interfacer
 
@@ -50,6 +66,9 @@ class EmonHubEconextInterfacer(EmonHubInterfacer):
         self._next_poll_time = None
         self._consecutive_failures = 0
 
+        # User-configured parameter overrides/additions: list of (gateway_name, emoncms_name)
+        self._config_parameters = []
+
     def close(self):
         """Close interfacer"""
         pass
@@ -72,6 +91,46 @@ class EmonHubEconextInterfacer(EmonHubInterfacer):
             return True
 
         return time.time() > self._next_poll_time
+
+    def _parse_parameters(self, raw):
+        """Parse parameters config value.
+
+        Args:
+            raw: String or list from configobj. Each entry is either:
+                 "GatewayName" (passed through using the gateway name) or
+                 "GatewayName:FeedName" (gateway param mapped to custom feed name)
+
+        Returns:
+            list of (gateway_name, feed_name) tuples
+        """
+        if isinstance(raw, str):
+            entries = [raw]
+        elif isinstance(raw, (list, tuple)):
+            entries = list(raw)
+        else:
+            self._log.warning("Invalid parameters format: %s", raw)
+            return []
+
+        result = []
+        for entry in entries:
+            entry = entry.strip()
+            if not entry:
+                continue
+
+            if ":" in entry:
+                gateway_name, feed_name = entry.split(":", 1)
+                gateway_name = gateway_name.strip()
+                feed_name = feed_name.strip()
+                if not gateway_name or not feed_name:
+                    self._log.warning("Invalid parameters entry: '%s'", entry)
+                    continue
+            else:
+                gateway_name = entry
+                feed_name = entry
+
+            result.append((gateway_name, feed_name))
+
+        return result
 
     # Override base _process_rx code from emonhub_interfacer
     def _process_rx(self, rxc):
@@ -163,20 +222,26 @@ class EmonHubEconextInterfacer(EmonHubInterfacer):
         try:
             raw_params = r.json()["parameters"]
             params = {p["name"]: p["value"] for p in raw_params.values()}
-            data["OutdoorTemp"] = params["TempWthr"]
+
+            # Computed parameters (always included, need special transforms)
             data["DHWStatus"] = int(params["flapValveStates"]) == 3
             data["CHStatus"] = int(params["flapValveStates"]) == 0
-            data["UfhTargetTemp"] = params["Circuit2CalcTemp"]
-            data["DHWSetPoint"] = params["HDWTSetPoint"]
-            data["DHWTemp"] = params["TempCWU"]
-            data["RoomTemp"] = params["Circuit2thermostatTemp"]
-            data["TargetTemp"] = params["HeatSourceCalcPresetTemp"]
-            data["FlowRate"] = params["currentFlow"]
-            data["FanSpeed"] = params["HPStatusFanRPM"]
-            data["CompressorFreq"] = params["HPStatusComprHz"]
 
         except (ValueError, KeyError) as e:
             raise Exception("Invalid data from gateway") from e
+
+        # Build effective mapping: defaults overridden/extended by config
+        config_by_gw = dict(self._config_parameters)
+        mapping = [(gw, config_by_gw.pop(gw, feed)) for gw, feed in self.DEFAULT_PARAMETERS]
+        mapping.extend(config_by_gw.items())  # remaining config entries are additions
+
+        for gateway_name, feed_name in mapping:
+            if gateway_name in params:
+                data[feed_name] = params[gateway_name]
+            else:
+                self._log.warning(
+                    "Parameter '%s' not found in gateway response", gateway_name
+                )
 
         self._log.debug("Fetched data: %s", data)
 
@@ -196,6 +261,20 @@ class EmonHubEconextInterfacer(EmonHubInterfacer):
         Args:
             **kwargs: Settings to update
         """
+        # Handle parameters separately (needs custom parsing)
+        if "parameters" in kwargs:
+            parsed = self._parse_parameters(kwargs["parameters"])
+            if parsed != self._config_parameters:
+                self._config_parameters = parsed
+                self._log.info(
+                    "Setting %s parameters: %s",
+                    self.name,
+                    ", ".join(
+                        f"{gw}->{feed}" if gw != feed else gw
+                        for gw, feed in parsed
+                    ),
+                )
+
         for key, setting in self._template_settings.items():
             # Decide which setting value to use
             if key in kwargs:
