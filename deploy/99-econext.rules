@@ -1,10 +1,16 @@
-# Stable symlink for PLUM ecoLINK3 USB-RS485 adapter.
+# Stable symlink for USB-RS485 adapters used with ecoNET controllers.
 # Creates /dev/econext -> /dev/ttyUSBx
-#
-# Matches any PLUM ecoLINK3 adapter regardless of serial number.
 #
 # Install:
 #   sudo cp 99-econext.rules /etc/udev/rules.d/
 #   sudo udevadm control --reload-rules
 #   sudo udevadm trigger
+
+# PLUM ecoLINK3 (default, matches by manufacturer/product)
 SUBSYSTEM=="tty", ATTRS{manufacturer}=="PLUM sp. z o.o", ATTRS{product}=="ecoLINK3", SYMLINK+="econext", MODE="0666"
+
+# FTDI FT232H (older ecoLINK cables, USB ID 0403:6014)
+# Uncomment if using an FT232H-based adapter (e.g. from an original TP-Link
+# ecoNET300 router). Matches ANY FT232H device on the system; if you have
+# multiple, add ATTRS{serial}=="YOUR_SERIAL" to distinguish.
+#SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6014", SYMLINK+="econext", MODE="0666"

@@ -18,12 +18,12 @@ Local REST API gateway for heat pump controllers using a serial protocol. Runs o
 ## Hardware Requirements
 
 - **Raspberry Pi** (or any Linux SBC) with a free USB port
-- **Plum ecoLINK3 USB-RS485 adapter** (comes with the ecoNET300 package)
+- **USB-RS485 adapter**: Plum ecoLINK3 (recommended, auto-detected) or FTDI-based adapters (see [Troubleshooting](#troubleshooting))
 - **Supported controller**: ecoTRONIC, ecoMAX, or other compatible heat pump controllers
 
 ### Wiring
 
-Connect the ecoLINK3 adapter to the controller's RS-485 bus (A/B terminals) and plug the USB end into the Raspberry Pi. The included udev rule creates a `/dev/econext` symlink automatically.
+Connect the USB-RS485 adapter to the controller's RS-485 bus (A/B terminals) and plug the USB end into the Raspberry Pi. The included udev rule creates a `/dev/econext` symlink automatically for ecoLINK3 adapters. For other adapters, see [Troubleshooting](#troubleshooting).
 
 ## Installation
 
@@ -199,9 +199,48 @@ sudo systemctl restart econext-gateway
 - Check permissions: the service user must be in the `dialout` group
 
 **No parameters discovered**
-- Make sure the no other process uese the RS-485 device
+- Make sure no other process uses the RS-485 device
 - Check `ECONEXT_LOG_LEVEL=DEBUG` for bus traffic details
-- Verify the ecoLINK3 adapter is plugged in: `lsusb | grep -i plum` or `dmesg | grep ttyUSB`
+- Verify the adapter is plugged in: `lsusb | grep -i plum` or `dmesg | grep ttyUSB`
+
+**Using a non-ecoLINK3 adapter (e.g. FTDI FT232H)**
+
+The default udev rule only matches the Plum ecoLINK3 adapter. For other USB-RS485
+adapters you have two options:
+
+*Option A: Add a udev rule (creates the `/dev/econext` symlink)*
+
+1. Identify your adapter's attributes:
+   ```bash
+   udevadm info -a /dev/ttyUSB0 | grep -E 'idVendor|idProduct|serial|manufacturer|product'
+   ```
+2. Edit `/etc/udev/rules.d/99-econext.rules`. For FT232H adapters (USB ID `0403:6014`)
+   uncomment the FT232H line already in the file. If you have multiple FTDI devices on
+   the same system, add a serial number match to target the right one:
+   ```
+   SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6014", ATTRS{serial}=="YOUR_SERIAL", SYMLINK+="econext", MODE="0666"
+   ```
+3. Reload rules and verify:
+   ```bash
+   sudo udevadm control --reload-rules && sudo udevadm trigger
+   ls -la /dev/econext
+   ```
+
+*Option B: Skip the symlink and point directly at the device*
+
+If the udev rule is inconvenient (e.g. generic adapter with no unique serial), you can
+bypass it entirely and set the serial port path directly:
+```bash
+# In the systemd override or environment
+ECONEXT_SERIAL_PORT=/dev/ttyUSB0
+```
+Or edit the service: `sudo systemctl edit econext-gateway` and add:
+```ini
+[Service]
+Environment=ECONEXT_SERIAL_PORT=/dev/ttyUSB0
+```
+Note that `/dev/ttyUSBx` numbering can change across reboots if multiple USB-serial
+devices are present, so a udev symlink is preferred when possible.
 
 **Gateway stuck at "Waiting for token from panel"**
 - On first boot, the gateway must auto-register; this takes up to one bus cycle (~10s)
