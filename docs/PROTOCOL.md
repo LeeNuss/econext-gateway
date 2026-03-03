@@ -296,15 +296,22 @@ falls back to opportunistic communication:
 
 #### Device Registration (Reverse-Engineered)
 
-The panel maintains a persistent list of known device addresses. During normal operation,
-it only sends IDENTIFY probes to addresses on this list plus one "scanning" address that
-increments slowly each bus cycle (~10s per address).
+The panel maintains a persistent list of known device addresses. Each bus cycle (~3s)
+the panel probes all known devices plus one "scanning" address that advances each cycle.
 
-**Normal IDENTIFY cycle:**
+**Normal IDENTIFY cycle (~3s):**
 ```
-Panel probes: [known addr 1] [known addr 2] ... [scanning addr N]
-                                                   ^ increments each cycle
+Panel probes: [known addr 1] [known addr 2] ... [scanning addr N] [scanning addr N]
+                                                   ^ probed twice    ^ advances next cycle
 ```
+
+- Known devices are probed once per cycle (even if they don't respond)
+- The scanning address is probed twice in a row
+- Each scanning address takes ~7s total (including known device probes in between)
+- The scanner is not strictly sequential: it skips some addresses and jumps over blocks
+  (observed: 115, 116, 118, 119, 164, 32, 166, 167, 169, 170, 172, 174, 175, ...)
+- Device table broadcast (SERVICE 0x2001) occurs every ~30s. It only includes devices
+  that report temperature (panel, thermostats) -- the gateway is never listed.
 
 **Gateway auto-registration:**
 
@@ -312,14 +319,21 @@ The gateway intercepts the panel's scanning IDENTIFY probe to claim a free addre
 When no persisted address exists:
 
 1. Gateway listens passively to all bus traffic in `_wait_for_token()`
-2. Panel sends IDENTIFY (0x09) to scanning address N
-3. Gateway switches its source address to N and responds with IDENTIFY_ANS (0x89)
-4. Panel adds address N to its known device list
+2. Gateway waits for a device table broadcast (0x2001) to learn which addresses are occupied
+3. Panel sends IDENTIFY (0x09) to scanning address N
+4. If N is in the claimable range (105-130) and not occupied, gateway responds with IDENTIFY_ANS (0x89)
 5. Panel sends token grant (SERVICE 0x0801) to address N in the same cycle
-6. Gateway persists address N to `/var/lib/econext-gateway/paired_address`
+6. Gateway validates the claim and persists address N to `/var/lib/econext-gateway/paired_address`
 7. Subsequent restarts load the persisted address (no re-registration needed)
 
-Reserved addresses (1, 2, 100-110, 131, 237, 0xFFFF) are never claimed.
+Only addresses in the panel peripheral range (105-130) are considered for claiming.
+Addresses outside this range (e.g. 32, 193) receive IDENTIFY probes but never get
+token grants. Addresses already occupied by other devices (from the 0x2001 device
+table broadcast) are also skipped.
+
+First registration typically takes 2-3 minutes (the scanner skips many addresses so
+the cycle is shorter than the full address range). Subsequent restarts reuse the
+persisted address instantly.
 
 **Thermostat pairing protocol (SERVICE beacons):**
 

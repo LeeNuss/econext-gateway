@@ -187,8 +187,9 @@ sudo systemctl restart econext-gateway
 
 ### Notes
 
-- Auto-registration typically completes within one bus cycle (~10 seconds).
-- Reserved addresses (1, 2, 100-110, 131, 237) are never claimed.
+- First auto-registration typically takes 2-3 minutes. Subsequent restarts reuse the persisted address instantly.
+- Only addresses in the panel peripheral range (105-130) are claimed.
+- Addresses already occupied by other devices on the bus are skipped.
 - Set `ECONEXT_LOG_LEVEL=DEBUG` to see all bus traffic, including IDENTIFY probes and token grants.
 
 ## Troubleshooting

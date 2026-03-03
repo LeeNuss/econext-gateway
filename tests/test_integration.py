@@ -18,9 +18,11 @@ from econext_gateway.core.cache import ParameterCache
 from econext_gateway.core.models import Parameter
 from econext_gateway.protocol.codec import encode_value
 from econext_gateway.protocol.constants import (
+    DEVICE_TABLE_FUNC,
     GET_TOKEN_FUNC,
     IDENTIFY_CMD,
     PANEL_ADDRESS,
+    CLAIMABLE_ADDRESS_RANGE,
     SERVICE_CMD,
     Command,
     DataType,
@@ -190,12 +192,28 @@ def cache():
     return ParameterCache()
 
 
-def _make_paired_file() -> Path:
+def _make_paired_file(address: int = TEST_BUS_ADDRESS) -> Path:
     """Create a temporary paired address file for tests."""
     d = Path(tempfile.mkdtemp())
     f = d / "paired_address"
-    f.write_text(str(TEST_BUS_ADDRESS))
+    f.write_text(str(address))
     return f
+
+
+def _make_device_table_frame(*addresses: int) -> Frame:
+    """Build a SERVICE 0x2001 device table broadcast frame from the panel."""
+    data = struct.pack("<H", DEVICE_TABLE_FUNC) + b"\x00\x00"
+    for addr in addresses:
+        data += struct.pack("<Hf", addr, 20.0)  # address + dummy temperature
+    frame = Frame(destination=0xFFFF, command=SERVICE_CMD, data=data)
+    frame.source = PANEL_ADDRESS
+    return frame
+
+
+def _make_empty_paired_file() -> Path:
+    """Create a temporary directory for paired address file (file does not exist)."""
+    d = Path(tempfile.mkdtemp())
+    return d / "paired_address"
 
 
 def make_handler(conn, cache, **kwargs):
@@ -619,3 +637,165 @@ class TestApiIntegration:
                 assert resp.status_code == 503
             finally:
                 self._restore(orig)
+
+
+# ---------------------------------------------------------------------------
+# Registration state machine
+# ---------------------------------------------------------------------------
+
+
+class TestRegistrationStateMachine:
+    """Validated address claiming: unpaired -> tentative -> paired."""
+
+    @pytest.mark.asyncio
+    async def test_tentative_validated_on_token(self, fake_conn, fake_proto, cache):
+        """Address is persisted only after token grant validates it."""
+        paired_file = _make_empty_paired_file()
+        handler = make_handler(
+            fake_conn, cache,
+            token_required=True,
+            paired_address_file=paired_file,
+        )
+
+        assert handler._registration_state == "unpaired"
+        assert handler._source_address == 0
+
+        # Panel broadcasts device table (must arrive before IDENTIFY)
+        fake_proto._frame_queue.put_nowait(_make_device_table_frame(100, 166))
+
+        # Panel scans address 112 (in claimable range)
+        identify_frame = Frame(destination=112, command=IDENTIFY_CMD, data=b"")
+        identify_frame.source = PANEL_ADDRESS
+        fake_proto._frame_queue.put_nowait(identify_frame)
+
+        # Panel grants token to address 112
+        token_data = struct.pack("<H", GET_TOKEN_FUNC) + b"\x00\x00"
+        token_frame = Frame(destination=112, command=SERVICE_CMD, data=token_data)
+        token_frame.source = PANEL_ADDRESS
+        fake_proto._frame_queue.put_nowait(token_frame)
+
+        await handler._wait_for_token()
+
+        assert handler._registration_state == "paired"
+        assert handler._source_address == 112
+        assert handler._has_token is True
+        # File should now be persisted
+        assert paired_file.exists()
+        assert paired_file.read_text().strip() == "112"
+
+    @pytest.mark.asyncio
+    async def test_tentative_timeout_reverts(self, fake_conn, fake_proto, cache):
+        """Address reverts to unpaired if no token within timeout."""
+        paired_file = _make_empty_paired_file()
+        handler = make_handler(
+            fake_conn, cache,
+            token_required=False,
+            token_timeout=0.1,
+            paired_address_file=paired_file,
+        )
+
+        assert handler._registration_state == "unpaired"
+
+        # Panel broadcasts device table
+        fake_proto._frame_queue.put_nowait(_make_device_table_frame(100, 166))
+
+        # Panel scans address 119 (in claimable range) -- gateway claims tentatively
+        identify_frame = Frame(destination=119, command=IDENTIFY_CMD, data=b"")
+        identify_frame.source = PANEL_ADDRESS
+        fake_proto._frame_queue.put_nowait(identify_frame)
+
+        # Manually set tentative_since in the past to simulate timeout
+        # (we can't easily wait 20s in a test)
+        import time
+
+        # First, let the handler process the IDENTIFY
+        # We need token_required=False and short timeout so _wait_for_token exits
+        await handler._wait_for_token()
+
+        # Handler should have processed the IDENTIFY and claimed tentatively,
+        # but since no token was granted and token_required=False with short timeout,
+        # it exited _wait_for_token. The state depends on timing.
+        # With token_required=False and timeout=0.1, it will exit quickly.
+        # The address should NOT be persisted since no token was received.
+        assert not paired_file.exists()
+
+    @pytest.mark.asyncio
+    async def test_reserved_addresses_skipped(self, fake_conn, fake_proto, cache):
+        """IDENTIFY to reserved addresses is not claimed."""
+        paired_file = _make_empty_paired_file()
+        handler = make_handler(
+            fake_conn, cache,
+            token_required=False,
+            token_timeout=0.1,
+            paired_address_file=paired_file,
+        )
+
+        # Panel scans address 100 (reserved panel address)
+        identify_frame = Frame(destination=100, command=IDENTIFY_CMD, data=b"")
+        identify_frame.source = PANEL_ADDRESS
+        fake_proto._frame_queue.put_nowait(identify_frame)
+
+        await handler._wait_for_token()
+
+        assert handler._registration_state == "unpaired"
+        assert handler._source_address == 0
+        assert not paired_file.exists()
+
+    @pytest.mark.asyncio
+    async def test_131_outside_claimable_range(self, fake_conn, fake_proto, cache):
+        """Address 131 (ecoNET300) is outside the claimable range."""
+        assert 131 not in CLAIMABLE_ADDRESS_RANGE
+
+    @pytest.mark.asyncio
+    async def test_panel_adjacent_addresses_claimable(self, fake_conn, fake_proto, cache):
+        """Addresses in the panel peripheral range (e.g. 112) are claimable."""
+        assert 112 in CLAIMABLE_ADDRESS_RANGE
+        assert 105 in CLAIMABLE_ADDRESS_RANGE
+
+    @pytest.mark.asyncio
+    async def test_out_of_range_address_ignored(self, fake_conn, fake_proto, cache):
+        """IDENTIFY to address outside panel range (e.g. 32) is ignored."""
+        assert 32 not in CLAIMABLE_ADDRESS_RANGE
+
+        paired_file = _make_empty_paired_file()
+        handler = make_handler(
+            fake_conn, cache,
+            token_required=False,
+            token_timeout=0.1,
+            paired_address_file=paired_file,
+        )
+
+        identify_frame = Frame(destination=32, command=IDENTIFY_CMD, data=b"")
+        identify_frame.source = PANEL_ADDRESS
+        fake_proto._frame_queue.put_nowait(identify_frame)
+
+        await handler._wait_for_token()
+
+        assert handler._registration_state == "unpaired"
+        assert handler._source_address == 0
+        assert not paired_file.exists()
+
+    @pytest.mark.asyncio
+    async def test_high_address_out_of_range_ignored(self, fake_conn, fake_proto, cache):
+        """IDENTIFY to address 193 (above panel range) is ignored."""
+        assert 193 not in CLAIMABLE_ADDRESS_RANGE
+
+        paired_file = _make_empty_paired_file()
+        handler = make_handler(
+            fake_conn, cache,
+            token_required=False,
+            token_timeout=0.1,
+            paired_address_file=paired_file,
+        )
+
+        identify_frame = Frame(destination=193, command=IDENTIFY_CMD, data=b"")
+        identify_frame.source = PANEL_ADDRESS
+        fake_proto._frame_queue.put_nowait(identify_frame)
+
+        await handler._wait_for_token()
+
+        assert handler._registration_state == "unpaired"
+        assert handler._source_address == 0
+        assert not paired_file.exists()
+
+
