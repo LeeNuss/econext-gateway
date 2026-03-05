@@ -18,11 +18,11 @@ from econext_gateway.core.cache import ParameterCache
 from econext_gateway.core.models import Parameter
 from econext_gateway.protocol.codec import encode_value
 from econext_gateway.protocol.constants import (
+    CLAIMABLE_ADDRESS_RANGE,
     DEVICE_TABLE_FUNC,
     GET_TOKEN_FUNC,
     IDENTIFY_CMD,
     PANEL_ADDRESS,
-    CLAIMABLE_ADDRESS_RANGE,
     SERVICE_CMD,
     Command,
     DataType,
@@ -652,7 +652,8 @@ class TestRegistrationStateMachine:
         """Address is persisted only after token grant validates it."""
         paired_file = _make_empty_paired_file()
         handler = make_handler(
-            fake_conn, cache,
+            fake_conn,
+            cache,
             token_required=True,
             paired_address_file=paired_file,
         )
@@ -688,7 +689,8 @@ class TestRegistrationStateMachine:
         """Address reverts to unpaired if no token within timeout."""
         paired_file = _make_empty_paired_file()
         handler = make_handler(
-            fake_conn, cache,
+            fake_conn,
+            cache,
             token_required=False,
             token_timeout=0.1,
             paired_address_file=paired_file,
@@ -703,10 +705,6 @@ class TestRegistrationStateMachine:
         identify_frame = Frame(destination=119, command=IDENTIFY_CMD, data=b"")
         identify_frame.source = PANEL_ADDRESS
         fake_proto._frame_queue.put_nowait(identify_frame)
-
-        # Manually set tentative_since in the past to simulate timeout
-        # (we can't easily wait 20s in a test)
-        import time
 
         # First, let the handler process the IDENTIFY
         # We need token_required=False and short timeout so _wait_for_token exits
@@ -724,7 +722,8 @@ class TestRegistrationStateMachine:
         """IDENTIFY to reserved addresses is not claimed."""
         paired_file = _make_empty_paired_file()
         handler = make_handler(
-            fake_conn, cache,
+            fake_conn,
+            cache,
             token_required=False,
             token_timeout=0.1,
             paired_address_file=paired_file,
@@ -759,7 +758,8 @@ class TestRegistrationStateMachine:
 
         paired_file = _make_empty_paired_file()
         handler = make_handler(
-            fake_conn, cache,
+            fake_conn,
+            cache,
             token_required=False,
             token_timeout=0.1,
             paired_address_file=paired_file,
@@ -782,7 +782,8 @@ class TestRegistrationStateMachine:
 
         paired_file = _make_empty_paired_file()
         handler = make_handler(
-            fake_conn, cache,
+            fake_conn,
+            cache,
             token_required=False,
             token_timeout=0.1,
             paired_address_file=paired_file,
@@ -797,5 +798,3 @@ class TestRegistrationStateMachine:
         assert handler._registration_state == "unpaired"
         assert handler._source_address == 0
         assert not paired_file.exists()
-
-

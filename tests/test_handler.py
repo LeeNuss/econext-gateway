@@ -18,7 +18,6 @@ from econext_gateway.protocol.constants import (
 )
 from econext_gateway.protocol.frames import Frame
 from econext_gateway.protocol.handler import (
-    DeviceTableEntry,
     ParamStructEntry,
     ProtocolHandler,
     build_get_params_request,
@@ -1688,7 +1687,10 @@ class TestReadAlarms:
         conn.connected = True
         cache = ParameterCache()
         h = ProtocolHandler(
-            conn, cache, token_required=False, token_timeout=0,
+            conn,
+            cache,
+            token_required=False,
+            token_timeout=0,
             paired_address_file=paired_address_file,
         )
         return h

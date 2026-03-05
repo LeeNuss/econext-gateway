@@ -18,6 +18,7 @@ from econext_gateway.core.models import Alarm, Parameter
 from econext_gateway.protocol.codec import decode_value, encode_value
 from econext_gateway.protocol.constants import (
     ALARM_REQUEST_PREFIX,
+    CLAIMABLE_ADDRESS_RANGE,
     DEST_ADDRESSES,
     DEVICE_TABLE_FUNC,
     GET_TOKEN_FUNC,
@@ -28,7 +29,6 @@ from econext_gateway.protocol.constants import (
     PANEL_ADDRESS,
     POLL_INTERVAL,
     REQUEST_TIMEOUT,
-    CLAIMABLE_ADDRESS_RANGE,
     RETRY_ATTEMPTS,
     SERVICE_ANS_CMD,
     SERVICE_CMD,
@@ -718,11 +718,7 @@ class ProtocolHandler:
 
             # Sniff device table broadcasts while waiting (even before we have
             # an address) so we know which addresses are already occupied.
-            if (
-                frame.source == PANEL_ADDRESS
-                and frame.command == SERVICE_CMD
-                and len(frame.data) >= 2
-            ):
+            if frame.source == PANEL_ADDRESS and frame.command == SERVICE_CMD and len(frame.data) >= 2:
                 func_code = struct.unpack("<H", frame.data[0:2])[0]
                 if func_code == DEVICE_TABLE_FUNC:
                     entries = parse_device_table(frame.data)
@@ -753,7 +749,8 @@ class ProtocolHandler:
             ):
                 target = frame.destination
                 logger.info(
-                    "Scanning IDENTIFY to %d detected, claiming tentatively", target,
+                    "Scanning IDENTIFY to %d detected, claiming tentatively",
+                    target,
                 )
                 self._source_address = target
                 self._registration_state = "tentative"
