@@ -748,6 +748,8 @@ class ProtocolHandler:
         loop = asyncio.get_event_loop()
         deadline = None if self._token_required else loop.time() + self._token_timeout
         device_table_seen = len(self._device_table) > 0
+        last_frame_time = loop.time()
+        bus_silence_limit = 30.0  # seconds of no bus traffic before reconnect
 
         while True:
             if deadline is not None:
@@ -762,7 +764,18 @@ class ProtocolHandler:
             frame = await self._connection.protocol.receive_frame(timeout=read_timeout)
 
             if frame is None:
+                # Check for bus silence (no frames at all)
+                silence = loop.time() - last_frame_time
+                if silence >= bus_silence_limit:
+                    logger.warning(
+                        "Bus silent for %.0fs, reconnecting serial port",
+                        silence,
+                    )
+                    await self._connection.reconnect()
+                    raise ConnectionError("Bus silence detected, reconnected serial port")
                 continue
+
+            last_frame_time = loop.time()
 
             # Log ALL bus traffic with human-readable command names
             cmd_name = _cmd_name(frame.command)
