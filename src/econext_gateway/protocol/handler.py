@@ -116,6 +116,28 @@ class DeviceTableEntry:
     temperature: float
 
 
+@dataclass
+class BusDevice:
+    """A device known to exist on the RS-485 bus."""
+
+    address: int
+    identity: str | None = None
+    temperature: float | None = None
+    source: str = ""
+    last_seen: float = 0.0
+
+
+_KNOWN_ADDRESSES: dict[int, str] = {
+    1: "controller",
+    100: "panel",
+}
+
+
+def _parse_identity(data: bytes) -> str:
+    """Parse null-separated identity bytes into a human-readable string."""
+    return data.replace(b"\x00", b" ").strip().decode("ascii", errors="replace")
+
+
 def parse_device_table(data: bytes) -> list[DeviceTableEntry]:
     """Parse SERVICE 0x2001 device table broadcast payload.
 
@@ -526,6 +548,13 @@ class ProtocolHandler:
         self._total_params: int = 0
         self._alarms: list[Alarm] = []
         self._device_table: list[DeviceTableEntry] = []
+        self._device_registry: dict[int, BusDevice] = {}
+        if self._registration_state == "paired":
+            self._device_registry[self._source_address] = BusDevice(
+                address=self._source_address,
+                identity=_parse_identity(IDENTIFY_RESPONSE_DATA),
+                source="self",
+            )
         self._poll_task: asyncio.Task | None = None
         self._running = False
         self._lock = asyncio.Lock()
@@ -657,14 +686,23 @@ class ProtocolHandler:
             elif func_code == DEVICE_TABLE_FUNC:
                 entries = parse_device_table(frame.data)
                 self._device_table = entries
-                addrs = [e.address for e in entries]
-                logger.info(
-                    "Device table: %d devices, addresses=%s",
-                    len(entries),
-                    addrs,
-                )
-                # Note: the device table only includes devices that report
-                # temperature (panel, thermostats). The gateway is never listed.
+                now = asyncio.get_event_loop().time()
+                for e in entries:
+                    dev = self._device_registry.setdefault(
+                        e.address,
+                        BusDevice(address=e.address, source="device_table"),
+                    )
+                    dev.temperature = e.temperature
+                    dev.last_seen = now
+                # Log all known bus devices (registry merges device table + IDENTIFY)
+                parts = []
+                for d in sorted(self._device_registry.values(), key=lambda d: d.address):
+                    label = d.identity or _KNOWN_ADDRESSES.get(d.address, "Unknown")
+                    if d.temperature is not None:
+                        parts.append(f"{d.address}({label} {d.temperature:.1f}C)")
+                    else:
+                        parts.append(f"{d.address}({label})")
+                logger.info("Bus devices (%d): %s", len(self._device_registry), ", ".join(parts))
             else:
                 logger.debug(
                     "SERVICE frame: dest=%d, func=0x%04X, data=%s",
@@ -736,14 +774,20 @@ class ProtocolHandler:
                 len(frame.data) if frame.data else 0,
             )
 
-            # Log IDENTIFY responses from other devices (bus sniff)
+            # Track IDENTIFY responses from other devices (bus sniff)
             if frame.command == IDENTIFY_ANS_CMD and frame.destination == PANEL_ADDRESS:
-                identity = frame.data.replace(b"\x00", b" ").strip() if frame.data else b""
+                identity_str = _parse_identity(frame.data) if frame.data else ""
                 logger.debug(
                     "IDENTIFY_ANS from %d -> panel: identity=%r",
                     frame.source,
-                    identity.decode("ascii", errors="replace"),
+                    identity_str,
                 )
+                dev = self._device_registry.setdefault(
+                    frame.source,
+                    BusDevice(address=frame.source, source="identify"),
+                )
+                dev.identity = identity_str
+                dev.last_seen = loop.time()
 
             # Log all SERVICE frames with function codes
             if frame.command == SERVICE_CMD and len(frame.data) >= 2:
@@ -768,6 +812,13 @@ class ProtocolHandler:
                     logger.debug("Device table (sniffed): %d devices, addresses=%s", len(entries), addrs)
                     for e in entries:
                         logger.debug("  device addr=%d temp=%.1f", e.address, e.temperature)
+                    for e in entries:
+                        dev = self._device_registry.setdefault(
+                            e.address,
+                            BusDevice(address=e.address, source="device_table"),
+                        )
+                        dev.temperature = e.temperature
+                        dev.last_seen = loop.time()
                     device_table_seen = True
 
             # Log all IDENTIFY probes from the panel
@@ -801,6 +852,12 @@ class ProtocolHandler:
                 if self._has_token:
                     self._registration_state = "paired"
                     self._save_paired_address(target)
+                    self._device_registry[target] = BusDevice(
+                        address=target,
+                        identity=_parse_identity(IDENTIFY_RESPONSE_DATA),
+                        source="self",
+                        last_seen=loop.time(),
+                    )
                     logger.info("Address %d validated by token grant, persisted", target)
                     return
                 continue
@@ -833,6 +890,12 @@ class ProtocolHandler:
                     if self._registration_state == "tentative":
                         self._registration_state = "paired"
                         self._save_paired_address(self._source_address)
+                        self._device_registry[self._source_address] = BusDevice(
+                            address=self._source_address,
+                            identity=_parse_identity(IDENTIFY_RESPONSE_DATA),
+                            source="self",
+                            last_seen=loop.time(),
+                        )
                         logger.info(
                             "Address %d validated by token grant, persisted",
                             self._source_address,
