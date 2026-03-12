@@ -42,6 +42,30 @@ from econext_gateway.serial.connection import GM3SerialTransport
 
 logger = logging.getLogger(__name__)
 
+# Human-readable command names for bus sniff logging
+_CMD_NAMES: dict[int, str] = {
+    0x00: "GET_SETTINGS",
+    0x80: "GET_SETTINGS_RESP",
+    0x01: "GET_PARAMS_STRUCT",
+    0x81: "GET_PARAMS_STRUCT_RESP",
+    0x02: "GET_PARAMS_STRUCT_RANGE",
+    0x82: "GET_PARAMS_STRUCT_RANGE_RESP",
+    0x09: "IDENTIFY",
+    0x89: "IDENTIFY_ANS",
+    0x29: "MODIFY_PARAM",
+    0xA9: "MODIFY_PARAM_RESP",
+    0x40: "GET_PARAMS",
+    0xC0: "GET_PARAMS_RESP",
+    0x68: "SERVICE",
+    0xE8: "SERVICE_ANS",
+    0x7E: "ERROR",
+    0x7F: "NO_DATA",
+}
+
+
+def _cmd_name(cmd: int) -> str:
+    return _CMD_NAMES.get(cmd, f"0x{cmd:02X}")
+
 
 class ParamStructEntry:
     """Metadata for a single parameter from struct response."""
@@ -642,7 +666,7 @@ class ProtocolHandler:
                 # Note: the device table only includes devices that report
                 # temperature (panel, thermostats). The gateway is never listed.
             else:
-                logger.info(
+                logger.debug(
                     "SERVICE frame: dest=%d, func=0x%04X, data=%s",
                     frame.destination,
                     func_code,
@@ -702,19 +726,36 @@ class ProtocolHandler:
             if frame is None:
                 continue
 
-            # Log ALL bus traffic for debugging (before filtering)
+            # Log ALL bus traffic with human-readable command names
+            cmd_name = _cmd_name(frame.command)
             logger.debug(
-                "Bus: src=%d dst=%d cmd=0x%02X len=%d",
+                "BUS  src=%-5d dst=%-5d %s  [%db]",
                 frame.source,
                 frame.destination,
-                frame.command,
+                cmd_name,
                 len(frame.data) if frame.data else 0,
             )
 
-            # Special logging for SERVICE frames to us
-            if frame.command == SERVICE_CMD and frame.destination == self._source_address:
-                func_code = struct.unpack("<H", frame.data[0:2])[0] if len(frame.data) >= 2 else 0
-                logger.debug("SERVICE to US (%d): func=0x%04X", self._source_address, func_code)
+            # Log IDENTIFY responses from other devices (bus sniff)
+            if frame.command == IDENTIFY_ANS_CMD and frame.destination == PANEL_ADDRESS:
+                identity = frame.data.replace(b"\x00", b" ").strip() if frame.data else b""
+                logger.debug(
+                    "IDENTIFY_ANS from %d -> panel: identity=%r",
+                    frame.source,
+                    identity.decode("ascii", errors="replace"),
+                )
+
+            # Log all SERVICE frames with function codes
+            if frame.command == SERVICE_CMD and len(frame.data) >= 2:
+                func_code = struct.unpack("<H", frame.data[0:2])[0]
+                target_note = " (TO US)" if frame.destination == self._source_address else ""
+                logger.debug(
+                    "SERVICE src=%d dst=%d func=0x%04X%s",
+                    frame.source,
+                    frame.destination,
+                    func_code,
+                    target_note,
+                )
 
             # Sniff device table broadcasts while waiting (even before we have
             # an address) so we know which addresses are already occupied.
@@ -724,14 +765,14 @@ class ProtocolHandler:
                     entries = parse_device_table(frame.data)
                     self._device_table = entries
                     addrs = [e.address for e in entries]
-                    logger.info("Device table (sniffed): %d devices, addresses=%s", len(entries), addrs)
+                    logger.debug("Device table (sniffed): %d devices, addresses=%s", len(entries), addrs)
                     for e in entries:
-                        logger.info("  device addr=%d temp=%.1f", e.address, e.temperature)
+                        logger.debug("  device addr=%d temp=%.1f", e.address, e.temperature)
                     device_table_seen = True
 
             # Log all IDENTIFY probes from the panel
             if frame.source == PANEL_ADDRESS and frame.command == IDENTIFY_CMD:
-                logger.info("Panel IDENTIFY probe to %d", frame.destination)
+                logger.debug("Panel IDENTIFY probe to %d", frame.destination)
 
             # Auto-registration: when unpaired, intercept IDENTIFY probes from
             # the panel to addresses in the claimable range that aren't already
