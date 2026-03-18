@@ -189,6 +189,37 @@ class ErrorResponse(BaseModel):
     )
 
 
+class ThermostatSubmitRequest(BaseModel):
+    """Request model for POST /api/thermostat/temperature."""
+
+    temperature: float = Field(..., description="Room temperature in degrees Celsius")
+
+
+class ThermostatSubmitResponse(BaseModel):
+    """Response model for POST /api/thermostat/temperature."""
+
+    success: bool = Field(True, description="Operation success status")
+    temperature: float = Field(..., description="Accepted temperature value")
+    previous_age_seconds: float | None = Field(
+        None, description="Age of previous reading in seconds (None if first update)"
+    )
+    timestamp: datetime = Field(default_factory=datetime.now, description="Operation timestamp")
+
+
+class ThermostatStatusResponse(BaseModel):
+    """Response model for GET /api/thermostat/status."""
+
+    enabled: bool = Field(..., description="Whether virtual thermostat is enabled")
+    temperature: float | None = Field(None, description="Current temperature value")
+    effective_temperature: float = Field(
+        ..., description="Temperature being reported on the bus (may be fallback)"
+    )
+    is_stale: bool = Field(..., description="Whether the temperature reading is stale")
+    age_seconds: float | None = Field(None, description="Seconds since last update")
+    max_age_seconds: float = Field(..., description="Staleness threshold")
+    stale_fallback: float = Field(..., description="Temperature reported when stale")
+
+
 class HealthResponse(BaseModel):
     """Response model for health check."""
 

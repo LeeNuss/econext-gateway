@@ -26,12 +26,22 @@ class Settings(BaseSettings):
     token_required: bool = True
     state_dir: str = "/var/lib/econext-gateway"
 
+    # Virtual thermostat emulation
+    thermostat_enabled: bool = False
+    thermostat_max_age: float = 300.0
+    thermostat_stale_fallback: float = 0.0
+
     model_config = SettingsConfigDict(env_prefix="ECONEXT_")
 
     @property
     def paired_address_file(self) -> Path:
         """Path to the file storing the panel-assigned bus address."""
         return Path(self.state_dir) / "paired_address"
+
+    @property
+    def thermostat_address_file(self) -> Path:
+        """Path to the file storing the thermostat's panel-assigned bus address."""
+        return Path(self.state_dir) / "thermostat_address"
 
 
 def setup_logging(level: str = "INFO") -> None:

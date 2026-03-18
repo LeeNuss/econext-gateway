@@ -2,6 +2,7 @@
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 
@@ -11,10 +12,20 @@ from econext_gateway.api.routes import router as api_router
 from econext_gateway.core.cache import ParameterCache
 from econext_gateway.core.config import Settings, setup_logging
 from econext_gateway.core.models import HealthResponse
+from econext_gateway.core.virtual_thermostat import VirtualThermostat
 from econext_gateway.protocol.handler import ProtocolHandler
 from econext_gateway.serial.connection import GM3SerialTransport
+from econext_gateway.thermostat.emulator import ThermostatEmulator
 
 logger = logging.getLogger(__name__)
+
+
+def _load_address(path: Path) -> int | None:
+    """Load a bus address from a file (single integer)."""
+    try:
+        return int(path.read_text().strip())
+    except (FileNotFoundError, ValueError):
+        return None
 
 
 @asynccontextmanager
@@ -27,6 +38,32 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting ecoNEXT Gateway v{__version__}")
 
     # Initialize components
+    if settings.thermostat_enabled:
+        app_state.virtual_thermostat = VirtualThermostat(
+            max_age=settings.thermostat_max_age,
+            stale_fallback=settings.thermostat_stale_fallback,
+        )
+        logger.info("Virtual thermostat enabled (max_age=%.0fs)", settings.thermostat_max_age)
+    else:
+        # Always create instance so API endpoints work (return stale status)
+        app_state.virtual_thermostat = VirtualThermostat(
+            max_age=settings.thermostat_max_age,
+            stale_fallback=settings.thermostat_stale_fallback,
+        )
+
+    # Create thermostat emulator if enabled (address=0 triggers auto-registration)
+    thermostat_emulator = None
+    if settings.thermostat_enabled:
+        thermostat_addr = _load_address(settings.thermostat_address_file)
+        thermostat_emulator = ThermostatEmulator(
+            address=thermostat_addr or 0,
+            virtual_thermostat=app_state.virtual_thermostat,
+        )
+        if thermostat_addr is not None:
+            logger.info("Thermostat emulator active at address %d", thermostat_addr)
+        else:
+            logger.info("Thermostat emulator created, will auto-register during pairing")
+
     app_state.cache = ParameterCache()
     app_state.connection = GM3SerialTransport(
         port=settings.serial_port,
@@ -41,6 +78,8 @@ async def lifespan(app: FastAPI):
         params_per_request=settings.params_per_request,
         token_required=settings.token_required,
         paired_address_file=settings.paired_address_file,
+        thermostat_emulator=thermostat_emulator,
+        thermostat_address_file=settings.thermostat_address_file if settings.thermostat_enabled else None,
     )
 
     # Connect and start polling

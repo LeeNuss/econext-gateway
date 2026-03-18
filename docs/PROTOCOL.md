@@ -152,7 +152,7 @@ need to communicate with the same controller.
 | 1       | Controller     | Responds to GET_PARAMS, GET_PARAMS_STRUCT, MODIFY_PARAM                        |
 | 100     | Master Panel   | Sends IDENTIFY probes, SERVICE frames, MODIFY_PARAM to controller              |
 | *       | Gateway        | Auto-claimed address via panel IDENTIFY scan (persisted to state dir)          |
-| 165     | Thermostat     | Room thermostat - panel queries with GET_PARAMS (0x40), responds with 0xC0/0x7F |
+| 166-167 | Thermostat     | Room thermostat - panel-assigned addr (varies per pairing), queried with GET_PARAMS (0x40) |
 | 255     | Polling module | Continuously sends GET_PARAMS to controller (responses go to broadcast 0xFFFF) |
 
 #### Device Identification (IDENTIFY)
@@ -337,22 +337,44 @@ persisted address instantly.
 
 **Thermostat pairing protocol (SERVICE beacons):**
 
-The panel uses a separate beacon-based protocol (SERVICE `func=0x2004`/`0x2005`) for
-thermostat pairing. Devices registered this way receive direct data commands (0x02) but
-do NOT receive IDENTIFY probes or token grants. The gateway does not use this protocol.
+The panel uses a separate beacon-based protocol for thermostat pairing, completely
+different from the IDENTIFY-based gateway registration. Thermostats respond to SERVICE
+0x2004 beacons with SERVICE_ANS, receive a panel-assigned address, and are then polled
+directly (no token grants, no IDENTIFY probes to thermostat addresses during pairing).
 
-Observed thermostat pairing sequence (2026-02-26):
+Observed thermostat pairing sequence (2026-03-18, HW verified):
 
-1. Panel broadcasts SERVICE `func=0x2004` to 0xFFFF (pairing beacon, rapid repeat)
-2. Thermostat responds (method unknown -- not captured)
-3. Panel broadcasts SERVICE `func=0x0023` to 0xFFFF (config/time sync, 20 bytes)
-   - Contains flags, timestamp, and device type byte
-4. Panel writes MODIFY_PARAM (0x29) to controller to register the new device
-5. Panel broadcasts SERVICE `func=0x2001` to 0xFFFF (device table)
-   - Contains paired device addresses and temperature values (IEEE 754 floats)
-6. New thermostat (src=0xFFFF) downloads all parameters from controller via GET_PARAMS
-7. Panel broadcasts updated `func=0x2001` with the new device in the table
-8. Normal IDENTIFY cycle resumes, but thermostat-paired devices only get direct data commands
+1. Panel enters pairing mode (user action on panel UI)
+2. Panel broadcasts SERVICE `func=0x2004` to 0xFFFF (pairing beacon, ~10/sec, data=`04200000`)
+3. Thermostat responds with `SERVICE_ANS (0xE8)` to panel (addr 100):
+   - Source: thermostat's hardware/temporary address (observed: **164**)
+   - First response: 67 bytes (likely contains identity, serial, capabilities)
+   - Second response: 2 bytes (likely ack/confirmation)
+4. Panel sends IDENTIFY probes to low addresses (32, 102) -- scanning, not thermostat-related
+5. Panel assigns thermostat a final address (observed: 166, 167 -- varies per pairing)
+6. Device table broadcast (0x2001) now includes the new thermostat address + temperature
+7. Panel begins polling thermostat: GET_PARAMS_STRUCT (0x02), GET_PARAMS (0x40), MODIFY_PARAM (0x29)
+8. Normal bus cycle resumes with thermostat polled each cycle
+
+**Key differences from gateway registration:**
+- Thermostats do NOT respond to IDENTIFY probes (panel never sends IDENTIFY to thermostat range during pairing)
+- Thermostats do NOT receive tokens -- they are purely passive (panel reads/writes directly)
+- The thermostat address is panel-assigned, not self-claimed
+- The panel only scans thermostat-range addresses (160-199) during normal operation, not during pairing mode
+
+**Thermostat normal polling (per bus cycle):**
+```
+Panel -> Thermostat: GET_PARAMS (0x40) count=255, start=0
+Thermostat -> Panel: GET_PARAMS_RESP (0xC0) 35 params, 180 bytes
+Panel -> Thermostat: GET_PARAMS (0x40) count=255, start=35
+Thermostat -> Panel: NO_DATA (0x7F)
+```
+
+**Thermostat parameter data (ecoSTER 200, captured 2026-03-18):**
+- 35 parameters (indices 0-34)
+- Param 0: room temperature (float, e.g. 21.03)
+- Contains strings: serial number, HW version, SW version, build date
+- Last param: temperature correction offset (float, e.g. 0.3)
 
 **SERVICE 0x2001 device table format (partial decode):**
 ```

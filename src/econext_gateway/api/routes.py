@@ -4,7 +4,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from econext_gateway.api.dependencies import get_cache, get_handler
+from econext_gateway.api.dependencies import get_cache, get_handler, get_virtual_thermostat
 from econext_gateway.core.cache import ParameterCache
 from econext_gateway.core.models import (
     AlarmsResponse,
@@ -12,7 +12,11 @@ from econext_gateway.core.models import (
     ParameterSetRequest,
     ParameterSetResponse,
     ParametersResponse,
+    ThermostatStatusResponse,
+    ThermostatSubmitRequest,
+    ThermostatSubmitResponse,
 )
+from econext_gateway.core.virtual_thermostat import VirtualThermostat
 from econext_gateway.protocol.handler import ProtocolHandler
 
 router = APIRouter(prefix="/api")
@@ -98,3 +102,38 @@ async def get_alarms(
         raise HTTPException(status_code=503, detail="Controller not connected")
 
     return AlarmsResponse(alarms=handler.alarms)
+
+
+@router.post(
+    "/thermostat/temperature",
+    response_model=ThermostatSubmitResponse,
+    responses={503: {"model": ErrorResponse}},
+)
+async def submit_thermostat_temperature(
+    request: ThermostatSubmitRequest,
+    thermostat: VirtualThermostat = Depends(get_virtual_thermostat),
+):
+    """Submit a room temperature reading from Home Assistant."""
+    previous_age = thermostat.update(request.temperature)
+    return ThermostatSubmitResponse(
+        success=True,
+        temperature=thermostat.temperature,
+        previous_age_seconds=round(previous_age, 1) if previous_age is not None else None,
+    )
+
+
+@router.get("/thermostat/status", response_model=ThermostatStatusResponse)
+async def get_thermostat_status(
+    thermostat: VirtualThermostat = Depends(get_virtual_thermostat),
+):
+    """Get virtual thermostat status."""
+    age = thermostat.age_seconds
+    return ThermostatStatusResponse(
+        enabled=True,
+        temperature=thermostat.temperature,
+        effective_temperature=thermostat.effective_temperature,
+        is_stale=thermostat.is_stale,
+        age_seconds=round(age, 1) if age is not None else None,
+        max_age_seconds=thermostat._max_age,
+        stale_fallback=thermostat._stale_fallback,
+    )

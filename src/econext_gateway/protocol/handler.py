@@ -4,6 +4,8 @@ Orchestrates serial communication, request/response correlation,
 parameter reading/writing, and cache management.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import struct
@@ -11,7 +13,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from econext_gateway.thermostat.emulator import ThermostatEmulator
 
 from econext_gateway.core.cache import ParameterCache
 from econext_gateway.core.models import Alarm, Parameter
@@ -20,8 +25,11 @@ from econext_gateway.protocol.constants import (
     ALARM_REQUEST_PREFIX,
     CLAIMABLE_ADDRESS_RANGE,
     DEST_ADDRESSES,
+    THERMOSTAT_CLAIMABLE_ADDRESS_RANGE,
     DEVICE_TABLE_FUNC,
     GET_TOKEN_FUNC,
+    PAIRING_ASSIGN_FUNC,
+    PAIRING_BEACON_FUNC,
     GIVE_BACK_TOKEN_DATA,
     IDENTIFY_ANS_CMD,
     IDENTIFY_CMD,
@@ -503,6 +511,8 @@ class ProtocolHandler:
         token_timeout: float = TOKEN_TIMEOUT,
         token_required: bool = True,
         paired_address_file: Path | None = None,
+        thermostat_emulator: ThermostatEmulator | None = None,
+        thermostat_address_file: Path | None = None,
     ):
         """Initialize protocol handler.
 
@@ -520,6 +530,12 @@ class ProtocolHandler:
                 On first boot the gateway claims a free address via the
                 panel's IDENTIFY scan and persists it here.  Delete the
                 file and restart to re-pair at a new address.
+            thermostat_emulator: Optional thermostat emulator for virtual
+                thermostat support. When set, the handler will delegate
+                frames addressed to the thermostat address to the emulator.
+            thermostat_address_file: Path to persist thermostat bus address.
+                When the thermostat has address=0 it will auto-register
+                via IDENTIFY during pairing and persist the address here.
         """
         self._connection = connection
         self._cache = cache
@@ -559,6 +575,17 @@ class ProtocolHandler:
         self._running = False
         self._lock = asyncio.Lock()
         self._has_token = False
+        self._thermostat = thermostat_emulator
+        self._thermostat_address_file = thermostat_address_file
+
+        # Thermostat registration state (None = thermostat not enabled)
+        if self._thermostat is not None and self._thermostat.address != 0:
+            self._thermostat_reg_state: str | None = "paired"
+        elif self._thermostat is not None:
+            self._thermostat_reg_state = "unpaired"
+        else:
+            self._thermostat_reg_state = None
+        self._thermostat_tentative_since: float | None = None
 
     def _load_paired_address(self) -> int | None:
         """Load persisted paired address from file."""
@@ -580,6 +607,49 @@ class ProtocolHandler:
             logger.info("Saved paired address %d to %s", address, self._paired_address_file)
         except OSError as e:
             logger.warning("Failed to save paired address: %s", e)
+
+    # Temporary source address for thermostat pairing SERVICE_ANS response.
+    # Real ecoSTER uses 164; we use a different address to avoid collision.
+    THERMOSTAT_PAIRING_ADDRESS = 163
+
+    async def _thermostat_respond_to_beacon(self, beacon_frame: Frame) -> None:
+        """Respond to a 0x2004 pairing beacon with SERVICE_ANS.
+
+        The real thermostat sends SERVICE_ANS (0xE8) from a temporary address
+        (observed: 164) to the panel. The panel then assigns a final address.
+        The exact payload is not yet fully decoded -- we send the thermostat
+        identity and log the response for further analysis.
+        """
+        from econext_gateway.thermostat.emulator import THERMOSTAT_IDENTITY
+
+        # Build SERVICE_ANS payload -- this is a best-guess based on the
+        # gateway's identify data format. The real 67-byte payload needs
+        # to be captured and decoded to get this right.
+        data = THERMOSTAT_IDENTITY
+        await asyncio.sleep(0.02)  # RS-485 turnaround
+        response = Frame(
+            destination=PANEL_ADDRESS,
+            command=SERVICE_ANS_CMD,
+            data=data,
+            source=self.THERMOSTAT_PAIRING_ADDRESS,
+        )
+        await self._connection.protocol.write_frame(response, flush_after=True)
+        logger.info(
+            "Thermostat: sent SERVICE_ANS to panel from addr %d (%d bytes)",
+            self.THERMOSTAT_PAIRING_ADDRESS,
+            len(data),
+        )
+
+    def _save_thermostat_address(self, address: int) -> None:
+        """Persist the thermostat bus address to file."""
+        if self._thermostat_address_file is None:
+            return
+        try:
+            self._thermostat_address_file.parent.mkdir(parents=True, exist_ok=True)
+            self._thermostat_address_file.write_text(str(address))
+            logger.info("Saved thermostat address %d to %s", address, self._thermostat_address_file)
+        except OSError as e:
+            logger.warning("Failed to save thermostat address: %s", e)
 
     async def _resolve_min_max(self, entry: ParamStructEntry) -> tuple[float | None, float | None]:
         """Resolve min/max values, following parameter index references.
@@ -703,6 +773,19 @@ class ProtocolHandler:
                     else:
                         parts.append(f"{d.address}({label})")
                 logger.info("Bus devices (%d): %s", len(self._device_registry), ", ".join(parts))
+
+                # Thermostat registration: confirm when address appears in device table
+                if (
+                    self._thermostat_reg_state == "tentative"
+                    and self._thermostat is not None
+                    and self._thermostat.address in {e.address for e in entries}
+                ):
+                    self._thermostat_reg_state = "paired"
+                    self._save_thermostat_address(self._thermostat.address)
+                    logger.info(
+                        "Thermostat address %d confirmed in device table, persisted",
+                        self._thermostat.address,
+                    )
             else:
                 logger.debug(
                     "SERVICE frame: dest=%d, func=0x%04X, data=%s",
@@ -748,6 +831,7 @@ class ProtocolHandler:
         loop = asyncio.get_event_loop()
         deadline = None if self._token_required else loop.time() + self._token_timeout
         device_table_seen = len(self._device_table) > 0
+        pairing_mode_active = False
         last_frame_time = loop.time()
         bus_silence_limit = 30.0  # seconds of no bus traffic before reconnect
 
@@ -786,6 +870,22 @@ class ProtocolHandler:
                 cmd_name,
                 len(frame.data) if frame.data else 0,
             )
+
+            # THERMOSTAT CAPTURE: hex-dump full frame data for thermostat
+            # addresses to reverse-engineer the thermostat parameter table.
+            # Remove this block once capture is complete.
+            _THERMOSTAT_ADDRS = {165, 166}
+            if self._thermostat is not None and self._thermostat.address != 0:
+                _THERMOSTAT_ADDRS = _THERMOSTAT_ADDRS | {self._thermostat.address}
+            if frame.source in _THERMOSTAT_ADDRS or frame.destination in _THERMOSTAT_ADDRS:
+                logger.info(
+                    "THERMO_CAPTURE src=%d dst=%d cmd=0x%02X len=%d data=%s",
+                    frame.source,
+                    frame.destination,
+                    frame.command,
+                    len(frame.data) if frame.data else 0,
+                    frame.data.hex() if frame.data else "",
+                )
 
             # Track IDENTIFY responses from other devices (bus sniff)
             if frame.command == IDENTIFY_ANS_CMD and frame.destination == PANEL_ADDRESS:
@@ -834,6 +934,83 @@ class ProtocolHandler:
                         dev.last_seen = loop.time()
                     device_table_seen = True
 
+                    # Thermostat registration: confirm when address appears in device table
+                    if (
+                        self._thermostat_reg_state == "tentative"
+                        and self._thermostat is not None
+                        and self._thermostat.address in {e.address for e in entries}
+                    ):
+                        self._thermostat_reg_state = "paired"
+                        self._save_thermostat_address(self._thermostat.address)
+                        logger.info(
+                            "Thermostat address %d confirmed in device table, persisted",
+                            self._thermostat.address,
+                        )
+
+                if func_code == PAIRING_BEACON_FUNC and not pairing_mode_active:
+                    pairing_mode_active = True
+                    logger.info("Pairing mode detected (SERVICE 0x2004 beacon)")
+
+            # Capture SERVICE_ANS frames during pairing (thermostat responses)
+            if frame.command == SERVICE_ANS_CMD and frame.destination == PANEL_ADDRESS:
+                logger.info(
+                    "THERMO_CAPTURE SERVICE_ANS src=%d dst=%d len=%d data=%s",
+                    frame.source,
+                    frame.destination,
+                    len(frame.data) if frame.data else 0,
+                    frame.data.hex() if frame.data else "",
+                )
+
+            # Thermostat pairing: respond to 0x2004 beacon with SERVICE_ANS
+            if (
+                self._thermostat_reg_state == "unpaired"
+                and pairing_mode_active
+                and self._thermostat is not None
+                and frame.source == PANEL_ADDRESS
+                and frame.command == SERVICE_CMD
+                and len(frame.data) >= 2
+                and struct.unpack("<H", frame.data[0:2])[0] == PAIRING_BEACON_FUNC
+            ):
+                # Only respond once (first beacon seen after pairing_mode_active)
+                self._thermostat_reg_state = "beacon_responded"
+                self._thermostat_tentative_since = loop.time()
+                logger.info("Thermostat: responding to pairing beacon with SERVICE_ANS")
+                await self._thermostat_respond_to_beacon(frame)
+                continue
+
+            # Thermostat pairing: handle 0x2005 address assignment from panel
+            # Format: [func_lo=0x05][func_hi=0x20][0x00][0x00][addr_lo][addr_hi]
+            if (
+                self._thermostat_reg_state == "beacon_responded"
+                and self._thermostat is not None
+                and frame.source == PANEL_ADDRESS
+                and frame.command == SERVICE_CMD
+                and len(frame.data) >= 6
+                and struct.unpack("<H", frame.data[0:2])[0] == PAIRING_ASSIGN_FUNC
+            ):
+                assigned_addr = struct.unpack("<H", frame.data[4:6])[0]
+                logger.info(
+                    "Thermostat: panel assigned address %d (from SERVICE 0x2005)",
+                    assigned_addr,
+                )
+                self._thermostat.address = assigned_addr
+                self._thermostat_reg_state = "paired"
+                self._save_thermostat_address(assigned_addr)
+                # ACK by sending SERVICE_ANS back to panel from the assigned address
+                await asyncio.sleep(0.02)
+                ack = Frame(
+                    destination=PANEL_ADDRESS,
+                    command=SERVICE_ANS_CMD,
+                    data=frame.data,  # Echo back the assignment data
+                    source=assigned_addr,
+                )
+                await self._connection.protocol.write_frame(ack, flush_after=True)
+                logger.info(
+                    "Thermostat: ACK'd address assignment, now paired at %d",
+                    assigned_addr,
+                )
+                continue
+
             # Log all IDENTIFY probes from the panel
             if frame.source == PANEL_ADDRESS and frame.command == IDENTIFY_CMD:
                 logger.debug("Panel IDENTIFY probe to %d", frame.destination)
@@ -875,6 +1052,33 @@ class ProtocolHandler:
                     return
                 continue
 
+            # Thermostat auto-registration: only claim during pairing mode
+            # (SERVICE 0x2004 beacons active). The panel only does the full
+            # struct discovery handshake for devices found during pairing.
+            if (
+                self._thermostat_reg_state == "unpaired"
+                and pairing_mode_active
+                and device_table_seen
+                and frame.source == PANEL_ADDRESS
+                and frame.command == IDENTIFY_CMD
+                and frame.destination in THERMOSTAT_CLAIMABLE_ADDRESS_RANGE
+                and frame.destination not in occupied
+                and frame.destination != self._source_address
+            ):
+                target = frame.destination
+                logger.info(
+                    "Thermostat: IDENTIFY to %d detected, claiming tentatively",
+                    target,
+                )
+                self._thermostat.address = target
+                self._thermostat_reg_state = "tentative"
+                self._thermostat_tentative_since = loop.time()
+                # Respond with thermostat identity
+                await self._thermostat.handle_frame(
+                    frame, self._connection.protocol.write_frame
+                )
+                continue
+
             # Check tentative timeout: if we claimed an address but never got
             # a token, revert to unpaired so we try the next scanned address.
             if (
@@ -889,6 +1093,31 @@ class ProtocolHandler:
                 self._source_address = 0
                 self._registration_state = "unpaired"
                 self._tentative_since = None
+                continue
+
+            # Thermostat pairing timeout: revert if not confirmed
+            if (
+                self._thermostat_reg_state in ("tentative", "beacon_responded")
+                and self._thermostat_tentative_since is not None
+                and loop.time() - self._thermostat_tentative_since > 30.0
+            ):
+                logger.warning(
+                    "Thermostat pairing timed out (state=%s, 30s elapsed), reverting to unpaired",
+                    self._thermostat_reg_state,
+                )
+                self._thermostat.address = 0
+                self._thermostat_reg_state = "unpaired"
+                self._thermostat_tentative_since = None
+
+            # Handle frames addressed to the virtual thermostat
+            if (
+                self._thermostat is not None
+                and frame.destination == self._thermostat.address
+                and frame.source == PANEL_ADDRESS
+            ):
+                await self._thermostat.handle_frame(
+                    frame, self._connection.protocol.write_frame
+                )
                 continue
 
             # Only process frames addressed to us or broadcast
@@ -988,6 +1217,32 @@ class ProtocolHandler:
 
             # Any frame received resets the silence counter
             consecutive_silence = 0
+
+            # THERMOSTAT CAPTURE: log thermostat frames seen during polling
+            _THERMO = {165, 166}
+            if self._thermostat is not None and self._thermostat.address != 0:
+                _THERMO = _THERMO | {self._thermostat.address}
+            if response.source in _THERMO or response.destination in _THERMO:
+                logger.info(
+                    "THERMO_CAPTURE src=%d dst=%d cmd=0x%02X len=%d data=%s",
+                    response.source,
+                    response.destination,
+                    response.command,
+                    len(response.data) if response.data else 0,
+                    response.data.hex() if response.data else "",
+                )
+
+            # Handle frames addressed to the virtual thermostat
+            if (
+                self._thermostat is not None
+                and response.destination == self._thermostat.address
+                and response.source == PANEL_ADDRESS
+            ):
+                await self._thermostat.handle_frame(
+                    response, self._connection.protocol.write_frame
+                )
+                skipped += 1
+                continue
 
             # Skip frames not addressed to us
             if response.destination != self._source_address and response.destination != 0xFFFF:

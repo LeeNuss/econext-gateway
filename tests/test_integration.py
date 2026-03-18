@@ -22,8 +22,10 @@ from econext_gateway.protocol.constants import (
     DEVICE_TABLE_FUNC,
     GET_TOKEN_FUNC,
     IDENTIFY_CMD,
+    PAIRING_BEACON_FUNC,
     PANEL_ADDRESS,
     SERVICE_CMD,
+    THERMOSTAT_CLAIMABLE_ADDRESS_RANGE,
     Command,
     DataType,
 )
@@ -798,3 +800,211 @@ class TestRegistrationStateMachine:
         assert handler._registration_state == "unpaired"
         assert handler._source_address == 0
         assert not paired_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# Thermostat registration
+# ---------------------------------------------------------------------------
+
+
+def _make_pairing_beacon_frame() -> Frame:
+    """Build a SERVICE 0x2004 pairing beacon broadcast from the panel."""
+    data = struct.pack("<H", PAIRING_BEACON_FUNC) + b"\x00\x00"
+    frame = Frame(destination=0xFFFF, command=SERVICE_CMD, data=data)
+    frame.source = PANEL_ADDRESS
+    return frame
+
+
+def _make_empty_thermostat_file() -> Path:
+    """Create a temporary directory for thermostat address file (file does not exist)."""
+    d = Path(tempfile.mkdtemp())
+    return d / "thermostat_address"
+
+
+def _make_thermostat_emulator(address: int = 0):
+    """Create a ThermostatEmulator with a VirtualThermostat for tests."""
+    from econext_gateway.core.virtual_thermostat import VirtualThermostat
+    from econext_gateway.thermostat.emulator import ThermostatEmulator
+
+    vt = VirtualThermostat(max_age=300, stale_fallback=0.0)
+    return ThermostatEmulator(address=address, virtual_thermostat=vt)
+
+
+class TestThermostatRegistration:
+    """Thermostat pairing via SERVICE_ANS response to 0x2004 beacons."""
+
+    @pytest.mark.asyncio
+    async def test_thermostat_responds_to_pairing_beacon(self, fake_conn, fake_proto, cache):
+        """Thermostat sends SERVICE_ANS when pairing beacon is detected."""
+        from econext_gateway.protocol.constants import SERVICE_ANS_CMD
+
+        thermo_file = _make_empty_thermostat_file()
+        emulator = _make_thermostat_emulator(address=0)
+
+        handler = make_handler(
+            fake_conn,
+            cache,
+            token_required=False,
+            token_timeout=0.1,
+            thermostat_emulator=emulator,
+            thermostat_address_file=thermo_file,
+        )
+
+        assert handler._thermostat_reg_state == "unpaired"
+
+        # Pairing beacon triggers SERVICE_ANS response
+        fake_proto._frame_queue.put_nowait(_make_pairing_beacon_frame())
+
+        await handler._wait_for_token()
+
+        assert handler._thermostat_reg_state == "beacon_responded"
+        # Should have written a SERVICE_ANS frame to the panel
+        service_ans = [w for w in fake_proto._writes if w.command == SERVICE_ANS_CMD]
+        assert len(service_ans) == 1
+        assert service_ans[0].destination == PANEL_ADDRESS
+
+    @pytest.mark.asyncio
+    async def test_thermostat_full_pairing_flow(self, fake_conn, fake_proto, cache):
+        """Full pairing: beacon -> SERVICE_ANS -> 0x2005 address assignment -> paired."""
+        from econext_gateway.protocol.constants import PAIRING_ASSIGN_FUNC, SERVICE_ANS_CMD
+
+        thermo_file = _make_empty_thermostat_file()
+        emulator = _make_thermostat_emulator(address=0)
+
+        handler = make_handler(
+            fake_conn,
+            cache,
+            token_required=False,
+            token_timeout=0.5,
+            thermostat_emulator=emulator,
+            thermostat_address_file=thermo_file,
+        )
+
+        # 1. Pairing beacon
+        fake_proto._frame_queue.put_nowait(_make_pairing_beacon_frame())
+
+        # 2. Panel assigns address 165 via SERVICE 0x2005
+        assign_data = struct.pack("<H", PAIRING_ASSIGN_FUNC) + b"\x00\x00" + struct.pack("<H", 165)
+        assign_frame = Frame(destination=0xFFFF, command=SERVICE_CMD, data=assign_data)
+        assign_frame.source = PANEL_ADDRESS
+        fake_proto._frame_queue.put_nowait(assign_frame)
+
+        await handler._wait_for_token()
+
+        # Should be fully paired at address 165
+        assert handler._thermostat_reg_state == "paired"
+        assert emulator.address == 165
+        assert thermo_file.exists()
+        assert thermo_file.read_text().strip() == "165"
+
+        # Should have written SERVICE_ANS twice: once for beacon, once for ACK
+        service_ans = [w for w in fake_proto._writes if w.command == SERVICE_ANS_CMD]
+        assert len(service_ans) == 2
+        # ACK should be from the assigned address
+        assert service_ans[1].source == 165
+
+    @pytest.mark.asyncio
+    async def test_thermostat_responds_only_once_to_beacons(self, fake_conn, fake_proto, cache):
+        """Thermostat only responds to the first pairing beacon, not subsequent ones."""
+        from econext_gateway.protocol.constants import SERVICE_ANS_CMD
+
+        thermo_file = _make_empty_thermostat_file()
+        emulator = _make_thermostat_emulator(address=0)
+
+        handler = make_handler(
+            fake_conn,
+            cache,
+            token_required=False,
+            token_timeout=0.1,
+            thermostat_emulator=emulator,
+            thermostat_address_file=thermo_file,
+        )
+
+        # Multiple pairing beacons (like real panel sends ~10/sec)
+        for _ in range(5):
+            fake_proto._frame_queue.put_nowait(_make_pairing_beacon_frame())
+
+        await handler._wait_for_token()
+
+        # Should have sent exactly one SERVICE_ANS
+        service_ans = [w for w in fake_proto._writes if w.command == SERVICE_ANS_CMD]
+        assert len(service_ans) == 1
+
+    @pytest.mark.asyncio
+    async def test_thermostat_ignores_beacon_without_emulator(self, fake_conn, fake_proto, cache):
+        """No SERVICE_ANS when thermostat emulator is not configured."""
+        from econext_gateway.protocol.constants import SERVICE_ANS_CMD
+
+        handler = make_handler(
+            fake_conn,
+            cache,
+            token_required=False,
+            token_timeout=0.1,
+            # No thermostat emulator
+        )
+
+        fake_proto._frame_queue.put_nowait(_make_pairing_beacon_frame())
+        await handler._wait_for_token()
+
+        service_ans = [w for w in fake_proto._writes if w.command == SERVICE_ANS_CMD]
+        assert len(service_ans) == 0
+
+    @pytest.mark.asyncio
+    async def test_thermostat_already_paired_skips_beacon(self, fake_conn, fake_proto, cache):
+        """When thermostat has a persisted address, it does not respond to beacons."""
+        from econext_gateway.protocol.constants import SERVICE_ANS_CMD
+
+        thermo_file = _make_empty_thermostat_file()
+        emulator = _make_thermostat_emulator(address=167)  # Already has address
+
+        handler = make_handler(
+            fake_conn,
+            cache,
+            token_required=False,
+            token_timeout=0.1,
+            thermostat_emulator=emulator,
+            thermostat_address_file=thermo_file,
+        )
+
+        assert handler._thermostat_reg_state == "paired"
+
+        fake_proto._frame_queue.put_nowait(_make_pairing_beacon_frame())
+        await handler._wait_for_token()
+
+        service_ans = [w for w in fake_proto._writes if w.command == SERVICE_ANS_CMD]
+        assert len(service_ans) == 0
+
+    @pytest.mark.asyncio
+    async def test_thermostat_no_response_without_pairing(self, fake_conn, fake_proto, cache):
+        """Thermostat does NOT respond during normal scanning (no pairing beacon)."""
+        from econext_gateway.protocol.constants import SERVICE_ANS_CMD
+
+        thermo_file = _make_empty_thermostat_file()
+        emulator = _make_thermostat_emulator(address=0)
+
+        handler = make_handler(
+            fake_conn,
+            cache,
+            token_required=False,
+            token_timeout=0.1,
+            thermostat_emulator=emulator,
+            thermostat_address_file=thermo_file,
+        )
+
+        # Device table but NO pairing beacon
+        fake_proto._frame_queue.put_nowait(_make_device_table_frame(100, 1))
+
+        await handler._wait_for_token()
+
+        assert handler._thermostat_reg_state == "unpaired"
+        service_ans = [w for w in fake_proto._writes if w.command == SERVICE_ANS_CMD]
+        assert len(service_ans) == 0
+
+    @pytest.mark.asyncio
+    async def test_thermostat_address_range(self):
+        """Thermostat address range covers known thermostat addresses."""
+        assert 165 in THERMOSTAT_CLAIMABLE_ADDRESS_RANGE
+        assert 166 in THERMOSTAT_CLAIMABLE_ADDRESS_RANGE
+        # Gateway range should not overlap
+        for addr in CLAIMABLE_ADDRESS_RANGE:
+            assert addr not in THERMOSTAT_CLAIMABLE_ADDRESS_RANGE

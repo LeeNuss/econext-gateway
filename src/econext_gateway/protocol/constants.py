@@ -25,6 +25,11 @@ PANEL_ADDRESS = 100  # Display panel address
 # but never get token grants, so claiming them is pointless.
 CLAIMABLE_ADDRESS_RANGE = range(105, 131)
 
+# Valid address range for thermostat auto-registration.
+# Known thermostat addresses are 165 and 166; the panel scans up to at
+# least 178 during normal operation. Use a wide range to cover pairing.
+THERMOSTAT_CLAIMABLE_ADDRESS_RANGE = range(160, 200)
+
 # ============================================================================
 # Command Codes
 # ============================================================================
@@ -150,6 +155,8 @@ SERVICE_CMD = 0x68  # Service frame command byte (same value as BEGIN_FRAME)
 SERVICE_ANS_CMD = 0xE8  # Service answer command byte
 GET_TOKEN_FUNC = 0x0801  # Token grant function code (LE uint16 in data[0:2])
 DEVICE_TABLE_FUNC = 0x2001  # Device table broadcast function code
+PAIRING_BEACON_FUNC = 0x2004  # Pairing mode beacon (panel broadcasts rapidly)
+PAIRING_ASSIGN_FUNC = 0x2005  # Address assignment (panel assigns address after SERVICE_ANS)
 GIVE_BACK_TOKEN_DATA = b"\x00\x08\x00\x00"  # Token return payload
 TOKEN_TIMEOUT = 5.0  # Max time to wait for token grant (seconds, ~0.5 panel cycle)
 
