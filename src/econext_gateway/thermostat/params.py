@@ -94,7 +94,7 @@ THERMOSTAT_PARAMS: list[ThermostatParam] = [
     ThermostatParam(23, "ExtSens", DataType.FLOAT, "'C"),
     # Param 24-27: identity strings
     ThermostatParam(24, "FN", DataType.STRING, writable=True, max_value=11,
-                    default="ecoNextV01"),
+                    default="ecoNext_V0"),
     ThermostatParam(25, "HV", DataType.STRING, max_value=7,
                     default="H0.0.1"),
     ThermostatParam(26, "SW", DataType.STRING, max_value=8,

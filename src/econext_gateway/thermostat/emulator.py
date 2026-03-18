@@ -34,21 +34,35 @@ from econext_gateway.thermostat.params import (
     get_status_byte,
 )
 
+# Re-export for handler.py imports
+__all__ = ["ThermostatEmulator", "THERMOSTAT_IDENTITY", "THERMOSTAT_PAIRING_IDENTITY"]
+
 logger = logging.getLogger(__name__)
 
 # Identity string for thermostat IDENTIFY_ANS responses.
 THERMOSTAT_IDENTITY = b"PLUM\x00EcoNEXT\x00\x00\x00\x00\x00"
 
-# SERVICE_ANS payload for pairing (0x2004 beacon response).
-# Format matches real ecoSTER: manufacturer\0model\0serial\0class\0sub\0version\0
-THERMOSTAT_PAIRING_IDENTITY = (
-    b"PLUM Sp. z o.o.\x00"
-    b"ecoNext_VIRT\x00"
-    b"0000000001\x00"
-    b"03\x00"
-    b"00\x00"
-    b"H0.0.1_S000.01_D0000__\x00"
-)
+def _build_pairing_identity() -> bytes:
+    """Build SERVICE_ANS payload from params defaults.
+
+    Format: manufacturer\\0model\\0serial\\0class\\0sub\\0version\\0
+    Assembled from the same defaults used in the parameter table.
+    """
+    fn = get_default_value(THERMOSTAT_PARAMS[24])   # FN
+    hv = get_default_value(THERMOSTAT_PARAMS[25])   # HV
+    sw = get_default_value(THERMOSTAT_PARAMS[26])   # SW
+    version = f"{hv}_{sw}_D0000__"
+    return (
+        b"PLUM Sp. z o.o.\x00"
+        + fn.encode() + b"\x00"
+        + b"0000000001\x00"          # serial number
+        + b"03\x00"                   # device class
+        + b"00\x00"                   # sub-class
+        + version.encode() + b"\x00"
+    )
+
+
+THERMOSTAT_PAIRING_IDENTITY = _build_pairing_identity()
 
 
 class ThermostatEmulator:
