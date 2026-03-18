@@ -63,15 +63,15 @@ STATUS_MEASURED = 0x81     # Measured values, schedules, monitors
 THERMOSTAT_PARAMS: list[ThermostatParam] = [
     # Param 0: room temperature - injected from HA
     ThermostatParam(0, "IntrSens", DataType.FLOAT, "'C"),
-    # Param 1-2: mode and alarm mask - panel-written
-    ThermostatParam(1, "WorkMode", DataType.UINT8, writable=True),
+    # Param 1-2: mode and alarm mask - panel-written (defaults from real thermostat)
+    ThermostatParam(1, "WorkMode", DataType.UINT8, writable=True, default=3),
     ThermostatParam(2, "AlMsk", DataType.UINT32, writable=True),
-    # Param 3: current setpoint - derived from schedule/mode
+    # Param 3: current setpoint - mirrors HA temperature (see emulator._get_param_value)
     ThermostatParam(3, "PresetNow", DataType.FLOAT, "'C"),
-    # Param 4-6: temperature presets and hysteresis - panel-written
-    ThermostatParam(4, "PrDay", DataType.FLOAT, "'C", writable=True, min_value=10, max_value=35),
-    ThermostatParam(5, "PrNight", DataType.FLOAT, "'C", writable=True, min_value=10, max_value=35),
-    ThermostatParam(6, "Hyst", DataType.FLOAT, "'C", writable=True, min_value=-4, max_value=4),
+    # Param 4-6: temperature presets and hysteresis (defaults from real thermostat)
+    ThermostatParam(4, "PrDay", DataType.FLOAT, "'C", writable=True, min_value=10, max_value=35, default=19.5),
+    ThermostatParam(5, "PrNight", DataType.FLOAT, "'C", writable=True, min_value=10, max_value=35, default=18.0),
+    ThermostatParam(6, "Hyst", DataType.FLOAT, "'C", writable=True, min_value=-4, max_value=4, default=0.5),
     # Param 7-8: monitor flags - panel-written
     ThermostatParam(7, "MonitA", DataType.UINT32, writable=True),
     ThermostatParam(8, "MonitB", DataType.UINT32, writable=True),
@@ -109,8 +109,8 @@ THERMOSTAT_PARAMS: list[ThermostatParam] = [
     ThermostatParam(31, "RstCause", DataType.UINT8),
     ThermostatParam(32, "Rtc CV", DataType.UINT8),
     # Param 33-34: anti-freeze and correction - panel-written
-    ThermostatParam(33, "Afrz", DataType.FLOAT, "'C", writable=True, min_value=5, max_value=30),
-    ThermostatParam(34, "Corr", DataType.FLOAT, "'C", writable=True, min_value=-4, max_value=4),
+    ThermostatParam(33, "Afrz", DataType.FLOAT, "'C", writable=True, min_value=5, max_value=30, default=9.0),
+    ThermostatParam(34, "Corr", DataType.FLOAT, "'C", writable=True, min_value=-4, max_value=4, default=0.0),
 ]
 
 
