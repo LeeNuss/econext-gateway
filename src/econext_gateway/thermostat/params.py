@@ -94,7 +94,7 @@ THERMOSTAT_PARAMS: list[ThermostatParam] = [
     ThermostatParam(23, "ExtSens", DataType.FLOAT, "'C"),
     # Param 24-27: identity strings
     ThermostatParam(24, "FN", DataType.STRING, writable=True, max_value=11,
-                    default="ecoNext_VIRT"),
+                    default="0000000001"),
     ThermostatParam(25, "HV", DataType.STRING, max_value=7,
                     default="H0.0.1"),
     ThermostatParam(26, "SW", DataType.STRING, max_value=8,
@@ -115,14 +115,23 @@ THERMOSTAT_PARAMS: list[ThermostatParam] = [
 
 
 def get_status_byte(param: ThermostatParam, was_written: bool) -> int:
-    """Get the status byte for a param in the GET_PARAMS response."""
+    """Get the status byte for a param in the GET_PARAMS response.
+
+    Matches the real ecoSTER pattern observed in captures:
+    - 0x00: IntrSens (temp), ExtSens, PresetNow, strings, counters
+    - 0x01: writable params that have been written by panel
+    - 0x81: writable params with default/initial values
+    """
     if param.index == TEMPERATURE_PARAM_INDEX:
-        return STATUS_DEFAULT  # measured but we use 0x00 like real thermostat
-    if was_written:
-        return STATUS_MODIFIED
-    if param.writable and param.type_code in (DataType.UINT32, DataType.UINT16):
-        return STATUS_MEASURED  # schedule/monitor params
-    return STATUS_DEFAULT
+        return STATUS_DEFAULT
+    if param.index in (3, 23):  # PresetNow, ExtSens
+        return STATUS_DEFAULT
+    if param.type_code == DataType.STRING:
+        return STATUS_MODIFIED if was_written else STATUS_DEFAULT
+    if not param.writable:
+        return STATUS_DEFAULT
+    # Writable params: 0x01 if panel wrote them, 0x81 for defaults
+    return STATUS_MODIFIED if was_written else STATUS_MEASURED
 
 
 def get_default_value(param: ThermostatParam) -> Any:
