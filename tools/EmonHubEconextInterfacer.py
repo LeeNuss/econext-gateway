@@ -19,7 +19,6 @@ Fetch metrics from econext-gateway (RS-485 gateway for GM3 based heat pump contr
 
 
 class EmonHubEconextInterfacer(EmonHubInterfacer):
-
     # Default parameter mappings: (gateway_name, emoncms_name)
     # Config entries with matching gateway_name override the emoncms_name.
     # DHWStatus and CHStatus are computed from flapValveStates and always included.
@@ -239,9 +238,7 @@ class EmonHubEconextInterfacer(EmonHubInterfacer):
             if gateway_name in params:
                 data[feed_name] = params[gateway_name]
             else:
-                self._log.warning(
-                    "Parameter '%s' not found in gateway response", gateway_name
-                )
+                self._log.warning("Parameter '%s' not found in gateway response", gateway_name)
 
         self._log.debug("Fetched data: %s", data)
 
@@ -269,10 +266,7 @@ class EmonHubEconextInterfacer(EmonHubInterfacer):
                 self._log.info(
                     "Setting %s parameters: %s",
                     self.name,
-                    ", ".join(
-                        f"{gw}->{feed}" if gw != feed else gw
-                        for gw, feed in parsed
-                    ),
+                    ", ".join(f"{gw}->{feed}" if gw != feed else gw for gw, feed in parsed),
                 )
 
         for key, setting in self._template_settings.items():

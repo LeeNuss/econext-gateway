@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-# Address used by all tests (must not be in RESERVED_ADDRESSES)
+# Address used by all tests (outside CLAIMABLE_ADDRESS_RANGE)
 TEST_BUS_ADDRESS = 200
 
 

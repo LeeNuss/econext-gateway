@@ -8,6 +8,7 @@ import asyncio
 import logging
 import struct
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,9 @@ from econext_gateway.core.models import Alarm, Parameter
 from econext_gateway.protocol.codec import decode_value, encode_value
 from econext_gateway.protocol.constants import (
     ALARM_REQUEST_PREFIX,
+    CLAIMABLE_ADDRESS_RANGE,
     DEST_ADDRESSES,
+    DEVICE_TABLE_FUNC,
     GET_TOKEN_FUNC,
     GIVE_BACK_TOKEN_DATA,
     IDENTIFY_ANS_CMD,
@@ -26,7 +29,6 @@ from econext_gateway.protocol.constants import (
     PANEL_ADDRESS,
     POLL_INTERVAL,
     REQUEST_TIMEOUT,
-    RESERVED_ADDRESSES,
     RETRY_ATTEMPTS,
     SERVICE_ANS_CMD,
     SERVICE_CMD,
@@ -39,6 +41,30 @@ from econext_gateway.protocol.frames import Frame
 from econext_gateway.serial.connection import GM3SerialTransport
 
 logger = logging.getLogger(__name__)
+
+# Human-readable command names for bus sniff logging
+_CMD_NAMES: dict[int, str] = {
+    0x00: "GET_SETTINGS",
+    0x80: "GET_SETTINGS_RESP",
+    0x01: "GET_PARAMS_STRUCT",
+    0x81: "GET_PARAMS_STRUCT_RESP",
+    0x02: "GET_PARAMS_STRUCT_RANGE",
+    0x82: "GET_PARAMS_STRUCT_RANGE_RESP",
+    0x09: "IDENTIFY",
+    0x89: "IDENTIFY_ANS",
+    0x29: "MODIFY_PARAM",
+    0xA9: "MODIFY_PARAM_RESP",
+    0x40: "GET_PARAMS",
+    0xC0: "GET_PARAMS_RESP",
+    0x68: "SERVICE",
+    0xE8: "SERVICE_ANS",
+    0x7E: "ERROR",
+    0x7F: "NO_DATA",
+}
+
+
+def _cmd_name(cmd: int) -> str:
+    return _CMD_NAMES.get(cmd, f"0x{cmd:02X}")
 
 
 class ParamStructEntry:
@@ -80,6 +106,62 @@ UNIT_STRING_MAP = {
     "kW": 7,
     "kWh": 8,
 }
+
+
+@dataclass
+class DeviceTableEntry:
+    """A device in the panel's bus device table (from SERVICE 0x2001)."""
+
+    address: int
+    temperature: float
+
+
+@dataclass
+class BusDevice:
+    """A device known to exist on the RS-485 bus."""
+
+    address: int
+    identity: str | None = None
+    temperature: float | None = None
+    source: str = ""
+    last_seen: float = 0.0
+
+
+_KNOWN_ADDRESSES: dict[int, str] = {
+    1: "controller",
+    100: "panel",
+}
+
+
+def _parse_identity(data: bytes) -> str:
+    """Parse null-separated identity bytes into a human-readable string."""
+    return data.replace(b"\x00", b" ").strip().decode("ascii", errors="replace")
+
+
+def parse_device_table(data: bytes) -> list[DeviceTableEntry]:
+    """Parse SERVICE 0x2001 device table broadcast payload.
+
+    Format: [func_lo][func_hi][0x00][0x00] then repeating 6-byte entries
+    of [addr_lo][addr_hi][float32_LE] (device address + temperature).
+
+    Args:
+        data: SERVICE frame data (includes func code bytes).
+
+    Returns:
+        List of DeviceTableEntry with address and temperature.
+    """
+    if len(data) < 4:
+        return []
+
+    entries = []
+    offset = 4  # skip func code + padding
+    while offset + 6 <= len(data):
+        addr = struct.unpack("<H", data[offset : offset + 2])[0]
+        temp = struct.unpack("<f", data[offset + 2 : offset + 6])[0]
+        entries.append(DeviceTableEntry(address=addr, temperature=round(temp, 2)))
+        offset += 6
+
+    return entries
 
 
 def parse_get_params_request(data: bytes) -> tuple[int, int]:
@@ -454,15 +536,25 @@ class ProtocolHandler:
         if paired_addr is not None:
             logger.info("Loaded paired address %d from %s", paired_addr, paired_address_file)
             self._source_address = paired_addr
-            self._paired = True
+            self._registration_state = "paired"
         else:
             self._source_address = 0  # Placeholder; set during auto-registration
-            self._paired = False
+            self._registration_state = "unpaired"
             logger.info("No paired address found, will auto-register at next free address")
+
+        self._tentative_since: float | None = None
 
         self._param_structs: dict[int, ParamStructEntry] = {}
         self._total_params: int = 0
         self._alarms: list[Alarm] = []
+        self._device_table: list[DeviceTableEntry] = []
+        self._device_registry: dict[int, BusDevice] = {}
+        if self._registration_state == "paired":
+            self._device_registry[self._source_address] = BusDevice(
+                address=self._source_address,
+                identity=_parse_identity(IDENTIFY_RESPONSE_DATA),
+                source="self",
+            )
         self._poll_task: asyncio.Task | None = None
         self._running = False
         self._lock = asyncio.Lock()
@@ -584,20 +676,40 @@ class ProtocolHandler:
             logger.info("Responded to IDENTIFY from panel")
 
         elif frame.command == SERVICE_CMD:
-            # Log all SERVICE frames for debugging
             func_code = 0
             if len(frame.data) >= 2:
                 func_code = struct.unpack("<H", frame.data[0:2])[0]
-            logger.info(
-                "SERVICE frame: dest=%d, func=0x%04X, data=%s",
-                frame.destination,
-                func_code,
-                frame.data.hex() if frame.data else "empty",
-            )
-            # Check if this is a token grant (GET_TOKEN function code)
+
             if func_code == GET_TOKEN_FUNC:
                 self._has_token = True
                 logger.info("Token received from master panel")
+            elif func_code == DEVICE_TABLE_FUNC:
+                entries = parse_device_table(frame.data)
+                self._device_table = entries
+                now = asyncio.get_event_loop().time()
+                for e in entries:
+                    dev = self._device_registry.setdefault(
+                        e.address,
+                        BusDevice(address=e.address, source="device_table"),
+                    )
+                    dev.temperature = e.temperature
+                    dev.last_seen = now
+                # Log all known bus devices (registry merges device table + IDENTIFY)
+                parts = []
+                for d in sorted(self._device_registry.values(), key=lambda d: d.address):
+                    label = d.identity or _KNOWN_ADDRESSES.get(d.address, "Unknown")
+                    if d.temperature is not None:
+                        parts.append(f"{d.address}({label} {d.temperature:.1f}C)")
+                    else:
+                        parts.append(f"{d.address}({label})")
+                logger.info("Bus devices (%d): %s", len(self._device_registry), ", ".join(parts))
+            else:
+                logger.debug(
+                    "SERVICE frame: dest=%d, func=0x%04X, data=%s",
+                    frame.destination,
+                    func_code,
+                    frame.data.hex() if frame.data else "empty",
+                )
 
     async def _return_token(self) -> None:
         """Return token to master panel after completing bus operations."""
@@ -635,6 +747,9 @@ class ProtocolHandler:
 
         loop = asyncio.get_event_loop()
         deadline = None if self._token_required else loop.time() + self._token_timeout
+        device_table_seen = len(self._device_table) > 0
+        last_frame_time = loop.time()
+        bus_silence_limit = 30.0  # seconds of no bus traffic before reconnect
 
         while True:
             if deadline is not None:
@@ -649,44 +764,131 @@ class ProtocolHandler:
             frame = await self._connection.protocol.receive_frame(timeout=read_timeout)
 
             if frame is None:
+                # Check for bus silence (no frames at all)
+                silence = loop.time() - last_frame_time
+                if silence >= bus_silence_limit:
+                    logger.warning(
+                        "Bus silent for %.0fs, reconnecting serial port",
+                        silence,
+                    )
+                    await self._connection.reconnect()
+                    raise ConnectionError("Bus silence detected, reconnected serial port")
                 continue
 
-            # Log ALL bus traffic for debugging (before filtering)
+            last_frame_time = loop.time()
+
+            # Log ALL bus traffic with human-readable command names
+            cmd_name = _cmd_name(frame.command)
             logger.debug(
-                "Bus: src=%d dst=%d cmd=0x%02X len=%d",
+                "BUS  src=%-5d dst=%-5d %s  [%db]",
                 frame.source,
                 frame.destination,
-                frame.command,
+                cmd_name,
                 len(frame.data) if frame.data else 0,
             )
 
-            # Special logging for SERVICE frames to us
-            if frame.command == SERVICE_CMD and frame.destination == self._source_address:
-                func_code = struct.unpack("<H", frame.data[0:2])[0] if len(frame.data) >= 2 else 0
-                logger.debug("SERVICE to US (%d): func=0x%04X", self._source_address, func_code)
+            # Track IDENTIFY responses from other devices (bus sniff)
+            if frame.command == IDENTIFY_ANS_CMD and frame.destination == PANEL_ADDRESS:
+                identity_str = _parse_identity(frame.data) if frame.data else ""
+                logger.debug(
+                    "IDENTIFY_ANS from %d -> panel: identity=%r",
+                    frame.source,
+                    identity_str,
+                )
+                dev = self._device_registry.setdefault(
+                    frame.source,
+                    BusDevice(address=frame.source, source="identify"),
+                )
+                dev.identity = identity_str
+                dev.last_seen = loop.time()
 
-            # Auto-registration: when not yet paired, intercept IDENTIFY
-            # probes from the panel to ANY address (the panel scans one new
-            # address per cycle). Respond to claim that address, then persist.
+            # Log all SERVICE frames with function codes
+            if frame.command == SERVICE_CMD and len(frame.data) >= 2:
+                func_code = struct.unpack("<H", frame.data[0:2])[0]
+                target_note = " (TO US)" if frame.destination == self._source_address else ""
+                logger.debug(
+                    "SERVICE src=%d dst=%d func=0x%04X%s",
+                    frame.source,
+                    frame.destination,
+                    func_code,
+                    target_note,
+                )
+
+            # Sniff device table broadcasts while waiting (even before we have
+            # an address) so we know which addresses are already occupied.
+            if frame.source == PANEL_ADDRESS and frame.command == SERVICE_CMD and len(frame.data) >= 2:
+                func_code = struct.unpack("<H", frame.data[0:2])[0]
+                if func_code == DEVICE_TABLE_FUNC:
+                    entries = parse_device_table(frame.data)
+                    self._device_table = entries
+                    addrs = [e.address for e in entries]
+                    logger.debug("Device table (sniffed): %d devices, addresses=%s", len(entries), addrs)
+                    for e in entries:
+                        logger.debug("  device addr=%d temp=%.1f", e.address, e.temperature)
+                    for e in entries:
+                        dev = self._device_registry.setdefault(
+                            e.address,
+                            BusDevice(address=e.address, source="device_table"),
+                        )
+                        dev.temperature = e.temperature
+                        dev.last_seen = loop.time()
+                    device_table_seen = True
+
+            # Log all IDENTIFY probes from the panel
+            if frame.source == PANEL_ADDRESS and frame.command == IDENTIFY_CMD:
+                logger.debug("Panel IDENTIFY probe to %d", frame.destination)
+
+            # Auto-registration: when unpaired, intercept IDENTIFY probes from
+            # the panel to addresses in the claimable range that aren't already
+            # occupied by another device. Wait for at least one device table
+            # broadcast so we know what's occupied.
+            occupied = {e.address for e in self._device_table}
             if (
-                not self._paired
+                self._registration_state == "unpaired"
+                and device_table_seen
                 and frame.source == PANEL_ADDRESS
                 and frame.command == IDENTIFY_CMD
                 and frame.destination != self._source_address
-                and frame.destination not in RESERVED_ADDRESSES
+                and frame.destination in CLAIMABLE_ADDRESS_RANGE
+                and frame.destination not in occupied
             ):
                 target = frame.destination
                 logger.info(
-                    "Scanning IDENTIFY to %d detected, claiming address", target,
+                    "Scanning IDENTIFY to %d detected, claiming tentatively",
+                    target,
                 )
                 self._source_address = target
-                self._paired = True
-                self._save_paired_address(target)
-                # Respond to this IDENTIFY immediately
+                self._registration_state = "tentative"
+                self._tentative_since = loop.time()
+                # Respond to this IDENTIFY immediately (do NOT persist yet)
                 await self._handle_panel_frame(frame)
                 if self._has_token:
-                    logger.info("Token received, proceeding immediately")
+                    self._registration_state = "paired"
+                    self._save_paired_address(target)
+                    self._device_registry[target] = BusDevice(
+                        address=target,
+                        identity=_parse_identity(IDENTIFY_RESPONSE_DATA),
+                        source="self",
+                        last_seen=loop.time(),
+                    )
+                    logger.info("Address %d validated by token grant, persisted", target)
                     return
+                continue
+
+            # Check tentative timeout: if we claimed an address but never got
+            # a token, revert to unpaired so we try the next scanned address.
+            if (
+                self._registration_state == "tentative"
+                and self._tentative_since is not None
+                and loop.time() - self._tentative_since > 20.0
+            ):
+                logger.warning(
+                    "Tentative address %d timed out (no token in 20s), reverting",
+                    self._source_address,
+                )
+                self._source_address = 0
+                self._registration_state = "unpaired"
+                self._tentative_since = None
                 continue
 
             # Only process frames addressed to us or broadcast
@@ -697,7 +899,20 @@ class ProtocolHandler:
             if frame.source == PANEL_ADDRESS:
                 await self._handle_panel_frame(frame)
                 if self._has_token:
-                    logger.info("Token received, proceeding immediately")
+                    # Validate tentative address on first token
+                    if self._registration_state == "tentative":
+                        self._registration_state = "paired"
+                        self._save_paired_address(self._source_address)
+                        self._device_registry[self._source_address] = BusDevice(
+                            address=self._source_address,
+                            identity=_parse_identity(IDENTIFY_RESPONSE_DATA),
+                            source="self",
+                            last_seen=loop.time(),
+                        )
+                        logger.info(
+                            "Address %d validated by token grant, persisted",
+                            self._source_address,
+                        )
                     return
 
     async def send_and_receive(

@@ -23,6 +23,7 @@ from econext_gateway.protocol.handler import (
     build_get_params_request,
     build_modify_param_request,
     build_struct_request,
+    parse_device_table,
     parse_get_params_request,
     parse_get_params_response,
     parse_struct_response,
@@ -1686,7 +1687,10 @@ class TestReadAlarms:
         conn.connected = True
         cache = ParameterCache()
         h = ProtocolHandler(
-            conn, cache, token_required=False, token_timeout=0,
+            conn,
+            cache,
+            token_required=False,
+            token_timeout=0,
             paired_address_file=paired_address_file,
         )
         return h
@@ -1785,3 +1789,55 @@ class TestReadAlarms:
         assert len(result) == 1
         result.clear()
         assert len(handler._alarms) == 1  # original unchanged
+
+
+class TestParseDeviceTable:
+    """Tests for parse_device_table (SERVICE 0x2001)."""
+
+    def test_two_devices_from_real_payload(self):
+        """Parse real captured payload with two devices."""
+        # From pairing log: panel(100)=21.23C, thermostat(166)=19.93C
+        data = bytes.fromhex("012000006400e2dca941a600a6779f41")
+        entries = parse_device_table(data)
+
+        assert len(entries) == 2
+        assert entries[0].address == 100
+        assert entries[0].temperature == pytest.approx(21.23, abs=0.01)
+        assert entries[1].address == 166
+        assert entries[1].temperature == pytest.approx(19.93, abs=0.01)
+
+    def test_three_devices_after_pairing(self):
+        """Parse payload with three devices (after new thermostat paired)."""
+        data = bytes.fromhex("012000006400e2dca941a50000000000a600a6779f41")
+        entries = parse_device_table(data)
+
+        assert len(entries) == 3
+        assert entries[0].address == 100
+        assert entries[1].address == 165
+        assert entries[1].temperature == 0.0
+        assert entries[2].address == 166
+
+    def test_empty_data(self):
+        """Short data returns empty list."""
+        assert parse_device_table(b"") == []
+        assert parse_device_table(b"\x01\x20") == []
+        assert parse_device_table(b"\x01\x20\x00\x00") == []
+
+    def test_single_device(self):
+        """Parse payload with one device."""
+        # func code + padding + one entry (addr=131, temp=22.5)
+        data = struct.pack("<HH", 0x2001, 0) + struct.pack("<Hf", 131, 22.5)
+        entries = parse_device_table(data)
+
+        assert len(entries) == 1
+        assert entries[0].address == 131
+        assert entries[0].temperature == 22.5
+
+    def test_truncated_entry_ignored(self):
+        """Partial trailing entry is ignored."""
+        # Full header + one complete entry + 3 trailing bytes
+        data = struct.pack("<HH", 0x2001, 0) + struct.pack("<Hf", 50, 1.0) + b"\x01\x02\x03"
+        entries = parse_device_table(data)
+
+        assert len(entries) == 1
+        assert entries[0].address == 50
