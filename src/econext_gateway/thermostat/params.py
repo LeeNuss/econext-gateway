@@ -130,8 +130,11 @@ def get_status_byte(param: ThermostatParam, was_written: bool) -> int:
         return STATUS_MODIFIED if was_written else STATUS_DEFAULT
     if not param.writable:
         return STATUS_DEFAULT
-    # Writable params: 0x01 if panel wrote them, 0x81 for defaults
-    return STATUS_MODIFIED if was_written else STATUS_MEASURED
+    # Writable params: 0x01 if panel wrote them OR param has a non-zero default
+    # (mimics a thermostat that was already configured)
+    if was_written or param.default is not None:
+        return STATUS_MODIFIED
+    return STATUS_MEASURED
 
 
 def get_default_value(param: ThermostatParam) -> Any:
