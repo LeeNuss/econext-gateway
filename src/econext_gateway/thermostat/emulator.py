@@ -121,7 +121,7 @@ class ThermostatEmulator:
         elif frame.command == Command.MODIFY_PARAM:
             return await self._handle_modify_param(frame, write_fn)
         else:
-            logger.debug(
+            logger.info(
                 "Thermostat: unhandled cmd=0x%02X from %d",
                 frame.command,
                 frame.source,
@@ -167,7 +167,7 @@ class ThermostatEmulator:
             await self._respond(
                 frame.source, Command.NO_DATA, b"", write_fn
             )
-            logger.debug(
+            logger.info(
                 "Thermostat: NO_DATA for struct request start=%d count=%d",
                 start_index,
                 count,
@@ -178,7 +178,7 @@ class ThermostatEmulator:
         await self._respond(
             frame.source, Command.GET_PARAMS_STRUCT_WITH_RANGE_RESPONSE, data, write_fn
         )
-        logger.debug(
+        logger.info(
             "Thermostat: sent struct response for %d params starting at %d",
             len(params_in_range),
             start_index,
@@ -205,7 +205,7 @@ class ThermostatEmulator:
             await self._respond(
                 frame.source, Command.NO_DATA, b"", write_fn
             )
-            logger.debug(
+            logger.info(
                 "Thermostat: NO_DATA for params request start=%d count=%d",
                 start_index,
                 count,
@@ -217,7 +217,7 @@ class ThermostatEmulator:
         await self._respond(
             frame.source, Command.GET_PARAMS_RESPONSE, data, write_fn
         )
-        logger.debug(
+        logger.info(
             "Thermostat: sent %d param values (temp=%.2f) starting at %d",
             len(params_in_range),
             self._vt.effective_temperature,
@@ -239,7 +239,7 @@ class ThermostatEmulator:
                 # Store the raw value bytes for exact echo-back
                 value_bytes = frame.data[2:]
                 self._written_values[param_index] = value_bytes
-                logger.debug(
+                logger.info(
                     "Thermostat: stored MODIFY_PARAM idx=%d (%d bytes)",
                     param_index,
                     len(value_bytes),
