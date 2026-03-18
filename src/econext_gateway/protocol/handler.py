@@ -616,16 +616,12 @@ class ProtocolHandler:
         """Respond to a 0x2004 pairing beacon with SERVICE_ANS.
 
         The real thermostat sends SERVICE_ANS (0xE8) from a temporary address
-        (observed: 164) to the panel. The panel then assigns a final address.
-        The exact payload is not yet fully decoded -- we send the thermostat
-        identity and log the response for further analysis.
+        to the panel with a 67-byte identity payload. The panel then assigns
+        a final address via SERVICE 0x2005.
         """
-        from econext_gateway.thermostat.emulator import THERMOSTAT_IDENTITY
+        from econext_gateway.thermostat.emulator import THERMOSTAT_PAIRING_IDENTITY
 
-        # Build SERVICE_ANS payload -- this is a best-guess based on the
-        # gateway's identify data format. The real 67-byte payload needs
-        # to be captured and decoded to get this right.
-        data = THERMOSTAT_IDENTITY
+        data = THERMOSTAT_PAIRING_IDENTITY
         await asyncio.sleep(0.02)  # RS-485 turnaround
         response = Frame(
             destination=PANEL_ADDRESS,

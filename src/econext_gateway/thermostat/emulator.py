@@ -35,9 +35,19 @@ logger = logging.getLogger(__name__)
 SEPARATOR_BYTE = b"\xc2"
 
 # Identity string for thermostat IDENTIFY_ANS responses.
-# TODO: Update after protocol capture reveals what real thermostats report.
-# Real ecoSTER thermostats may use a different string than "EcoNEXT".
 THERMOSTAT_IDENTITY = b"PLUM\x00EcoNEXT\x00\x00\x00\x00\x00"
+
+# SERVICE_ANS payload for pairing (0x2004 beacon response).
+# Format matches real ecoSTER: manufacturer\0model\0serial\0class\0sub\0version\0
+# Using distinct model name so panel shows it separately from real thermostats.
+THERMOSTAT_PAIRING_IDENTITY = (
+    b"PLUM Sp. z o.o.\x00"   # manufacturer (must match real)
+    b"ecoNext_VIRT\x00"       # virtual thermostat, distinguishes from real ecoSTER_40
+    b"0000000001\x00"         # serial number (unique, fake)
+    b"03\x00"                 # device class (same as real)
+    b"00\x00"                 # sub-class (same as real)
+    b"H0.0.1_S000.01_D0000__\x00"  # version string
+)
 
 
 class ThermostatEmulator:
