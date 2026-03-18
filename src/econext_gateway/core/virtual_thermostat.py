@@ -61,15 +61,13 @@ class VirtualThermostat:
     def effective_temperature(self) -> float:
         """Temperature to report on the bus.
 
-        Returns the submitted temperature if fresh, or the stale_fallback
-        value if no update has been received within max_age seconds.
-        A low fallback (e.g. 0.0) causes the controller to increase heating,
-        which is the safer default for cold climates.
+        Returns the last known temperature, even if stale. This prevents
+        the heat pump from seeing 0.0 and running at maximum if HA stops
+        sending updates. The is_stale flag is still tracked for monitoring.
         """
-        if self.is_stale:
-            return self._stale_fallback
-        assert self._temperature is not None
-        return self._temperature
+        if self._temperature is not None:
+            return self._temperature
+        return self._stale_fallback
 
     def update(self, temperature: float) -> float | None:
         """Submit a new temperature reading.
@@ -95,13 +93,14 @@ class VirtualThermostat:
         return prev_age
 
     def _load_persisted(self) -> None:
-        """Load last temperature from disk. Sets temperature but NOT updated_at,
-        so it will be stale until HA sends a fresh value. This gives the heat
-        pump a reasonable temperature on restart instead of 0.0."""
+        """Load last temperature from disk. Marks it as fresh so the first
+        bus poll gets a real temperature instead of the stale fallback (0.0).
+        HA will refresh within 10s; if it doesn't, staleness kicks in after max_age."""
         try:
             text = self._persist_file.read_text().strip()
             temp = float(text)
             self._temperature = round(temp, 2)
+            self._updated_at = time.monotonic()  # Treat as fresh until HA refreshes
             # Don't set _updated_at - value is stale until HA refreshes
             logger.info("Loaded persisted temperature: %.2f (stale until HA updates)", temp)
         except (FileNotFoundError, ValueError):

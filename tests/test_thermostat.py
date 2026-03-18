@@ -66,10 +66,10 @@ class TestVirtualThermostat:
         assert vt.is_stale is False
         assert vt.effective_temperature == 22.0
 
-        # Wait for staleness
+        # Wait for staleness - keeps last value, doesn't fall back to 0
         time.sleep(0.15)
         assert vt.is_stale is True
-        assert vt.effective_temperature == 5.0  # Falls back
+        assert vt.effective_temperature == 22.0  # Keeps last known value
 
     def test_temperature_rounding(self):
         vt = VirtualThermostat()
@@ -310,7 +310,7 @@ class TestThermostatEmulator:
         await emulator.handle_frame(frame, fake_write)
         data = written_frames[0].data
         temp = struct.unpack("<f", data[4:8])[0]
-        assert round(temp, 2) == 0.0  # stale_fallback
+        assert round(temp, 2) == 21.3  # Keeps last value even when stale
 
     @pytest.mark.asyncio
     async def test_handle_modify_param(self, emulator):

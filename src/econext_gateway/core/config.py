@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     # Virtual thermostat emulation
     thermostat_enabled: bool = False
     thermostat_max_age: float = 300.0
-    thermostat_stale_fallback: float = 0.0
+    thermostat_stale_fallback: float = 19.0
 
     model_config = SettingsConfigDict(env_prefix="ECONEXT_")
 

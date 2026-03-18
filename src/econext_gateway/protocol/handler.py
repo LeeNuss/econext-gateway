@@ -659,7 +659,7 @@ class ProtocolHandler:
                 self._thermostat.address,
             )
         self._thermostat.address = 0
-        self._thermostat._written_values.clear()
+        # Keep _written_values - panel config and temperature survive re-pairing
         if self._thermostat_address_file is not None:
             try:
                 self._thermostat_address_file.unlink(missing_ok=True)
