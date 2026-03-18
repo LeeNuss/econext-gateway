@@ -64,7 +64,7 @@ THERMOSTAT_PARAMS: list[ThermostatParam] = [
     # Param 0: room temperature - injected from HA
     ThermostatParam(0, "IntrSens", DataType.FLOAT, "'C"),
     # Param 1-2: mode and alarm mask - panel-written
-    ThermostatParam(1, "WorkMode", DataType.UINT8, writable=True),
+    ThermostatParam(1, "WorkMode", DataType.UINT8, writable=True, default=3),
     ThermostatParam(2, "AlMsk", DataType.UINT32, writable=True),
     # Param 3: current setpoint - derived from schedule/mode
     ThermostatParam(3, "PresetNow", DataType.FLOAT, "'C"),

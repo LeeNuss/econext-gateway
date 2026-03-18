@@ -89,6 +89,10 @@ class ThermostatEmulator:
         if param.index == TEMPERATURE_PARAM_INDEX:
             return self._vt.effective_temperature
 
+        # PresetNow (param 3) mirrors the HA temperature as current setpoint
+        if param.index == 3:
+            return self._vt.effective_temperature
+
         if param.index in self._written_values:
             return self._written_values[param.index]
 
