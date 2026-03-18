@@ -639,20 +639,33 @@ class ProtocolHandler:
     def request_thermostat_pairing(self) -> bool:
         """Request thermostat pairing. Called from the API.
 
-        Sets the thermostat registration state to 'pairing_requested'
-        so the handler will respond to the next 0x2004 pairing beacon.
+        Resets current pairing (deletes address file, clears emulator address)
+        and sets state to 'pairing_requested' so the handler will respond to
+        the next 0x2004 pairing beacon. Allows re-pairing at a new address.
 
         Returns:
             True if pairing was requested, False if not applicable.
         """
         if self._thermostat is None:
             return False
-        if self._thermostat_reg_state == "paired":
-            logger.info("Thermostat already paired at address %d", self._thermostat.address)
-            return False
         if self._thermostat_reg_state == "pairing_requested":
             logger.info("Thermostat pairing already requested, waiting for beacon")
             return False
+
+        # Reset current pairing so we can re-pair
+        if self._thermostat_reg_state == "paired":
+            logger.info(
+                "Resetting thermostat pairing (was at address %d)",
+                self._thermostat.address,
+            )
+        self._thermostat.address = 0
+        self._thermostat._written_values.clear()
+        if self._thermostat_address_file is not None:
+            try:
+                self._thermostat_address_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+
         self._thermostat_reg_state = "pairing_requested"
         self._thermostat_tentative_since = asyncio.get_event_loop().time()
         logger.info("Thermostat pairing requested via API, waiting for 0x2004 beacon")
@@ -1023,6 +1036,14 @@ class ProtocolHandler:
                     source=assigned_addr,
                 )
                 await self._connection.protocol.write_frame(ack, flush_after=True)
+                # Register in device registry so it shows identity in bus device list
+                from econext_gateway.thermostat.emulator import THERMOSTAT_IDENTITY
+                self._device_registry[assigned_addr] = BusDevice(
+                    address=assigned_addr,
+                    identity=_parse_identity(THERMOSTAT_IDENTITY),
+                    source="thermostat_pairing",
+                    last_seen=loop.time(),
+                )
                 logger.info(
                     "Thermostat: ACK'd address assignment, now paired at %d",
                     assigned_addr,

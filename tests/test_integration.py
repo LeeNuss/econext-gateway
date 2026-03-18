@@ -1007,14 +1007,17 @@ class TestThermostatRegistration:
         assert len(service_ans) == 0
 
     @pytest.mark.asyncio
-    async def test_request_pairing_returns_false_when_paired(self, fake_conn, fake_proto, cache):
-        """API rejects pairing request when thermostat is already paired."""
+    async def test_request_pairing_resets_when_paired(self, fake_conn, fake_proto, cache):
+        """API allows re-pairing when thermostat is already paired."""
         emulator = _make_thermostat_emulator(address=167)
         handler = make_handler(
             fake_conn, cache, thermostat_emulator=emulator,
             thermostat_address_file=_make_empty_thermostat_file(),
         )
-        assert handler.request_thermostat_pairing() is False
+        assert handler._thermostat_reg_state == "paired"
+        assert handler.request_thermostat_pairing() is True
+        assert handler._thermostat_reg_state == "pairing_requested"
+        assert emulator.address == 0  # Reset for re-pairing
 
     @pytest.mark.asyncio
     async def test_thermostat_address_range(self):
