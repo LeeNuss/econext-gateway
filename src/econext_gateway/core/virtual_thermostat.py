@@ -2,22 +2,36 @@
 
 Stores the latest temperature submitted by Home Assistant and tracks
 staleness so the bus emulator can report a safe fallback when updates stop.
+Persists the last temperature to disk so it survives gateway restarts.
 """
 
 import logging
 import time
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 
 class VirtualThermostat:
-    """In-memory temperature state with staleness detection."""
+    """In-memory temperature state with staleness detection and persistence."""
 
-    def __init__(self, max_age: float = 300.0, stale_fallback: float = 0.0) -> None:
+    def __init__(
+        self,
+        max_age: float = 300.0,
+        stale_fallback: float = 0.0,
+        persist_file: Path | None = None,
+    ) -> None:
         self._temperature: float | None = None
         self._updated_at: float | None = None
         self._max_age = max_age
         self._stale_fallback = stale_fallback
+        self._persist_file = persist_file
+        self._last_persist_time: float = 0.0
+        self._persist_interval: float = 120.0  # write to disk at most every 2 minutes
+
+        # Load persisted temperature from last run
+        if self._persist_file is not None:
+            self._load_persisted()
 
     @property
     def temperature(self) -> float | None:
@@ -77,4 +91,32 @@ class VirtualThermostat:
         else:
             logger.debug("Virtual thermostat updated: %.2f", self._temperature)
 
+        self._save_persisted()
         return prev_age
+
+    def _load_persisted(self) -> None:
+        """Load last temperature from disk. Sets temperature but NOT updated_at,
+        so it will be stale until HA sends a fresh value. This gives the heat
+        pump a reasonable temperature on restart instead of 0.0."""
+        try:
+            text = self._persist_file.read_text().strip()
+            temp = float(text)
+            self._temperature = round(temp, 2)
+            # Don't set _updated_at - value is stale until HA refreshes
+            logger.info("Loaded persisted temperature: %.2f (stale until HA updates)", temp)
+        except (FileNotFoundError, ValueError):
+            pass
+
+    def _save_persisted(self) -> None:
+        """Save current temperature to disk (throttled to avoid SD card wear)."""
+        if self._persist_file is None or self._temperature is None:
+            return
+        now = time.monotonic()
+        if now - self._last_persist_time < self._persist_interval:
+            return
+        try:
+            self._persist_file.parent.mkdir(parents=True, exist_ok=True)
+            self._persist_file.write_text(str(self._temperature))
+            self._last_persist_time = now
+        except OSError:
+            pass

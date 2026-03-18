@@ -38,18 +38,14 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting ecoNEXT Gateway v{__version__}")
 
     # Initialize components
+    persist_file = Path(settings.state_dir) / "thermostat_temperature" if settings.thermostat_enabled else None
+    app_state.virtual_thermostat = VirtualThermostat(
+        max_age=settings.thermostat_max_age,
+        stale_fallback=settings.thermostat_stale_fallback,
+        persist_file=persist_file,
+    )
     if settings.thermostat_enabled:
-        app_state.virtual_thermostat = VirtualThermostat(
-            max_age=settings.thermostat_max_age,
-            stale_fallback=settings.thermostat_stale_fallback,
-        )
         logger.info("Virtual thermostat enabled (max_age=%.0fs)", settings.thermostat_max_age)
-    else:
-        # Always create instance so API endpoints work (return stale status)
-        app_state.virtual_thermostat = VirtualThermostat(
-            max_age=settings.thermostat_max_age,
-            stale_fallback=settings.thermostat_stale_fallback,
-        )
 
     # Create thermostat emulator if enabled (address=0 triggers auto-registration)
     thermostat_emulator = None
