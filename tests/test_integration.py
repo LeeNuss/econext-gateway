@@ -852,6 +852,10 @@ class TestThermostatRegistration:
 
         assert handler._thermostat_reg_state == "unpaired"
 
+        # Must explicitly request pairing via API
+        assert handler.request_thermostat_pairing() is True
+        assert handler._thermostat_reg_state == "pairing_requested"
+
         # Pairing beacon triggers SERVICE_ANS response
         fake_proto._frame_queue.put_nowait(_make_pairing_beacon_frame())
 
@@ -880,7 +884,8 @@ class TestThermostatRegistration:
             thermostat_address_file=thermo_file,
         )
 
-        # 1. Pairing beacon
+        # 1. Request pairing via API, then beacon
+        handler.request_thermostat_pairing()
         fake_proto._frame_queue.put_nowait(_make_pairing_beacon_frame())
 
         # 2. Panel assigns address 165 via SERVICE 0x2005
@@ -920,7 +925,8 @@ class TestThermostatRegistration:
             thermostat_address_file=thermo_file,
         )
 
-        # Multiple pairing beacons (like real panel sends ~10/sec)
+        # Request pairing, then multiple beacons (like real panel sends ~10/sec)
+        handler.request_thermostat_pairing()
         for _ in range(5):
             fake_proto._frame_queue.put_nowait(_make_pairing_beacon_frame())
 
@@ -975,8 +981,8 @@ class TestThermostatRegistration:
         assert len(service_ans) == 0
 
     @pytest.mark.asyncio
-    async def test_thermostat_no_response_without_pairing(self, fake_conn, fake_proto, cache):
-        """Thermostat does NOT respond during normal scanning (no pairing beacon)."""
+    async def test_thermostat_ignores_beacon_without_api_request(self, fake_conn, fake_proto, cache):
+        """Thermostat does NOT respond to beacons unless pairing is requested via API."""
         from econext_gateway.protocol.constants import SERVICE_ANS_CMD
 
         thermo_file = _make_empty_thermostat_file()
@@ -991,14 +997,24 @@ class TestThermostatRegistration:
             thermostat_address_file=thermo_file,
         )
 
-        # Device table but NO pairing beacon
-        fake_proto._frame_queue.put_nowait(_make_device_table_frame(100, 1))
+        # Pairing beacon present but NO API request -- should be ignored
+        fake_proto._frame_queue.put_nowait(_make_pairing_beacon_frame())
 
         await handler._wait_for_token()
 
         assert handler._thermostat_reg_state == "unpaired"
         service_ans = [w for w in fake_proto._writes if w.command == SERVICE_ANS_CMD]
         assert len(service_ans) == 0
+
+    @pytest.mark.asyncio
+    async def test_request_pairing_returns_false_when_paired(self, fake_conn, fake_proto, cache):
+        """API rejects pairing request when thermostat is already paired."""
+        emulator = _make_thermostat_emulator(address=167)
+        handler = make_handler(
+            fake_conn, cache, thermostat_emulator=emulator,
+            thermostat_address_file=_make_empty_thermostat_file(),
+        )
+        assert handler.request_thermostat_pairing() is False
 
     @pytest.mark.asyncio
     async def test_thermostat_address_range(self):

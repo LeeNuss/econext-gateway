@@ -640,6 +640,28 @@ class ProtocolHandler:
             len(data),
         )
 
+    def request_thermostat_pairing(self) -> bool:
+        """Request thermostat pairing. Called from the API.
+
+        Sets the thermostat registration state to 'pairing_requested'
+        so the handler will respond to the next 0x2004 pairing beacon.
+
+        Returns:
+            True if pairing was requested, False if not applicable.
+        """
+        if self._thermostat is None:
+            return False
+        if self._thermostat_reg_state == "paired":
+            logger.info("Thermostat already paired at address %d", self._thermostat.address)
+            return False
+        if self._thermostat_reg_state == "pairing_requested":
+            logger.info("Thermostat pairing already requested, waiting for beacon")
+            return False
+        self._thermostat_reg_state = "pairing_requested"
+        self._thermostat_tentative_since = asyncio.get_event_loop().time()
+        logger.info("Thermostat pairing requested via API, waiting for 0x2004 beacon")
+        return True
+
     def _save_thermostat_address(self, address: int) -> None:
         """Persist the thermostat bus address to file."""
         if self._thermostat_address_file is None:
@@ -962,8 +984,9 @@ class ProtocolHandler:
                 )
 
             # Thermostat pairing: respond to 0x2004 beacon with SERVICE_ANS
+            # Only when pairing has been explicitly requested via API
             if (
-                self._thermostat_reg_state == "unpaired"
+                self._thermostat_reg_state == "pairing_requested"
                 and pairing_mode_active
                 and self._thermostat is not None
                 and frame.source == PANEL_ADDRESS
@@ -971,7 +994,6 @@ class ProtocolHandler:
                 and len(frame.data) >= 2
                 and struct.unpack("<H", frame.data[0:2])[0] == PAIRING_BEACON_FUNC
             ):
-                # Only respond once (first beacon seen after pairing_mode_active)
                 self._thermostat_reg_state = "beacon_responded"
                 self._thermostat_tentative_since = loop.time()
                 logger.info("Thermostat: responding to pairing beacon with SERVICE_ANS")
@@ -1097,12 +1119,12 @@ class ProtocolHandler:
 
             # Thermostat pairing timeout: revert if not confirmed
             if (
-                self._thermostat_reg_state in ("tentative", "beacon_responded")
+                self._thermostat_reg_state in ("pairing_requested", "tentative", "beacon_responded")
                 and self._thermostat_tentative_since is not None
-                and loop.time() - self._thermostat_tentative_since > 30.0
+                and loop.time() - self._thermostat_tentative_since > 60.0
             ):
                 logger.warning(
-                    "Thermostat pairing timed out (state=%s, 30s elapsed), reverting to unpaired",
+                    "Thermostat pairing timed out (state=%s, 60s elapsed), reverting to unpaired",
                     self._thermostat_reg_state,
                 )
                 self._thermostat.address = 0

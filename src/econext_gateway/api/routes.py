@@ -122,6 +122,23 @@ async def submit_thermostat_temperature(
     )
 
 
+@router.post(
+    "/thermostat/pair",
+    responses={503: {"model": ErrorResponse}},
+)
+async def request_thermostat_pairing(
+    handler: ProtocolHandler = Depends(get_handler),
+):
+    """Request thermostat pairing. Put the panel in pairing mode first."""
+    success = handler.request_thermostat_pairing()
+    if not success:
+        raise HTTPException(
+            status_code=409,
+            detail="Thermostat already paired or pairing not available",
+        )
+    return {"success": True, "message": "Pairing requested, put panel in pairing mode within 60s"}
+
+
 @router.get("/thermostat/status", response_model=ThermostatStatusResponse)
 async def get_thermostat_status(
     thermostat: VirtualThermostat = Depends(get_virtual_thermostat),
