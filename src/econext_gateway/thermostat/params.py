@@ -94,13 +94,13 @@ THERMOSTAT_PARAMS: list[ThermostatParam] = [
     ThermostatParam(23, "ExtSens", DataType.FLOAT, "'C"),
     # Param 24-27: identity strings
     ThermostatParam(24, "FN", DataType.STRING, writable=True, max_value=11,
-                    default="ecoNext_V0"),
+                    default="0000000002"),
     ThermostatParam(25, "HV", DataType.STRING, max_value=7,
-                    default="H0.0.1"),
+                    default="H2.0.0"),
     ThermostatParam(26, "SW", DataType.STRING, max_value=8,
-                    default="S000.01"),
+                    default="S001.24"),
     ThermostatParam(27, "", DataType.STRING, max_value=21,
-                    default="Mar 18 2026 00:00:00"),
+                    default="Dec 28 2022 10:41:09"),
     # Param 28-29: test
     ThermostatParam(28, "TestStart", DataType.UINT8, writable=True, max_value=1),
     ThermostatParam(29, "TestRes", DataType.UINT8),

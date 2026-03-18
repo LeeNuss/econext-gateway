@@ -39,8 +39,6 @@ __all__ = ["ThermostatEmulator", "THERMOSTAT_IDENTITY", "THERMOSTAT_PAIRING_IDEN
 
 logger = logging.getLogger(__name__)
 
-# Identity string for thermostat IDENTIFY_ANS responses.
-THERMOSTAT_IDENTITY = b"PLUM\x00EcoNEXT\x00\x00\x00\x00\x00"
 
 def _build_pairing_identity() -> bytes:
     """Build SERVICE_ANS payload from params defaults.
@@ -48,14 +46,14 @@ def _build_pairing_identity() -> bytes:
     Format: manufacturer\\0model\\0serial\\0class\\0sub\\0version\\0
     Assembled from the same defaults used in the parameter table.
     """
-    fn = get_default_value(THERMOSTAT_PARAMS[24])   # FN
+    fn = get_default_value(THERMOSTAT_PARAMS[24])   # FN (serial)
     hv = get_default_value(THERMOSTAT_PARAMS[25])   # HV
     sw = get_default_value(THERMOSTAT_PARAMS[26])   # SW
-    version = f"{hv}_{sw}_D0000__"
+    version = f"{hv}_{sw}_D6AFC__"
     return (
         b"PLUM Sp. z o.o.\x00"
-        + fn.encode() + b"\x00"
-        + b"0000000001\x00"          # serial number
+        + b"ecoSTER_40\x00"           # model (must match real for panel acceptance)
+        + fn.encode() + b"\x00"       # serial number (different from real)
         + b"03\x00"                   # device class
         + b"00\x00"                   # sub-class
         + version.encode() + b"\x00"
@@ -63,6 +61,10 @@ def _build_pairing_identity() -> bytes:
 
 
 THERMOSTAT_PAIRING_IDENTITY = _build_pairing_identity()
+
+# IDENTIFY_ANS uses the same 67-byte payload as pairing SERVICE_ANS
+# (confirmed from real ecoSTER capture: cmd=0x89 response is 67 bytes, identical)
+THERMOSTAT_IDENTITY = THERMOSTAT_PAIRING_IDENTITY
 
 
 class ThermostatEmulator:
