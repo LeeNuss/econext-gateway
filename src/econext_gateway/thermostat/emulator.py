@@ -4,6 +4,10 @@ Responds to panel queries at a dedicated bus address, serving the
 temperature value submitted by Home Assistant via the API. The panel
 treats this as a real thermostat and propagates the temperature to
 the controller and device table broadcasts.
+
+All 35 parameters match the real ecoSTER 200 layout. The emulator
+stores panel-written config (schedules, presets, etc.) and echoes it
+back. Only param 0 (IntrSens) is injected from the HA temperature.
 """
 
 import asyncio
@@ -26,27 +30,24 @@ from econext_gateway.thermostat.params import (
     TEMPERATURE_PARAM_INDEX,
     THERMOSTAT_PARAMS,
     ThermostatParam,
+    get_default_value,
+    get_status_byte,
 )
 
 logger = logging.getLogger(__name__)
-
-# Separator byte used between parameter values in GET_PARAMS responses.
-# Observed as 0xC2 in real protocol traffic.
-SEPARATOR_BYTE = b"\xc2"
 
 # Identity string for thermostat IDENTIFY_ANS responses.
 THERMOSTAT_IDENTITY = b"PLUM\x00EcoNEXT\x00\x00\x00\x00\x00"
 
 # SERVICE_ANS payload for pairing (0x2004 beacon response).
 # Format matches real ecoSTER: manufacturer\0model\0serial\0class\0sub\0version\0
-# Using distinct model name so panel shows it separately from real thermostats.
 THERMOSTAT_PAIRING_IDENTITY = (
-    b"PLUM Sp. z o.o.\x00"   # manufacturer (must match real)
-    b"ecoNext_VIRT\x00"       # virtual thermostat, distinguishes from real ecoSTER_40
-    b"0000000001\x00"         # serial number (unique, fake)
-    b"03\x00"                 # device class (same as real)
-    b"00\x00"                 # sub-class (same as real)
-    b"H0.0.1_S000.01_D0000__\x00"  # version string
+    b"PLUM Sp. z o.o.\x00"
+    b"ecoNext_VIRT\x00"
+    b"0000000001\x00"
+    b"03\x00"
+    b"00\x00"
+    b"H0.0.1_S000.01_D0000__\x00"
 )
 
 
@@ -74,19 +75,10 @@ class ThermostatEmulator:
         if param.index == TEMPERATURE_PARAM_INDEX:
             return self._vt.effective_temperature
 
-        # Return panel-written value if any, otherwise type-appropriate default
         if param.index in self._written_values:
             return self._written_values[param.index]
 
-        if param.type_code == DataType.FLOAT:
-            return 0.0
-        if param.type_code == DataType.DOUBLE:
-            return 0.0
-        if param.type_code == DataType.BOOL:
-            return False
-        if param.type_code == DataType.STRING:
-            return ""
-        return 0
+        return get_default_value(param)
 
     async def handle_frame(self, frame: Frame, write_fn) -> bool:
         """Handle a frame addressed to the thermostat.
@@ -149,13 +141,11 @@ class ThermostatEmulator:
         count = frame.data[0]
         start_index = struct.unpack("<H", frame.data[1:3])[0]
 
-        # Find params in the requested range
         params_in_range = [
             p for p in THERMOSTAT_PARAMS if start_index <= p.index < start_index + count
         ]
 
         if not params_in_range:
-            # No params in range -> send NO_DATA
             await self._respond(
                 frame.source, Command.NO_DATA, b"", write_fn
             )
@@ -180,7 +170,8 @@ class ThermostatEmulator:
     async def _handle_get_params(self, frame: Frame, write_fn) -> bool:
         """Respond to GET_PARAMS request.
 
-        The panel sends this to read current parameter values (including temperature).
+        The panel sends this to read current parameter values.
+        Response uses status-byte format: [count][start_LE] then [status][value] per param.
         """
         if len(frame.data) < 3:
             return False
@@ -188,7 +179,6 @@ class ThermostatEmulator:
         count = frame.data[0]
         start_index = struct.unpack("<H", frame.data[1:3])[0]
 
-        # Find params in the requested range
         params_in_range = [
             p for p in THERMOSTAT_PARAMS if start_index <= p.index < start_index + count
         ]
@@ -205,7 +195,7 @@ class ThermostatEmulator:
             return True
 
         values = [(p, self._get_param_value(p)) for p in params_in_range]
-        data = build_params_response(values, start_index)
+        data = build_params_response(values, start_index, self._written_values)
         await self._respond(
             frame.source, Command.GET_PARAMS_RESPONSE, data, write_fn
         )
@@ -221,16 +211,24 @@ class ThermostatEmulator:
         """Handle MODIFY_PARAM from panel.
 
         The panel writes configuration to the thermostat (schedules, comfort
-        temps, etc.). We ACK everything and store the values.
+        temps, etc.). We ACK everything and store the raw data bytes so we
+        can echo them back exactly in GET_PARAMS.
         """
-        # ACK the write with success byte
+        if frame.data and len(frame.data) >= 3:
+            param_index = struct.unpack("<H", frame.data[0:2])[0]
+            param = self._params.get(param_index)
+            if param is not None:
+                # Store the raw value bytes for exact echo-back
+                value_bytes = frame.data[2:]
+                self._written_values[param_index] = value_bytes
+                logger.debug(
+                    "Thermostat: stored MODIFY_PARAM idx=%d (%d bytes)",
+                    param_index,
+                    len(value_bytes),
+                )
+
         await self._respond(
             frame.source, Command.MODIFY_PARAM_RESPONSE, b"\x00", write_fn
-        )
-        logger.debug(
-            "Thermostat: ACK'd MODIFY_PARAM from %d (len=%d)",
-            frame.source,
-            len(frame.data) if frame.data else 0,
         )
         return True
 
@@ -253,24 +251,19 @@ def build_struct_with_range_response(
     buf.extend(struct.pack("<H", first_index))
 
     for p in params:
-        # Name (null-terminated)
         buf.extend(p.name.encode("utf-8"))
         buf.append(0x00)
 
-        # Unit string (null-terminated)
         buf.extend(p.unit_string.encode("utf-8"))
         buf.append(0x00)
 
-        # Type byte: low 4 bits = type code, bit 5 = writable flag
         type_byte = p.type_code & 0x0F
         if p.writable:
             type_byte |= 0x20
         buf.append(type_byte)
 
-        # Extra byte: 0x00 = literal min/max
-        buf.append(0x00)
+        buf.append(0x00)  # extra byte
 
-        # Min/max range as int16 LE
         buf.extend(struct.pack("<h", int(p.min_value)))
         buf.extend(struct.pack("<h", int(p.max_value)))
 
@@ -278,24 +271,35 @@ def build_struct_with_range_response(
 
 
 def build_params_response(
-    param_values: list[tuple[ThermostatParam, Any]], first_index: int
+    param_values: list[tuple[ThermostatParam, Any]],
+    first_index: int,
+    written_values: dict[int, Any] | None = None,
 ) -> bytes:
     """Build GET_PARAMS response payload.
 
-    Wire format:
-        [paramsNo][firstIndex_L][firstIndex_H][separator]
-        [param1_bytes][separator]
-        [param2_bytes][separator]
-        ...
+    Wire format (matching real ecoSTER):
+        [paramsNo][firstIndex_L][firstIndex_H]
+        For each param: [status_byte][value_bytes]
+
+    Status byte precedes each value (not a trailing separator).
     """
+    if written_values is None:
+        written_values = {}
+
     buf = bytearray()
     buf.append(len(param_values))
     buf.extend(struct.pack("<H", first_index))
-    buf.extend(SEPARATOR_BYTE)  # Header separator
 
     for param, value in param_values:
-        encoded = encode_value(value, param.type_code)
-        buf.extend(encoded)
-        buf.extend(SEPARATOR_BYTE)
+        was_written = param.index in written_values
+        status = get_status_byte(param, was_written)
+        buf.append(status)
+
+        # If we have raw bytes from MODIFY_PARAM, echo them exactly
+        if was_written and isinstance(written_values[param.index], (bytes, bytearray)):
+            buf.extend(written_values[param.index])
+        else:
+            encoded = encode_value(value, param.type_code)
+            buf.extend(encoded)
 
     return bytes(buf)

@@ -147,13 +147,13 @@ need to communicate with the same controller.
 
 #### Observed Bus Devices
 
-| Address | Role           | Observed Behavior                                                              |
-| ------- | -------------- | ------------------------------------------------------------------------------ |
-| 1       | Controller     | Responds to GET_PARAMS, GET_PARAMS_STRUCT, MODIFY_PARAM                        |
-| 100     | Master Panel   | Sends IDENTIFY probes, SERVICE frames, MODIFY_PARAM to controller              |
-| *       | Gateway        | Auto-claimed address via panel IDENTIFY scan (persisted to state dir)          |
+| Address | Role           | Observed Behavior                                                                          |
+| ------- | -------------- | ------------------------------------------------------------------------------------------ |
+| 1       | Controller     | Responds to GET_PARAMS, GET_PARAMS_STRUCT, MODIFY_PARAM                                    |
+| 100     | Master Panel   | Sends IDENTIFY probes, SERVICE frames, MODIFY_PARAM to controller                          |
+| *       | Gateway        | Auto-claimed address via panel IDENTIFY scan (persisted to state dir)                      |
 | 166-167 | Thermostat     | Room thermostat - panel-assigned addr (varies per pairing), queried with GET_PARAMS (0x40) |
-| 255     | Polling module | Continuously sends GET_PARAMS to controller (responses go to broadcast 0xFFFF) |
+| 255     | Polling module | Continuously sends GET_PARAMS to controller (responses go to broadcast 0xFFFF)             |
 
 #### Device Identification (IDENTIFY)
 
@@ -184,12 +184,12 @@ code is encoded as a little-endian uint16 in the first 2 bytes of the data paylo
 
 **Observed Service Functions:**
 
-| Function | Direction          | Destination          | Description                                              |
-| -------- | ------------------ | -------------------- | -------------------------------------------------------- |
-| 0x0801   | Panel -> Device    | Device address       | Token grant                                              |
-| 0x0023   | Panel -> Broadcast | 0xFFFF               | Clock/timer sync (20 bytes, includes date/time + flags)  |
-| 0x2001   | Panel -> Broadcast | 0xFFFF               | Device table broadcast (paired addresses + temperatures) |
-| 0x2004   | Panel -> Broadcast | 0xFFFF               | Pairing beacon (sent rapidly when panel is in pairing mode) |
+| Function | Direction          | Destination    | Description                                                 |
+| -------- | ------------------ | -------------- | ----------------------------------------------------------- |
+| 0x0801   | Panel -> Device    | Device address | Token grant                                                 |
+| 0x0023   | Panel -> Broadcast | 0xFFFF         | Clock/timer sync (20 bytes, includes date/time + flags)     |
+| 0x2001   | Panel -> Broadcast | 0xFFFF         | Device table broadcast (paired addresses + temperatures)    |
+| 0x2004   | Panel -> Broadcast | 0xFFFF         | Pairing beacon (sent rapidly when panel is in pairing mode) |
 
 **Token Grant (panel -> gateway):**
 - Source: 100 (master panel)
@@ -370,11 +370,61 @@ Panel -> Thermostat: GET_PARAMS (0x40) count=255, start=35
 Thermostat -> Panel: NO_DATA (0x7F)
 ```
 
-**Thermostat parameter data (ecoSTER 200, captured 2026-03-18):**
-- 35 parameters (indices 0-34)
-- Param 0: room temperature (float, e.g. 21.03)
-- Contains strings: serial number, HW version, SW version, build date
-- Last param: temperature correction offset (float, e.g. 0.3)
+**Thermostat parameter table (ecoSTER 200, captured 2026-03-18):**
+
+35 parameters decoded from GET_PARAMS_STRUCT_WITH_RANGE (cmd 0x02/0x82):
+
+| Idx  | Name         | Type          | Unit | RW  | Range   | Description                              |
+| ---- | ------------ | ------------- | ---- | --- | ------- | ---------------------------------------- |
+| 0    | IntrSens     | float         | 'C   | RO  | -       | Room temperature (internal sensor)       |
+| 1    | WorkMode     | uint8         |      | RW  | -       | Operating mode                           |
+| 2    | AlMsk        | uint32        |      | RW  | -       | Alarm mask                               |
+| 3    | PresetNow    | float         | 'C   | RO  | -       | Current active setpoint                  |
+| 4    | PrDay        | float         | 'C   | RW  | 10-35   | Day temperature preset                   |
+| 5    | PrNight      | float         | 'C   | RW  | 10-35   | Night temperature preset                 |
+| 6    | Hyst         | float         | 'C   | RW  | -4 to 4 | Hysteresis                               |
+| 7    | MonitA       | uint32        |      | RW  | -       | Monitor flags A                          |
+| 8    | MonitB       | uint32        |      | RW  | -       | Monitor flags B                          |
+| 9-22 | Schedule A/B | uint32/uint16 |      | RW  | -       | Weekly schedule (7 days x 2 slots)       |
+| 23   | ExtSens      | float         | 'C   | RO  | -       | External sensor temperature              |
+| 24   | FN           | string        |      | RW  | 0-11    | Friendly name                            |
+| 25   | HV           | string        |      | RO  | 0-7     | Hardware version (e.g. "H2.0.0")         |
+| 26   | SW           | string        |      | RO  | 0-8     | Software version (e.g. "S001.24")        |
+| 27   | (unnamed)    | string        |      | RO  | 0-21    | Build date (e.g. "Dec 28 2022 10:41:09") |
+| 28   | TestStart    | uint8         |      | RW  | 0-1     | Test trigger                             |
+| 29   | TestRes      | uint8         |      | RO  | -       | Test result                              |
+| 30   | Run          | uint32        | s    | RO  | -       | Runtime in seconds                       |
+| 31   | RstCause     | uint8         |      | RO  | -       | Last reset cause                         |
+| 32   | Rtc CV       | uint8         |      | RO  | -       | RTC calibration value                    |
+| 33   | Afrz         | float         | 'C   | RW  | 5-30    | Anti-freeze temperature                  |
+| 34   | Corr         | float         | 'C   | RW  | -4 to 4 | Temperature correction offset            |
+
+Schedule params: A slots are uint32 (4 bytes), B slots are uint16 (2 bytes).
+Each day has two schedule entries (A and B), ordered Sun through Sat.
+
+**GET_PARAMS response wire format (thermostat):**
+```
+[count(1)][start_index_LE(2)] then for each param: [status_byte][value_bytes]
+```
+
+The status byte precedes each value (not a trailing separator). Values observed:
+- `0x00`: default status (RO non-measured params, strings, counters)
+- `0x01`: writable settings that have been modified (presets, correction, anti-freeze)
+- `0x81`: measured/schedule values (temperature, schedules, monitors)
+
+**Data flow for thermostat parameters:**
+
+The panel is the source of truth for all thermostat configuration. On pairing and
+periodically, the panel writes schedules, presets, hysteresis, and other settings to
+the thermostat via MODIFY_PARAM (0x29). The thermostat stores these values and echoes
+them back when polled with GET_PARAMS (0x40).
+
+The only value the thermostat generates itself is the room temperature (param 0,
+IntrSens). All other writable params are panel-written config that the thermostat
+buffers and returns.
+
+For a virtual thermostat: accept all MODIFY_PARAM writes, store the values, return
+them in GET_PARAMS. Only param 0 is injected (from the HA temperature submission).
 
 **SERVICE 0x2001 device table format (partial decode):**
 ```

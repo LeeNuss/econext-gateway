@@ -94,7 +94,7 @@ class TestResponseBuilders:
                 index=0,
                 name="RoomTemp",
                 type_code=DataType.FLOAT,
-                unit_code=1,
+                unit_string="'C",
                 writable=False,
                 min_value=0,
                 max_value=50,
@@ -114,7 +114,7 @@ class TestResponseBuilders:
         # Parse unit
         next_null = data.index(b"\x00", null_pos + 1)
         unit = data[null_pos + 1 : next_null].decode("utf-8")
-        assert unit == "C"
+        assert unit == "'C"
 
         # Parse type byte
         type_byte = data[next_null + 1]
@@ -127,7 +127,7 @@ class TestResponseBuilders:
                 index=5,
                 name="Setpoint",
                 type_code=DataType.FLOAT,
-                unit_code=1,
+                unit_string="'C",
                 writable=True,
                 min_value=10,
                 max_value=30,
@@ -142,16 +142,16 @@ class TestResponseBuilders:
 
     def test_build_params_response(self):
         param = ThermostatParam(
-            index=0, name="RoomTemp", type_code=DataType.FLOAT, unit_code=1
+            index=0, name="RoomTemp", type_code=DataType.FLOAT, unit_string="'C"
         )
         values = [(param, 21.5)]
         data = build_params_response(values, first_index=0)
 
-        # Header
+        # Header: [count][start_LE]
         assert data[0] == 1  # paramsNo
         assert struct.unpack("<H", data[1:3])[0] == 0  # firstIndex
-        # Separator after header
-        assert data[3] == 0xC2
+        # Status byte before value
+        assert data[3] == 0x00  # STATUS_DEFAULT for IntrSens (index 0)
 
         # Decode the float value
         value_bytes = data[4:8]
@@ -165,11 +165,12 @@ class TestResponseBuilders:
         data = build_params_response(values, first_index=0)
 
         assert data[0] == 2  # 2 params
-        # After header (3) + separator (1) = offset 4
-        # Float: 4 bytes + separator (1) = 5 bytes
-        # uint8: 1 byte + separator (1)
+        # Format: [count(1)][start(2)] [status(1)][float(4)] [status(1)][uint8(1)]
+        # offset 3: status byte for param 0
+        # offset 4-7: float value
         float_val = decode_value(data[4:8], DataType.FLOAT)
         assert float_val == 20.0
+        # offset 8: status byte for param 1
         uint8_val = decode_value(data[9:10], DataType.UINT8)
         assert uint8_val == 55
 
