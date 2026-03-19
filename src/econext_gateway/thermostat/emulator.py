@@ -20,10 +20,7 @@ from econext_gateway.protocol.codec import encode_value
 from econext_gateway.protocol.constants import (
     IDENTIFY_ANS_CMD,
     IDENTIFY_CMD,
-    PANEL_ADDRESS,
-    TYPE_SIZES,
     Command,
-    DataType,
 )
 from econext_gateway.protocol.frames import Frame
 from econext_gateway.thermostat.params import (

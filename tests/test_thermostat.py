@@ -1,6 +1,5 @@
 """Tests for virtual thermostat: state holder, emulator, and API."""
 
-import asyncio
 import struct
 import time
 

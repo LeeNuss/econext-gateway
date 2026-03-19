@@ -12,9 +12,6 @@ Only param 0 (IntrSens) is injected from the HA temperature submission.
 
 from __future__ import annotations
 
-import math
-import struct
-import time
 from typing import Any
 
 from econext_gateway.protocol.constants import DataType
