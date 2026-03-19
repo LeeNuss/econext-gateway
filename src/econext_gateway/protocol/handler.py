@@ -904,20 +904,26 @@ class ProtocolHandler:
                 len(frame.data) if frame.data else 0,
             )
 
-            # THERMOSTAT CAPTURE: hex-dump full frame data for thermostat
-            # addresses to reverse-engineer the thermostat parameter table.
-            # Remove this block once capture is complete.
-            _THERMOSTAT_ADDRS = {165, 166}
+            # Log thermostat bus traffic (both real and virtual)
+            _THERMOSTAT_ADDRS = {165, 166, 167}
             if self._thermostat is not None and self._thermostat.address != 0:
                 _THERMOSTAT_ADDRS = _THERMOSTAT_ADDRS | {self._thermostat.address}
             if frame.source in _THERMOSTAT_ADDRS or frame.destination in _THERMOSTAT_ADDRS:
+                extra = ""
+                # Decode temperature from GET_PARAMS_RESP (first param is float temp)
+                if frame.command == 0xC0 and frame.data and len(frame.data) >= 8:
+                    try:
+                        temp = struct.unpack("<f", frame.data[4:8])[0]
+                        extra = f" temp={temp:.1f}"
+                    except Exception:
+                        pass
                 logger.info(
-                    "THERMO_CAPTURE src=%d dst=%d cmd=0x%02X len=%d data=%s",
+                    "THERMO src=%d dst=%d %s [%db]%s",
                     frame.source,
                     frame.destination,
-                    frame.command,
+                    _cmd_name(frame.command),
                     len(frame.data) if frame.data else 0,
-                    frame.data.hex() if frame.data else "",
+                    extra,
                 )
 
             # Track IDENTIFY responses from other devices (bus sniff)
@@ -1259,18 +1265,25 @@ class ProtocolHandler:
             # Any frame received resets the silence counter
             consecutive_silence = 0
 
-            # THERMOSTAT CAPTURE: log thermostat frames seen during polling
-            _THERMO = {165, 166}
+            # Log thermostat frames seen during polling
+            _THERMO = {165, 166, 167}
             if self._thermostat is not None and self._thermostat.address != 0:
                 _THERMO = _THERMO | {self._thermostat.address}
             if response.source in _THERMO or response.destination in _THERMO:
+                extra = ""
+                if response.command == 0xC0 and response.data and len(response.data) >= 8:
+                    try:
+                        temp = struct.unpack("<f", response.data[4:8])[0]
+                        extra = f" temp={temp:.1f}"
+                    except Exception:
+                        pass
                 logger.info(
-                    "THERMO_CAPTURE src=%d dst=%d cmd=0x%02X len=%d data=%s",
+                    "THERMO src=%d dst=%d %s [%db]%s",
                     response.source,
                     response.destination,
-                    response.command,
+                    _cmd_name(response.command),
                     len(response.data) if response.data else 0,
-                    response.data.hex() if response.data else "",
+                    extra,
                 )
 
             # Handle frames addressed to the virtual thermostat
