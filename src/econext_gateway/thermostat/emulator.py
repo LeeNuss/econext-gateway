@@ -54,7 +54,7 @@ def _build_pairing_identity() -> bytes:
         b"PLUM Sp. z o.o.\x00"
         + b"ecoSTER_41\x00"           # model (must match real for panel acceptance)
         + fn.encode() + b"\x00"       # serial number (different from real)
-        + b"04\x00"                   # device class (different from real 03 to avoid clash)
+        + b"03\x00"                   # device class (same as real ecoSTER)
         + b"00\x00"                   # sub-class
         + version.encode() + b"\x00"
     )

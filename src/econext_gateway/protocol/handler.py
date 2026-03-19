@@ -648,15 +648,17 @@ class ProtocolHandler:
         """
         if self._thermostat is None:
             return False
-        if self._thermostat_reg_state == "pairing_requested":
-            logger.info("Thermostat pairing already requested, waiting for beacon")
-            return False
 
-        # Reset current pairing so we can re-pair
+        # Always allow - reset any current state
         if self._thermostat_reg_state == "paired":
             logger.info(
                 "Resetting thermostat pairing (was at address %d)",
                 self._thermostat.address,
+            )
+        elif self._thermostat_reg_state not in ("unpaired", None):
+            logger.info(
+                "Resetting thermostat pairing state (was %s)",
+                self._thermostat_reg_state,
             )
         self._thermostat.address = 0
         # Keep _written_values - panel config and temperature survive re-pairing
