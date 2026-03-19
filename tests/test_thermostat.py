@@ -352,16 +352,21 @@ class TestThermostatEmulator:
 # ---------------------------------------------------------------------------
 
 
+class _FakeHandler:
+    """Minimal handler stub for API tests."""
+    _thermostat_reg_state = "unpaired"
+    _thermostat = None
+
+
 class TestThermostatApi:
     @pytest.fixture(autouse=True)
     def setup_app(self):
         from econext_gateway.main import app
 
-        vt = VirtualThermostat(max_age=300.0, stale_fallback=0.0)
+        vt = VirtualThermostat(max_age=300.0, stale_fallback=19.0)
         app_state.virtual_thermostat = vt
-        # Minimal app state for API tests
         app_state.settings = None
-        app_state.handler = None
+        app_state.handler = _FakeHandler()
         app_state.cache = None
         self.client = TestClient(app, raise_server_exceptions=False)
         yield
@@ -388,7 +393,9 @@ class TestThermostatApi:
         assert data["enabled"] is True
         assert data["temperature"] is None
         assert data["is_stale"] is True
-        assert data["effective_temperature"] == 0.0
+        assert data["effective_temperature"] == 19.0  # stale fallback
+        assert data["pairing_state"] == "unpaired"
+        assert data["bus_address"] is None
 
     def test_get_status_after_update(self):
         self.client.post("/api/thermostat/temperature", json={"temperature": 21.5})
@@ -397,6 +404,7 @@ class TestThermostatApi:
         assert data["temperature"] == 21.5
         assert data["is_stale"] is False
         assert data["effective_temperature"] == 21.5
+        assert data["pairing_state"] == "unpaired"
 
     def test_submit_missing_temperature(self):
         resp = self.client.post("/api/thermostat/temperature", json={})

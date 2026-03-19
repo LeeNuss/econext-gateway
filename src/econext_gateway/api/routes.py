@@ -139,18 +139,26 @@ async def request_thermostat_pairing(
     return {"success": True, "message": "Pairing requested, put panel in pairing mode within 60s"}
 
 
-@router.get("/thermostat/status", response_model=ThermostatStatusResponse)
+@router.get("/thermostat/status")
 async def get_thermostat_status(
     thermostat: VirtualThermostat = Depends(get_virtual_thermostat),
+    handler: ProtocolHandler = Depends(get_handler),
 ):
-    """Get virtual thermostat status."""
+    """Get virtual thermostat status including pairing state."""
     age = thermostat.age_seconds
-    return ThermostatStatusResponse(
-        enabled=True,
-        temperature=thermostat.temperature,
-        effective_temperature=thermostat.effective_temperature,
-        is_stale=thermostat.is_stale,
-        age_seconds=round(age, 1) if age is not None else None,
-        max_age_seconds=thermostat._max_age,
-        stale_fallback=thermostat._stale_fallback,
-    )
+
+    # Get pairing state and bus address from handler
+    pairing_state = getattr(handler, "_thermostat_reg_state", None)
+    emulator = getattr(handler, "_thermostat", None)
+    bus_address = emulator.address if emulator and emulator.address != 0 else None
+
+    return {
+        "enabled": True,
+        "temperature": thermostat.temperature,
+        "effective_temperature": thermostat.effective_temperature,
+        "is_stale": thermostat.is_stale,
+        "age_seconds": round(age, 1) if age is not None else None,
+        "max_age_seconds": thermostat._max_age,
+        "pairing_state": pairing_state,
+        "bus_address": bus_address,
+    }
