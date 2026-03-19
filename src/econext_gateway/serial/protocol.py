@@ -93,7 +93,7 @@ class GM3Protocol(asyncio.Protocol):
             frame_length = length + 6
 
             if frame_length > 1024:
-                logger.warning("Invalid frame length %d, discarding BEGIN marker", frame_length)
+                logger.debug("Invalid frame length %d, discarding BEGIN marker", frame_length)
                 del self._rx_buffer[0]
                 self._stats["frames_invalid"] += 1
                 continue
@@ -104,7 +104,7 @@ class GM3Protocol(asyncio.Protocol):
             frame_data = bytes(self._rx_buffer[:frame_length])
 
             if frame_data[-1] != END_FRAME:
-                logger.warning("Invalid END marker 0x%02X, discarding BEGIN marker", frame_data[-1])
+                logger.debug("Invalid END marker 0x%02X, discarding BEGIN marker", frame_data[-1])
                 del self._rx_buffer[0]
                 self._stats["frames_invalid"] += 1
                 continue
