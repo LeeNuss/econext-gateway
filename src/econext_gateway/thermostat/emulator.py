@@ -77,6 +77,8 @@ class ThermostatEmulator:
         self._params = {p.index: p for p in THERMOSTAT_PARAMS}
         # Values the panel has written to us via MODIFY_PARAM
         self._written_values: dict[int, Any] = {}
+        # Only serve struct once after pairing. Re-discovery resets panel temp to 0.
+        self._struct_served = False
 
     def _get_param_value(self, param: ThermostatParam) -> Any:
         """Get the current value for a parameter.
@@ -150,7 +152,9 @@ class ThermostatEmulator:
     async def _handle_get_struct(self, frame: Frame, write_fn) -> bool:
         """Respond to GET_PARAMS_STRUCT_WITH_RANGE request.
 
-        The panel sends this to discover what parameters we expose.
+        Only serves the struct once after pairing. Subsequent re-discovery
+        requests get NO_DATA because the panel resets the temperature to 0.0
+        when it re-discovers the struct.
         """
         if len(frame.data) < 3:
             return False
@@ -158,11 +162,23 @@ class ThermostatEmulator:
         count = frame.data[0]
         start_index = struct.unpack("<H", frame.data[1:3])[0]
 
+        # Block struct re-discovery after initial serve
+        if self._struct_served and start_index == 0:
+            await self._respond(
+                frame.source, Command.NO_DATA, b"", write_fn
+            )
+            logger.info("Thermostat: blocking struct re-discovery (already served)")
+            return True
+
         params_in_range = [
             p for p in THERMOSTAT_PARAMS if start_index <= p.index < start_index + count
         ]
 
         if not params_in_range:
+            # End of struct - mark as fully served
+            if self._struct_served is False and start_index > 0:
+                self._struct_served = True
+                logger.info("Thermostat: struct fully served, will block re-discovery")
             await self._respond(
                 frame.source, Command.NO_DATA, b"", write_fn
             )
