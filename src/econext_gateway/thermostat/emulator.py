@@ -49,7 +49,7 @@ def _build_pairing_identity() -> bytes:
     version = f"{hv}_{sw}_D6AFC__"
     return (
         b"PLUM Sp. z o.o.\x00"
-        + b"ecoSTER_41\x00"           # model (must match real for panel acceptance)
+        + b"ecoSTER_40\x00"           # model (same as real - panel caches struct for this model)
         + fn.encode() + b"\x00"       # serial number (different from real)
         + b"03\x00"                   # device class (same as real ecoSTER)
         + b"00\x00"                   # sub-class
