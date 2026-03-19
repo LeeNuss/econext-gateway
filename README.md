@@ -12,6 +12,7 @@ Local REST API gateway for heat pump controllers using a serial protocol. Runs o
 - 1870 parameters discovered in ~7 seconds
 - Read and write controller parameters via REST API
 - Alarm history support
+- Virtual thermostat emulation (submit HA temperature readings to the heat pump)
 - Runs as a systemd service
 - No cloud dependency
 
@@ -191,6 +192,56 @@ sudo systemctl restart econext-gateway
 - Only addresses in the panel peripheral range (105-130) are claimed.
 - Addresses already occupied by other devices on the bus are skipped.
 - Set `ECONEXT_LOG_LEVEL=DEBUG` to see all bus traffic, including IDENTIFY probes and token grants.
+
+## Virtual Thermostat
+
+The gateway can emulate a thermostat on the RS-485 bus, allowing Home Assistant to submit a room temperature that the heat pump controller uses for heating control. This is useful if you have multiple temperature sensors (e.g. Aqara) and want to use a weighted average instead of a single-point reading from a physical thermostat.
+
+### Setup
+
+1. Install with thermostat support enabled:
+   ```bash
+   sudo ./deploy/install.sh --pre
+   ```
+   Or set the environment variable manually: `ECONEXT_THERMOSTAT_ENABLED=true`
+
+2. Submit a temperature (e.g. from Home Assistant):
+   ```bash
+   curl -X POST http://your-gateway:8000/api/thermostat/temperature \
+     -H 'Content-Type: application/json' -d '{"temperature": 21.0}'
+   ```
+
+3. Trigger pairing via the API:
+   ```bash
+   curl -X POST http://your-gateway:8000/api/thermostat/pair
+   ```
+
+4. Enter pairing mode on the panel within 60 seconds. The gateway will pair as an `ecoSTER_41` thermostat.
+
+5. Assign the new thermostat to a circuit on the panel.
+
+### API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/thermostat/temperature` | Submit temperature reading (`{"temperature": 21.0}`) |
+| POST | `/api/thermostat/pair` | Request bus pairing (panel must be in pairing mode) |
+| GET | `/api/thermostat/status` | Get thermostat status (temperature, staleness, bus address) |
+
+### Home Assistant Integration
+
+The [ecoNEXT HA integration](https://github.com/LeeNuss/econext) (feature/virtual-thermostat branch) adds:
+
+- **Virtual Thermostat** device with a Pair button and Bus temperature sensor
+- **Entity selector** in integration settings to automatically submit a temperature sensor reading every 10 seconds
+- Configure via: Settings -> Integrations -> ecoNEXT -> gear icon -> select temperature sensor
+
+### Notes
+
+- The virtual thermostat coexists with real ecoSTER thermostats on separate circuits
+- The last submitted temperature is persisted to disk and survives gateway restarts
+- If Home Assistant stops sending updates, the last known temperature is kept (no fallback to 0)
+- Re-pairing is supported: press the Pair button again to get a new bus address
 
 ## Troubleshooting
 
