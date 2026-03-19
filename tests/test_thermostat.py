@@ -234,8 +234,8 @@ class TestThermostatEmulator:
         assert len(written_frames) == 1
         resp = written_frames[0]
         assert resp.command == Command.GET_PARAMS_STRUCT_WITH_RANGE_RESPONSE
-        # Should contain at least the header
-        assert resp.data[0] == len(THERMOSTAT_PARAMS)
+        # First batch should contain 14 params (matching real ecoSTER batching)
+        assert resp.data[0] == 14
 
     @pytest.mark.asyncio
     async def test_handle_get_struct_no_data(self, emulator):

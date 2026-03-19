@@ -149,11 +149,16 @@ class ThermostatEmulator:
         logger.info("Thermostat: responded to IDENTIFY from %d", frame.source)
         return True
 
+    # Max struct response size in bytes (excluding frame overhead).
+    # Real ecoSTER batches at ~230-234 bytes. Using 240 as limit produces
+    # identical batching: 14 params (230b), 16 params (234b), 5 params (73b).
+    MAX_STRUCT_RESPONSE_BYTES = 240
+
     async def _handle_get_struct(self, frame: Frame, write_fn) -> bool:
         """Respond to GET_PARAMS_STRUCT_WITH_RANGE request.
 
-        Always responds - blocking re-discovery causes the panel to stop
-        polling us entirely.
+        Batches the response to match the real ecoSTER thermostat's behavior.
+        The panel expects multiple batched responses, not all params at once.
         """
         if len(frame.data) < 3:
             return False
@@ -176,14 +181,27 @@ class ThermostatEmulator:
             )
             return True
 
-        data = build_struct_with_range_response(params_in_range, start_index)
+        # Limit batch size to match real thermostat response sizes.
+        # Calculate how many params fit within MAX_STRUCT_RESPONSE_BYTES.
+        batch = []
+        batch_size = 3  # header: count(1) + start_index(2)
+        for p in params_in_range:
+            # Each param: name\0 + unit\0 + type_byte + extra_byte + min(2) + max(2)
+            param_size = len(p.name) + len(p.unit_string) + 8
+            if batch_size + param_size > self.MAX_STRUCT_RESPONSE_BYTES and batch:
+                break
+            batch.append(p)
+            batch_size += param_size
+
+        data = build_struct_with_range_response(batch, start_index)
         await self._respond(
             frame.source, Command.GET_PARAMS_STRUCT_WITH_RANGE_RESPONSE, data, write_fn
         )
         logger.info(
-            "Thermostat: sent struct response for %d params starting at %d",
-            len(params_in_range),
+            "Thermostat: sent struct response for %d params starting at %d (%d bytes)",
+            len(batch),
             start_index,
+            len(data),
         )
         return True
 
