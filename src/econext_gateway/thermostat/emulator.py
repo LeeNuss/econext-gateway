@@ -175,8 +175,9 @@ class ThermostatEmulator:
                 command, len(data), data.hex(),
             )
 
-        # EXPERIMENT: skip flush/tcdrain -- just write and sleep for wire time
-        success = await write_fn(response, flush_after=False)
+        # flush_after=True drains TX to wire; clear_echo=False preserves RX
+        # buffer so the panel's next frame isn't destroyed on half-duplex bus.
+        success = await write_fn(response, flush_after=True, clear_echo=False)
         write_ms = (_time.monotonic() - t0) * 1000
 
         # Wait for the USB converter to physically transmit the bytes.

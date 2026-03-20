@@ -763,18 +763,17 @@ class ProtocolHandler:
         """
         if frame.command == IDENTIFY_CMD:
             # Panel is asking "who are you?" - respond with device identity
-            # 20ms delay for RS-485 bus turnaround (matches original webserver)
-            await asyncio.sleep(0.02)
             response = Frame(
                 destination=PANEL_ADDRESS,
                 command=IDENTIFY_ANS_CMD,
                 data=IDENTIFY_RESPONSE_DATA,
                 source=self._source_address,
             )
-            # flush_after=True drains TX; clear_echo=False avoids wiping RX
-            # where the panel's next frame may already be arriving (half-duplex).
-            # Echo frames are harmlessly parsed and skipped by the handler.
-            await self._connection.protocol.write_frame(response, flush_after=True, clear_echo=False)
+            # No flush: fire-and-forget write avoids blocking the event loop
+            # (~7ms tcdrain) which delays time-critical thermostat responses.
+            # The OS/USB driver drains TX asynchronously. clear_echo=False
+            # preserves RX buffer on the half-duplex bus.
+            await self._connection.protocol.write_frame(response, flush_after=False)
             logger.info("Responded to IDENTIFY from panel")
 
         elif frame.command == SERVICE_CMD:
@@ -1168,34 +1167,12 @@ class ProtocolHandler:
                 and frame.destination == self._thermostat.address
                 and frame.source == PANEL_ADDRESS
             ):
-                proto = self._connection.protocol
-                qsize = proto._frame_queue.qsize()
                 logger.info(
-                    "THERMO_WAIT src=%d dst=%d cmd=0x%02X len=%d data=%s rxbuf=%d qsize=%d inv=%d",
+                    "THERMO_WAIT src=%d dst=%d cmd=0x%02X len=%d data=%s",
                     frame.source, frame.destination, frame.command,
                     len(frame.data) if frame.data else 0,
                     frame.data.hex() if frame.data else "",
-                    len(proto._rx_buffer), qsize,
-                    proto._stats.get("frames_invalid", 0),
                 )
-                # TEMP DIAG: dump queue contents when backlogged
-                if qsize > 10:
-                    queued = []
-                    while not proto._frame_queue.empty():
-                        try:
-                            queued.append(proto._frame_queue.get_nowait())
-                        except asyncio.QueueEmpty:
-                            break
-                    summary: dict[str, int] = {}
-                    for f in queued:
-                        key = f"src={f.source},dst={f.destination},cmd=0x{f.command:02X}"
-                        summary[key] = summary.get(key, 0) + 1
-                    logger.info("THERMO_QUEUE_DUMP (%d frames): %s", len(queued), summary)
-                    for f in queued:
-                        try:
-                            proto._frame_queue.put_nowait(f)
-                        except asyncio.QueueFull:
-                            break
                 await self._thermostat.handle_frame(
                     frame, self._connection.protocol.write_frame
                 )
@@ -1205,8 +1182,17 @@ class ProtocolHandler:
             if frame.destination != self._source_address and frame.destination != 0xFFFF:
                 continue
 
-            # Handle panel frames (IDENTIFY and token grant)
+            # Handle panel frames (IDENTIFY and token grant).
+            # Defer IDENTIFY responses until after the event loop yields so
+            # time-critical thermostat frames (next in queue) get handled first.
+            # The panel retries IDENTIFY probes anyway; a ~20ms delay is fine.
             if frame.source == PANEL_ADDRESS:
+                if (
+                    frame.command == IDENTIFY_CMD
+                    and self._thermostat is not None
+                ):
+                    asyncio.ensure_future(self._handle_panel_frame(frame))
+                    continue
                 await self._handle_panel_frame(frame)
                 if self._has_token:
                     # Validate tentative address on first token

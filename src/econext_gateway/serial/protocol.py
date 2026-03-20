@@ -3,7 +3,7 @@
 import asyncio
 import logging
 
-from econext_gateway.protocol.constants import BEGIN_FRAME, END_FRAME, FRAME_MIN_LEN
+from econext_gateway.protocol.constants import BEGIN_FRAME, END_FRAME, FRAME_MIN_LEN, IDENTIFY_CMD
 from econext_gateway.protocol.frames import Frame
 
 logger = logging.getLogger(__name__)
@@ -30,6 +30,9 @@ class GM3Protocol(asyncio.Protocol):
         # (dst=65535, src=panel) are also kept for device table updates.
         self._keep_destinations = keep_destinations
         self._panel_address = panel_address
+        # Dedup consecutive IDENTIFY probes (cmd=0x09) to the same destination.
+        # The panel sends 3 identical probes; only the first needs queueing.
+        self._last_identify_dst: int | None = None
         self._stats = {
             "frames_read": 0,
             "frames_invalid": 0,
@@ -72,6 +75,14 @@ class GM3Protocol(asyncio.Protocol):
                         and not (dst == 65535 and frame.source == self._panel_address)):
                     self._stats["frames_filtered"] += 1
                     continue
+            # Dedup consecutive IDENTIFY probes to same dest.
+            if frame.command == IDENTIFY_CMD:
+                if frame.destination == self._last_identify_dst:
+                    self._stats["frames_filtered"] += 1
+                    continue
+                self._last_identify_dst = frame.destination
+            else:
+                self._last_identify_dst = None
             if self._frame_queue.full():
                 # Drop oldest frame to make room.
                 try:
