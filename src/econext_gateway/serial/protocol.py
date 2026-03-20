@@ -142,8 +142,19 @@ class GM3Protocol(asyncio.Protocol):
         except TimeoutError:
             return None
 
-    async def write_frame(self, frame: Frame, flush_after: bool = False) -> bool:
+    async def write_frame(
+        self, frame: Frame, flush_after: bool = False, clear_echo: bool = True,
+    ) -> bool:
         """Serialise *frame* onto the transport.
+
+        Args:
+            flush_after: Wait for TX to drain to wire (tcdrain) and optionally
+                clear the RX buffer.
+            clear_echo: When flush_after is True, also clear the RX input
+                buffer after flushing.  Set to False for thermostat responses
+                where the panel sends its next request immediately after
+                receiving our response -- reset_input_buffer() can race with
+                that next request and destroy it.
 
         Returns True on success, False when the transport is unavailable.
         """
@@ -159,12 +170,12 @@ class GM3Protocol(asyncio.Protocol):
                 serial_obj = getattr(self._transport, "serial", None)
                 if serial_obj is not None:
                     try:
-                        # Order matters for half-duplex RS-485:
-                        # 1. flush() -- block until TX buffer is drained to wire
-                        # 2. reset_input_buffer() -- discard echo/garbage that
-                        #    arrived during transmission
+                        # flush() -- block until TX buffer is drained to wire
                         serial_obj.flush()
-                        serial_obj.reset_input_buffer()
+                        if clear_echo:
+                            # reset_input_buffer() -- discard echo/garbage
+                            # that arrived during transmission
+                            serial_obj.reset_input_buffer()
                     except Exception as e:
                         logger.warning("Failed to flush serial port: %s", e)
 

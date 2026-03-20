@@ -150,7 +150,7 @@ class TestResponseBuilders:
         assert data[0] == 1  # paramsNo
         assert struct.unpack("<H", data[1:3])[0] == 0  # firstIndex
         # Status byte before value
-        assert data[3] == 0x00  # STATUS_DEFAULT for IntrSens (index 0)
+        assert data[3] == 0x00  # STATUS_DEFAULT for IntrSens (index 0, temperature)
 
         # Decode the float value
         value_bytes = data[4:8]
@@ -200,7 +200,7 @@ class TestThermostatEmulator:
         )
         written_frames = []
 
-        async def fake_write(f, flush_after=False):
+        async def fake_write(f, **kwargs):
             written_frames.append(f)
             return True
 
@@ -225,7 +225,7 @@ class TestThermostatEmulator:
         )
         written_frames = []
 
-        async def fake_write(f, flush_after=False):
+        async def fake_write(f, **kwargs):
             written_frames.append(f)
             return True
 
@@ -249,7 +249,7 @@ class TestThermostatEmulator:
         )
         written_frames = []
 
-        async def fake_write(f, flush_after=False):
+        async def fake_write(f, **kwargs):
             written_frames.append(f)
             return True
 
@@ -269,7 +269,7 @@ class TestThermostatEmulator:
         )
         written_frames = []
 
-        async def fake_write(f, flush_after=False):
+        async def fake_write(f, **kwargs):
             written_frames.append(f)
             return True
 
@@ -302,7 +302,7 @@ class TestThermostatEmulator:
         )
         written_frames = []
 
-        async def fake_write(f, flush_after=False):
+        async def fake_write(f, **kwargs):
             written_frames.append(f)
             return True
 
@@ -322,7 +322,7 @@ class TestThermostatEmulator:
         )
         written_frames = []
 
-        async def fake_write(f, flush_after=False):
+        async def fake_write(f, **kwargs):
             written_frames.append(f)
             return True
 

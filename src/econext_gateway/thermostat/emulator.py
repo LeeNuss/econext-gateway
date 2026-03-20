@@ -24,6 +24,7 @@ from econext_gateway.protocol.constants import (
 )
 from econext_gateway.protocol.frames import Frame
 from econext_gateway.thermostat.params import (
+    SCHEDULE_PARAM_RANGE,
     TEMPERATURE_PARAM_INDEX,
     THERMOSTAT_PARAMS,
     ThermostatParam,
@@ -79,6 +80,9 @@ class ThermostatEmulator:
         self._written_values: dict[int, Any] = {}
         # Only serve struct once after pairing. Re-discovery resets panel temp to 0.
         self._struct_served = False
+        # Uptime counter for param 30 (Run) - matches real thermostat behaviour
+        import time as _time
+        self._start_time = _time.monotonic()
 
     def _get_param_value(self, param: ThermostatParam) -> Any:
         """Get the current value for a parameter.
@@ -93,6 +97,15 @@ class ThermostatEmulator:
         # PresetNow (param 3) mirrors the HA temperature as current setpoint
         if param.index == 3:
             return self._vt.effective_temperature
+
+        # Run (param 30): uptime counter in seconds, like real thermostat
+        if param.index == 30:
+            import time as _time
+            return int(_time.monotonic() - self._start_time)
+
+        # Schedules (params 9-22): always return zeros like real thermostat
+        if param.index in SCHEDULE_PARAM_RANGE:
+            return 0
 
         if param.index in self._written_values:
             return self._written_values[param.index]
@@ -129,16 +142,53 @@ class ThermostatEmulator:
             )
             return False
 
+    # Baud rate for wire transmission time calculation.
+    BAUD_RATE = 115200
+    # Frame overhead: start(1) + len(1) + start(1) + dst(2) + src(2) + cmd(1) + crc(1) + end(1) = 10
+    FRAME_OVERHEAD = 10
+
     async def _respond(self, dest: int, command: int, data: bytes, write_fn) -> bool:
-        """Send a response frame with RS-485 turnaround delay."""
-        await asyncio.sleep(0.02)  # 20ms RS-485 turnaround
+        """Send a response frame.
+
+        After writing, waits for the actual wire transmission time.
+        USB-to-serial converters buffer data internally: tcdrain/flush()
+        returns when the kernel buffer reaches the USB device, NOT when
+        the bytes are physically on the RS-485 wire.  Without this wait,
+        we return to reading frames before our response has been transmitted,
+        and the panel's next request arrives before we've finished responding
+        to the current one.
+        """
+        import time as _time
+        t0 = _time.monotonic()
+
         response = Frame(
             destination=dest,
             command=command,
             data=data,
             source=self.address,
         )
-        success = await write_fn(response, flush_after=True)
+
+        # Log first 20 bytes of response data for comparison with real thermostat
+        if data:
+            logger.info(
+                "Thermostat: responding cmd=0x%02X %db hex=%s",
+                command, len(data), data.hex(),
+            )
+
+        success = await write_fn(response, flush_after=True, clear_echo=True)
+        write_ms = (_time.monotonic() - t0) * 1000
+
+        # Wait for the USB converter to physically transmit the bytes.
+        # 8N1 = 10 bits per byte.  Add a small margin for USB scheduling.
+        frame_bytes = len(data) + self.FRAME_OVERHEAD
+        wire_time = frame_bytes * 10 / self.BAUD_RATE
+        await asyncio.sleep(wire_time + 0.002)  # +2ms USB margin
+
+        total_ms = (_time.monotonic() - t0) * 1000
+        logger.info(
+            "Thermostat: write=%.1fms total=%.1fms (wire=%.1fms) %db success=%s",
+            write_ms, total_ms, wire_time * 1000, len(data), success,
+        )
         return success
 
     async def _handle_identify(self, frame: Frame, write_fn) -> bool:
@@ -245,25 +295,55 @@ class ThermostatEmulator:
         )
         return True
 
+    @staticmethod
+    def _skip_auth_prefix(data: bytes) -> bytes:
+        """Skip the auth prefix in MODIFY_PARAM data.
+
+        Panel sends: USER-001\\04096\\0<payload>
+        Two null-terminated strings followed by the actual param data.
+        """
+        try:
+            first_null = data.index(0)
+            second_null = data.index(0, first_null + 1)
+            return data[second_null + 1:]
+        except ValueError:
+            return data  # No auth prefix, use as-is
+
     async def _handle_modify_param(self, frame: Frame, write_fn) -> bool:
         """Handle MODIFY_PARAM from panel.
 
         The panel writes configuration to the thermostat (schedules, comfort
-        temps, etc.). We ACK everything and store the raw data bytes so we
-        can echo them back exactly in GET_PARAMS.
+        temps, etc.). Data format: auth prefix + count(1) + param_index(2) + value_bytes.
+        We store the raw value bytes so we can echo them back exactly in GET_PARAMS.
         """
         if frame.data and len(frame.data) >= 3:
-            param_index = struct.unpack("<H", frame.data[0:2])[0]
-            param = self._params.get(param_index)
-            if param is not None:
-                # Store the raw value bytes for exact echo-back
-                value_bytes = frame.data[2:]
-                self._written_values[param_index] = value_bytes
-                logger.info(
-                    "Thermostat: stored MODIFY_PARAM idx=%d (%d bytes)",
-                    param_index,
-                    len(value_bytes),
-                )
+            # Skip auth prefix (e.g., "USER-001\04096\0")
+            payload = self._skip_auth_prefix(frame.data)
+            logger.info(
+                "Thermostat: MODIFY_PARAM raw=%db payload=%db hex=%s",
+                len(frame.data),
+                len(payload),
+                payload.hex() if payload else "",
+            )
+            if len(payload) >= 3:
+                count = payload[0]
+                param_index = struct.unpack("<H", payload[1:3])[0]
+                value_bytes = payload[3:]
+                param = self._params.get(param_index)
+                if param is not None:
+                    self._written_values[param_index] = value_bytes
+                    logger.info(
+                        "Thermostat: stored MODIFY_PARAM idx=%d (%s, %d bytes): %s",
+                        param_index,
+                        param.name,
+                        len(value_bytes),
+                        value_bytes.hex(),
+                    )
+                else:
+                    logger.warning(
+                        "Thermostat: MODIFY_PARAM unknown param idx=%d",
+                        param_index,
+                    )
 
         await self._respond(
             frame.source, Command.MODIFY_PARAM_RESPONSE, b"\x00", write_fn
@@ -333,8 +413,13 @@ def build_params_response(
         status = get_status_byte(param, was_written)
         buf.append(status)
 
-        # If we have raw bytes from MODIFY_PARAM, echo them exactly
-        if was_written and isinstance(written_values[param.index], (bytes, bytearray)):
+        # Echo raw MODIFY_PARAM bytes, but not for schedules (real
+        # thermostat always returns zeros for schedules regardless)
+        if (
+            was_written
+            and param.index not in SCHEDULE_PARAM_RANGE
+            and isinstance(written_values[param.index], (bytes, bytearray))
+        ):
             buf.extend(written_values[param.index])
         else:
             encoded = encode_value(value, param.type_code)

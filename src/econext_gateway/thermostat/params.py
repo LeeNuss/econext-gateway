@@ -49,6 +49,9 @@ class ThermostatParam:
 # Index of the room temperature parameter.
 TEMPERATURE_PARAM_INDEX = 0
 
+# Schedule param range (7 days x 2 slots).
+SCHEDULE_PARAM_RANGE = range(9, 23)
+
 # Status bytes that precede each value in GET_PARAMS response.
 # From GM3 spec: b0=measured, b7=discontinuity.
 STATUS_DEFAULT = 0x00      # RO non-measured params, strings, counters
@@ -98,13 +101,13 @@ THERMOSTAT_PARAMS: list[ThermostatParam] = [
                     default="S001.24"),
     ThermostatParam(27, "", DataType.STRING, max_value=21,
                     default="Dec 28 2022 10:41:09"),
-    # Param 28-29: test
-    ThermostatParam(28, "TestStart", DataType.UINT8, writable=True, max_value=1),
+    # Param 28-29: test (TestStart is a trigger, not config - status must be 0x00)
+    ThermostatParam(28, "TestStart", DataType.UINT8, max_value=1),
     ThermostatParam(29, "TestRes", DataType.UINT8),
-    # Param 30-32: runtime and diagnostics
+    # Param 30-32: runtime and diagnostics (defaults match real ecoSTER capture)
     ThermostatParam(30, "Run", DataType.UINT32, "s"),
-    ThermostatParam(31, "RstCause", DataType.UINT8),
-    ThermostatParam(32, "Rtc CV", DataType.UINT8),
+    ThermostatParam(31, "RstCause", DataType.UINT8, default=15),
+    ThermostatParam(32, "Rtc CV", DataType.UINT8, default=2),
     # Param 33-34: anti-freeze and correction - panel-written
     ThermostatParam(33, "Afrz", DataType.FLOAT, "'C", writable=True, min_value=5, max_value=30, default=9.0),
     ThermostatParam(34, "Corr", DataType.FLOAT, "'C", writable=True, min_value=-4, max_value=4, default=0.0),
@@ -114,23 +117,34 @@ THERMOSTAT_PARAMS: list[ThermostatParam] = [
 def get_status_byte(param: ThermostatParam, was_written: bool) -> int:
     """Get the status byte for a param in the GET_PARAMS response.
 
-    Matches the real ecoSTER pattern observed in captures:
-    - 0x00: IntrSens (temp), ExtSens, PresetNow, strings, counters
-    - 0x01: writable params that have been written by panel
-    - 0x81: writable params with default/initial values
+    Matched byte-for-byte against real ecoSTER capture on bus addr 167:
+    - 0x00: dynamic values (IntrSens, PresetNow, ExtSens), read-only counters
+    - 0x01: params written by panel, or strings with built-in values
+    - 0x81: writable params with factory defaults, schedules, WorkMode
     """
     if param.index == TEMPERATURE_PARAM_INDEX:
         return STATUS_DEFAULT
     if param.index in (3, 23):  # PresetNow, ExtSens
         return STATUS_DEFAULT
+    # WorkMode: real thermostat always reports 0x81 even after panel writes it
+    if param.index == 1:
+        return STATUS_MEASURED
+    # Schedules: real thermostat always reports 0x81 (ignores panel writes)
+    if param.index in SCHEDULE_PARAM_RANGE:
+        return STATUS_MEASURED
+    # Afrz/Corr: real thermostat always reports 0x01 (treated as pre-configured)
+    if param.index in (33, 34):
+        return STATUS_MODIFIED
+    # Writable strings (FN/serial) get 0x01; read-only strings (HV, SW, Date) get 0x00
     if param.type_code == DataType.STRING:
-        return STATUS_MODIFIED if was_written else STATUS_DEFAULT
+        return STATUS_MODIFIED if param.writable else STATUS_DEFAULT
+    # Read-only non-string params (counters like Run, FLMon, ClMon)
     if not param.writable:
         return STATUS_DEFAULT
-    # Writable params: 0x01 if panel wrote them OR param has a non-zero default
-    # (mimics a thermostat that was already configured)
-    if was_written or param.default is not None:
+    # Writable params written by panel -> 0x01
+    if was_written:
         return STATUS_MODIFIED
+    # Writable params with factory defaults, not yet written -> 0x81
     return STATUS_MEASURED
 
 

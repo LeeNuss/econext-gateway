@@ -917,13 +917,20 @@ class ProtocolHandler:
                         extra = f" temp={temp:.1f}"
                     except Exception:
                         pass
+                # Show data hex for responses, and request data for GET_PARAMS
+                hex_dump = ""
+                if frame.command == 0xC0 and frame.data:
+                    hex_dump = f" hex={frame.data.hex()}"
+                elif frame.data:
+                    hex_dump = f" data={frame.data.hex()}"
                 logger.info(
-                    "THERMO src=%d dst=%d %s [%db]%s",
+                    "THERMO src=%d dst=%d %s [%db]%s%s",
                     frame.source,
                     frame.destination,
                     _cmd_name(frame.command),
                     len(frame.data) if frame.data else 0,
                     extra,
+                    hex_dump,
                 )
 
             # Track IDENTIFY responses from other devices (bus sniff)
@@ -1162,6 +1169,12 @@ class ProtocolHandler:
                 and frame.destination == self._thermostat.address
                 and frame.source == PANEL_ADDRESS
             ):
+                logger.info(
+                    "THERMO_WAIT src=%d dst=%d cmd=0x%02X len=%d data=%s",
+                    frame.source, frame.destination, frame.command,
+                    len(frame.data) if frame.data else 0,
+                    frame.data.hex() if frame.data else "",
+                )
                 await self._thermostat.handle_frame(
                     frame, self._connection.protocol.write_frame
                 )
@@ -1277,13 +1290,18 @@ class ProtocolHandler:
                         extra = f" temp={temp:.1f}"
                     except Exception:
                         pass
+                # Log full hex for real thermostat responses so we can compare with ours
+                hex_dump = ""
+                if response.source in _THERMO and response.command == 0xC0 and response.data:
+                    hex_dump = f" hex={response.data[:20].hex()}..."
                 logger.info(
-                    "THERMO src=%d dst=%d %s [%db]%s",
+                    "THERMO src=%d dst=%d %s [%db]%s%s",
                     response.source,
                     response.destination,
                     _cmd_name(response.command),
                     len(response.data) if response.data else 0,
                     extra,
+                    hex_dump,
                 )
 
             # Handle frames addressed to the virtual thermostat
