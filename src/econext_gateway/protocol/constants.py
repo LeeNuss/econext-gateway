@@ -15,8 +15,7 @@ FRAME_MIN_LEN = 11  # BEGIN(1) + LEN(2) + DA(2) + SA(1) + RSV(1) + CMD(1) + CRC(
 # Addresses
 # ============================================================================
 
-SRC_ADDRESS = 131  # Gateway source address
-DEST_ADDRESSES = [1, 2, 237]  # Standard controller addresses
+CONTROLLER_ADDRESS = 1  # Heat pump controller
 PANEL_ADDRESS = 100  # Display panel address
 
 # Valid address range for auto-registration (panel peripheral range)

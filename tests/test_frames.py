@@ -2,7 +2,7 @@
 
 import pytest
 
-from econext_gateway.protocol.constants import BEGIN_FRAME, END_FRAME, SRC_ADDRESS, Command
+from econext_gateway.protocol.constants import BEGIN_FRAME, END_FRAME, Command
 from econext_gateway.protocol.frames import Frame
 
 
@@ -42,13 +42,10 @@ class TestFrameConstruction:
         assert frame_bytes[3] == 0x02
         assert frame_bytes[4] == 0x01
 
-    def test_frame_source_address(self):
-        """Test source address defaults to SRC_ADDRESS."""
+    def test_frame_source_address_default(self):
+        """Test source address defaults to 0."""
         frame = Frame(destination=1, command=0x00, data=b"")
-        frame_bytes = frame.to_bytes()
-
-        # Byte 5 is source address low byte
-        assert frame_bytes[5] == SRC_ADDRESS
+        assert frame.source == 0
 
     def test_frame_custom_source_address(self):
         """Test source address can be overridden."""

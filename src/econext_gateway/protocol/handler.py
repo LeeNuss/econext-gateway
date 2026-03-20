@@ -24,7 +24,7 @@ from econext_gateway.protocol.codec import decode_value, encode_value
 from econext_gateway.protocol.constants import (
     ALARM_REQUEST_PREFIX,
     CLAIMABLE_ADDRESS_RANGE,
-    DEST_ADDRESSES,
+    CONTROLLER_ADDRESS,
     DEVICE_TABLE_FUNC,
     GET_TOKEN_FUNC,
     GIVE_BACK_TOKEN_DATA,
@@ -500,7 +500,7 @@ class ProtocolHandler:
         self,
         connection: GM3SerialTransport,
         cache: ParameterCache,
-        destination: int = DEST_ADDRESSES[0],
+        destination: int = CONTROLLER_ADDRESS,
         poll_interval: float = POLL_INTERVAL,
         request_timeout: float = REQUEST_TIMEOUT,
         params_per_request: int = 50,
