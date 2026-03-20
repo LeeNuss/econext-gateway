@@ -10,8 +10,6 @@ from econext_gateway.api.dependencies import app_state
 from econext_gateway.core.virtual_thermostat import VirtualThermostat
 from econext_gateway.protocol.codec import decode_value
 from econext_gateway.protocol.constants import (
-    IDENTIFY_ANS_CMD,
-    IDENTIFY_CMD,
     PANEL_ADDRESS,
     Command,
     DataType,
@@ -194,7 +192,7 @@ class TestThermostatEmulator:
     async def test_handle_identify(self, emulator):
         frame = Frame(
             destination=THERMOSTAT_ADDR,
-            command=IDENTIFY_CMD,
+            command=Command.IDENTIFY,
             data=b"",
             source=PANEL_ADDRESS,
         )
@@ -208,7 +206,7 @@ class TestThermostatEmulator:
         assert handled
         assert len(written_frames) == 1
         resp = written_frames[0]
-        assert resp.command == IDENTIFY_ANS_CMD
+        assert resp.command == Command.IDENTIFY_RESPONSE
         assert resp.destination == PANEL_ADDRESS
         assert resp.source == THERMOSTAT_ADDR
         assert resp.data == THERMOSTAT_IDENTITY
@@ -335,7 +333,7 @@ class TestThermostatEmulator:
     async def test_ignores_wrong_address(self, emulator):
         frame = Frame(
             destination=999,
-            command=IDENTIFY_CMD,
+            command=Command.IDENTIFY,
             data=b"",
             source=PANEL_ADDRESS,
         )

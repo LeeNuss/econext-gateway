@@ -21,10 +21,8 @@ from econext_gateway.protocol.constants import (
     CLAIMABLE_ADDRESS_RANGE,
     DEVICE_TABLE_FUNC,
     GET_TOKEN_FUNC,
-    IDENTIFY_CMD,
     PAIRING_BEACON_FUNC,
     PANEL_ADDRESS,
-    SERVICE_CMD,
     THERMOSTAT_CLAIMABLE_ADDRESS_RANGE,
     Command,
     DataType,
@@ -207,7 +205,7 @@ def _make_device_table_frame(*addresses: int) -> Frame:
     data = struct.pack("<H", DEVICE_TABLE_FUNC) + b"\x00\x00"
     for addr in addresses:
         data += struct.pack("<Hf", addr, 20.0)  # address + dummy temperature
-    frame = Frame(destination=0xFFFF, command=SERVICE_CMD, data=data)
+    frame = Frame(destination=0xFFFF, command=Command.SERVICE, data=data)
     frame.source = PANEL_ADDRESS
     return frame
 
@@ -489,10 +487,10 @@ class TestTokenIntegration:
         handler = make_handler(fake_conn, cache, token_required=True)
 
         # Panel probes us
-        fake_proto.queue_frame(PANEL_ADDRESS, IDENTIFY_CMD)
+        fake_proto.queue_frame(PANEL_ADDRESS, Command.IDENTIFY)
         # Panel grants token
         token_data = struct.pack("<H", GET_TOKEN_FUNC) + b"\x00\x00"
-        fake_proto.queue_frame(PANEL_ADDRESS, SERVICE_CMD, token_data)
+        fake_proto.queue_frame(PANEL_ADDRESS, Command.SERVICE, token_data)
         # Empty discovery (both spaces)
         fake_proto.queue_frame(1, Command.NO_DATA)
         fake_proto.queue_frame(PANEL_ADDRESS, Command.NO_DATA)
@@ -667,13 +665,13 @@ class TestRegistrationStateMachine:
         fake_proto._frame_queue.put_nowait(_make_device_table_frame(100, 166))
 
         # Panel scans address 112 (in claimable range)
-        identify_frame = Frame(destination=112, command=IDENTIFY_CMD, data=b"")
+        identify_frame = Frame(destination=112, command=Command.IDENTIFY, data=b"")
         identify_frame.source = PANEL_ADDRESS
         fake_proto._frame_queue.put_nowait(identify_frame)
 
         # Panel grants token to address 112
         token_data = struct.pack("<H", GET_TOKEN_FUNC) + b"\x00\x00"
-        token_frame = Frame(destination=112, command=SERVICE_CMD, data=token_data)
+        token_frame = Frame(destination=112, command=Command.SERVICE, data=token_data)
         token_frame.source = PANEL_ADDRESS
         fake_proto._frame_queue.put_nowait(token_frame)
 
@@ -704,7 +702,7 @@ class TestRegistrationStateMachine:
         fake_proto._frame_queue.put_nowait(_make_device_table_frame(100, 166))
 
         # Panel scans address 119 (in claimable range) -- gateway claims tentatively
-        identify_frame = Frame(destination=119, command=IDENTIFY_CMD, data=b"")
+        identify_frame = Frame(destination=119, command=Command.IDENTIFY, data=b"")
         identify_frame.source = PANEL_ADDRESS
         fake_proto._frame_queue.put_nowait(identify_frame)
 
@@ -732,7 +730,7 @@ class TestRegistrationStateMachine:
         )
 
         # Panel scans address 100 (reserved panel address)
-        identify_frame = Frame(destination=100, command=IDENTIFY_CMD, data=b"")
+        identify_frame = Frame(destination=100, command=Command.IDENTIFY, data=b"")
         identify_frame.source = PANEL_ADDRESS
         fake_proto._frame_queue.put_nowait(identify_frame)
 
@@ -767,7 +765,7 @@ class TestRegistrationStateMachine:
             paired_address_file=paired_file,
         )
 
-        identify_frame = Frame(destination=32, command=IDENTIFY_CMD, data=b"")
+        identify_frame = Frame(destination=32, command=Command.IDENTIFY, data=b"")
         identify_frame.source = PANEL_ADDRESS
         fake_proto._frame_queue.put_nowait(identify_frame)
 
@@ -791,7 +789,7 @@ class TestRegistrationStateMachine:
             paired_address_file=paired_file,
         )
 
-        identify_frame = Frame(destination=193, command=IDENTIFY_CMD, data=b"")
+        identify_frame = Frame(destination=193, command=Command.IDENTIFY, data=b"")
         identify_frame.source = PANEL_ADDRESS
         fake_proto._frame_queue.put_nowait(identify_frame)
 
@@ -810,7 +808,7 @@ class TestRegistrationStateMachine:
 def _make_pairing_beacon_frame() -> Frame:
     """Build a SERVICE 0x2004 pairing beacon broadcast from the panel."""
     data = struct.pack("<H", PAIRING_BEACON_FUNC) + b"\x00\x00"
-    frame = Frame(destination=0xFFFF, command=SERVICE_CMD, data=data)
+    frame = Frame(destination=0xFFFF, command=Command.SERVICE, data=data)
     frame.source = PANEL_ADDRESS
     return frame
 
@@ -836,7 +834,7 @@ class TestThermostatRegistration:
     @pytest.mark.asyncio
     async def test_thermostat_responds_to_pairing_beacon(self, fake_conn, fake_proto, cache):
         """Thermostat sends SERVICE_ANS when pairing beacon is detected."""
-        from econext_gateway.protocol.constants import SERVICE_ANS_CMD
+
 
         thermo_file = _make_empty_thermostat_file()
         emulator = _make_thermostat_emulator(address=0)
@@ -863,14 +861,14 @@ class TestThermostatRegistration:
 
         assert handler._thermostat_reg_state == "beacon_responded"
         # Should have written a SERVICE_ANS frame to the panel
-        service_ans = [w for w in fake_proto._writes if w.command == SERVICE_ANS_CMD]
+        service_ans = [w for w in fake_proto._writes if w.command == Command.SERVICE_RESPONSE]
         assert len(service_ans) == 1
         assert service_ans[0].destination == PANEL_ADDRESS
 
     @pytest.mark.asyncio
     async def test_thermostat_full_pairing_flow(self, fake_conn, fake_proto, cache):
         """Full pairing: beacon -> SERVICE_ANS -> 0x2005 address assignment -> paired."""
-        from econext_gateway.protocol.constants import PAIRING_ASSIGN_FUNC, SERVICE_ANS_CMD
+        from econext_gateway.protocol.constants import PAIRING_ASSIGN_FUNC
 
         thermo_file = _make_empty_thermostat_file()
         emulator = _make_thermostat_emulator(address=0)
@@ -890,7 +888,7 @@ class TestThermostatRegistration:
 
         # 2. Panel assigns address 165 via SERVICE 0x2005
         assign_data = struct.pack("<H", PAIRING_ASSIGN_FUNC) + b"\x00\x00" + struct.pack("<H", 165)
-        assign_frame = Frame(destination=0xFFFF, command=SERVICE_CMD, data=assign_data)
+        assign_frame = Frame(destination=0xFFFF, command=Command.SERVICE, data=assign_data)
         assign_frame.source = PANEL_ADDRESS
         fake_proto._frame_queue.put_nowait(assign_frame)
 
@@ -903,7 +901,7 @@ class TestThermostatRegistration:
         assert thermo_file.read_text().strip() == "165"
 
         # Should have written SERVICE_ANS twice: once for beacon, once for ACK
-        service_ans = [w for w in fake_proto._writes if w.command == SERVICE_ANS_CMD]
+        service_ans = [w for w in fake_proto._writes if w.command == Command.SERVICE_RESPONSE]
         assert len(service_ans) == 2
         # ACK should be from the assigned address
         assert service_ans[1].source == 165
@@ -911,7 +909,7 @@ class TestThermostatRegistration:
     @pytest.mark.asyncio
     async def test_thermostat_responds_only_once_to_beacons(self, fake_conn, fake_proto, cache):
         """Thermostat only responds to the first pairing beacon, not subsequent ones."""
-        from econext_gateway.protocol.constants import SERVICE_ANS_CMD
+
 
         thermo_file = _make_empty_thermostat_file()
         emulator = _make_thermostat_emulator(address=0)
@@ -933,13 +931,13 @@ class TestThermostatRegistration:
         await handler._wait_for_token()
 
         # Should have sent exactly one SERVICE_ANS
-        service_ans = [w for w in fake_proto._writes if w.command == SERVICE_ANS_CMD]
+        service_ans = [w for w in fake_proto._writes if w.command == Command.SERVICE_RESPONSE]
         assert len(service_ans) == 1
 
     @pytest.mark.asyncio
     async def test_thermostat_ignores_beacon_without_emulator(self, fake_conn, fake_proto, cache):
         """No SERVICE_ANS when thermostat emulator is not configured."""
-        from econext_gateway.protocol.constants import SERVICE_ANS_CMD
+
 
         handler = make_handler(
             fake_conn,
@@ -952,13 +950,13 @@ class TestThermostatRegistration:
         fake_proto._frame_queue.put_nowait(_make_pairing_beacon_frame())
         await handler._wait_for_token()
 
-        service_ans = [w for w in fake_proto._writes if w.command == SERVICE_ANS_CMD]
+        service_ans = [w for w in fake_proto._writes if w.command == Command.SERVICE_RESPONSE]
         assert len(service_ans) == 0
 
     @pytest.mark.asyncio
     async def test_thermostat_already_paired_skips_beacon(self, fake_conn, fake_proto, cache):
         """When thermostat has a persisted address, it does not respond to beacons."""
-        from econext_gateway.protocol.constants import SERVICE_ANS_CMD
+
 
         thermo_file = _make_empty_thermostat_file()
         emulator = _make_thermostat_emulator(address=167)  # Already has address
@@ -977,13 +975,13 @@ class TestThermostatRegistration:
         fake_proto._frame_queue.put_nowait(_make_pairing_beacon_frame())
         await handler._wait_for_token()
 
-        service_ans = [w for w in fake_proto._writes if w.command == SERVICE_ANS_CMD]
+        service_ans = [w for w in fake_proto._writes if w.command == Command.SERVICE_RESPONSE]
         assert len(service_ans) == 0
 
     @pytest.mark.asyncio
     async def test_thermostat_ignores_beacon_without_api_request(self, fake_conn, fake_proto, cache):
         """Thermostat does NOT respond to beacons unless pairing is requested via API."""
-        from econext_gateway.protocol.constants import SERVICE_ANS_CMD
+
 
         thermo_file = _make_empty_thermostat_file()
         emulator = _make_thermostat_emulator(address=0)
@@ -1003,7 +1001,7 @@ class TestThermostatRegistration:
         await handler._wait_for_token()
 
         assert handler._thermostat_reg_state == "unpaired"
-        service_ans = [w for w in fake_proto._writes if w.command == SERVICE_ANS_CMD]
+        service_ans = [w for w in fake_proto._writes if w.command == Command.SERVICE_RESPONSE]
         assert len(service_ans) == 0
 
     @pytest.mark.asyncio

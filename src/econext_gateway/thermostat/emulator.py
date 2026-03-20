@@ -17,11 +17,7 @@ from typing import Any
 
 from econext_gateway.core.virtual_thermostat import VirtualThermostat
 from econext_gateway.protocol.codec import encode_value
-from econext_gateway.protocol.constants import (
-    IDENTIFY_ANS_CMD,
-    IDENTIFY_CMD,
-    Command,
-)
+from econext_gateway.protocol.constants import Command
 from econext_gateway.protocol.frames import Frame
 from econext_gateway.thermostat.params import (
     SCHEDULE_PARAM_RANGE,
@@ -126,7 +122,7 @@ class ThermostatEmulator:
         if frame.destination != self.address:
             return False
 
-        if frame.command == IDENTIFY_CMD:
+        if frame.command == Command.IDENTIFY:
             return await self._handle_identify(frame, write_fn)
         elif frame.command == Command.GET_PARAMS_STRUCT_WITH_RANGE:
             return await self._handle_get_struct(frame, write_fn)
@@ -195,7 +191,7 @@ class ThermostatEmulator:
     async def _handle_identify(self, frame: Frame, write_fn) -> bool:
         """Respond to IDENTIFY probe from panel."""
         await self._respond(
-            frame.source, IDENTIFY_ANS_CMD, THERMOSTAT_IDENTITY, write_fn
+            frame.source, Command.IDENTIFY_RESPONSE, THERMOSTAT_IDENTITY, write_fn
         )
         logger.debug("Thermostat: responded to IDENTIFY from %d", frame.source)
         return True

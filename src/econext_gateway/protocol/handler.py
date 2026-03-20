@@ -28,8 +28,6 @@ from econext_gateway.protocol.constants import (
     DEVICE_TABLE_FUNC,
     GET_TOKEN_FUNC,
     GIVE_BACK_TOKEN_DATA,
-    IDENTIFY_ANS_CMD,
-    IDENTIFY_CMD,
     IDENTIFY_RESPONSE_DATA,
     PAIRING_ASSIGN_FUNC,
     PAIRING_BEACON_FUNC,
@@ -37,8 +35,6 @@ from econext_gateway.protocol.constants import (
     POLL_INTERVAL,
     REQUEST_TIMEOUT,
     RETRY_ATTEMPTS,
-    SERVICE_ANS_CMD,
-    SERVICE_CMD,
     THERMOSTAT_CLAIMABLE_ADDRESS_RANGE,
     TOKEN_TIMEOUT,
     TYPE_SIZES,
@@ -625,7 +621,7 @@ class ProtocolHandler:
         await asyncio.sleep(0.02)  # RS-485 turnaround
         response = Frame(
             destination=PANEL_ADDRESS,
-            command=SERVICE_ANS_CMD,
+            command=Command.SERVICE_RESPONSE,
             data=data,
             source=self.THERMOSTAT_PAIRING_ADDRESS,
         )
@@ -761,11 +757,11 @@ class ProtocolHandler:
         Args:
             frame: Frame from the panel addressed to us.
         """
-        if frame.command == IDENTIFY_CMD:
+        if frame.command == Command.IDENTIFY:
             # Panel is asking "who are you?" - respond with device identity
             response = Frame(
                 destination=PANEL_ADDRESS,
-                command=IDENTIFY_ANS_CMD,
+                command=Command.IDENTIFY_RESPONSE,
                 data=IDENTIFY_RESPONSE_DATA,
                 source=self._source_address,
             )
@@ -776,7 +772,7 @@ class ProtocolHandler:
             await self._connection.protocol.write_frame(response, flush_after=False)
             logger.info("Responded to IDENTIFY from panel")
 
-        elif frame.command == SERVICE_CMD:
+        elif frame.command == Command.SERVICE:
             func_code = 0
             if len(frame.data) >= 2:
                 func_code = struct.unpack("<H", frame.data[0:2])[0]
@@ -831,7 +827,7 @@ class ProtocolHandler:
         await asyncio.sleep(0.02)
         token_frame = Frame(
             destination=PANEL_ADDRESS,
-            command=SERVICE_CMD,
+            command=Command.SERVICE,
             data=GIVE_BACK_TOKEN_DATA,
             source=self._source_address,
         )
@@ -932,7 +928,7 @@ class ProtocolHandler:
                 )
 
             # Track IDENTIFY responses from other devices (bus sniff)
-            if frame.command == IDENTIFY_ANS_CMD and frame.destination == PANEL_ADDRESS:
+            if frame.command == Command.IDENTIFY_RESPONSE and frame.destination == PANEL_ADDRESS:
                 identity_str = _parse_identity(frame.data) if frame.data else ""
                 logger.debug(
                     "IDENTIFY_ANS from %d -> panel: identity=%r",
@@ -947,7 +943,7 @@ class ProtocolHandler:
                 dev.last_seen = loop.time()
 
             # Log all SERVICE frames with function codes
-            if frame.command == SERVICE_CMD and len(frame.data) >= 2:
+            if frame.command == Command.SERVICE and len(frame.data) >= 2:
                 func_code = struct.unpack("<H", frame.data[0:2])[0]
                 target_note = " (TO US)" if frame.destination == self._source_address else ""
                 logger.debug(
@@ -960,7 +956,7 @@ class ProtocolHandler:
 
             # Sniff device table broadcasts while waiting (even before we have
             # an address) so we know which addresses are already occupied.
-            if frame.source == PANEL_ADDRESS and frame.command == SERVICE_CMD and len(frame.data) >= 2:
+            if frame.source == PANEL_ADDRESS and frame.command == Command.SERVICE and len(frame.data) >= 2:
                 func_code = struct.unpack("<H", frame.data[0:2])[0]
                 if func_code == DEVICE_TABLE_FUNC:
                     entries = parse_device_table(frame.data)
@@ -996,7 +992,7 @@ class ProtocolHandler:
                     logger.info("Pairing mode detected (SERVICE 0x2004 beacon)")
 
             # Capture SERVICE_ANS frames during pairing (thermostat responses)
-            if frame.command == SERVICE_ANS_CMD and frame.destination == PANEL_ADDRESS:
+            if frame.command == Command.SERVICE_RESPONSE and frame.destination == PANEL_ADDRESS:
                 logger.debug(
                     "THERMO_CAPTURE SERVICE_ANS src=%d dst=%d len=%d data=%s",
                     frame.source,
@@ -1012,7 +1008,7 @@ class ProtocolHandler:
                 and pairing_mode_active
                 and self._thermostat is not None
                 and frame.source == PANEL_ADDRESS
-                and frame.command == SERVICE_CMD
+                and frame.command == Command.SERVICE
                 and len(frame.data) >= 2
                 and struct.unpack("<H", frame.data[0:2])[0] == PAIRING_BEACON_FUNC
             ):
@@ -1028,7 +1024,7 @@ class ProtocolHandler:
                 self._thermostat_reg_state == "beacon_responded"
                 and self._thermostat is not None
                 and frame.source == PANEL_ADDRESS
-                and frame.command == SERVICE_CMD
+                and frame.command == Command.SERVICE
                 and len(frame.data) >= 6
                 and struct.unpack("<H", frame.data[0:2])[0] == PAIRING_ASSIGN_FUNC
             ):
@@ -1044,7 +1040,7 @@ class ProtocolHandler:
                 await asyncio.sleep(0.02)
                 ack = Frame(
                     destination=PANEL_ADDRESS,
-                    command=SERVICE_ANS_CMD,
+                    command=Command.SERVICE_RESPONSE,
                     data=frame.data,  # Echo back the assignment data
                     source=assigned_addr,
                 )
@@ -1064,7 +1060,7 @@ class ProtocolHandler:
                 continue
 
             # Log all IDENTIFY probes from the panel
-            if frame.source == PANEL_ADDRESS and frame.command == IDENTIFY_CMD:
+            if frame.source == PANEL_ADDRESS and frame.command == Command.IDENTIFY:
                 logger.debug("Panel IDENTIFY probe to %d", frame.destination)
 
             # Auto-registration: when unpaired, intercept IDENTIFY probes from
@@ -1076,7 +1072,7 @@ class ProtocolHandler:
                 self._registration_state == "unpaired"
                 and device_table_seen
                 and frame.source == PANEL_ADDRESS
-                and frame.command == IDENTIFY_CMD
+                and frame.command == Command.IDENTIFY
                 and frame.destination != self._source_address
                 and frame.destination in CLAIMABLE_ADDRESS_RANGE
                 and frame.destination not in occupied
@@ -1112,7 +1108,7 @@ class ProtocolHandler:
                 and pairing_mode_active
                 and device_table_seen
                 and frame.source == PANEL_ADDRESS
-                and frame.command == IDENTIFY_CMD
+                and frame.command == Command.IDENTIFY
                 and frame.destination in THERMOSTAT_CLAIMABLE_ADDRESS_RANGE
                 and frame.destination not in occupied
                 and frame.destination != self._source_address
@@ -1188,7 +1184,7 @@ class ProtocolHandler:
             # The panel retries IDENTIFY probes anyway; a ~20ms delay is fine.
             if frame.source == PANEL_ADDRESS:
                 if (
-                    frame.command == IDENTIFY_CMD
+                    frame.command == Command.IDENTIFY
                     and self._thermostat is not None
                 ):
                     asyncio.ensure_future(self._handle_panel_frame(frame))
@@ -1331,7 +1327,7 @@ class ProtocolHandler:
             # Handle panel protocol frames (IDENTIFY and SERVICE for token)
             # Only intercept these specific commands; let data responses
             # (e.g., 0x81 struct response) through when querying the panel
-            if response.source == PANEL_ADDRESS and response.command in (IDENTIFY_CMD, SERVICE_CMD):
+            if response.source == PANEL_ADDRESS and response.command in (Command.IDENTIFY, Command.SERVICE):
                 await self._handle_panel_frame(response)
                 skipped += 1
                 continue
@@ -1635,9 +1631,9 @@ class ProtocolHandler:
                 while True:
                     data = ALARM_REQUEST_PREFIX + bytes([alarm_index & 0xFF])
                     response = await self.send_and_receive(
-                        SERVICE_CMD,
+                        Command.SERVICE,
                         data,
-                        expected_response=SERVICE_ANS_CMD,
+                        expected_response=Command.SERVICE_RESPONSE,
                         destination=PANEL_ADDRESS,
                     )
 

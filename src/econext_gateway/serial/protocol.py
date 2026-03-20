@@ -3,7 +3,7 @@
 import asyncio
 import logging
 
-from econext_gateway.protocol.constants import BEGIN_FRAME, END_FRAME, FRAME_MIN_LEN, IDENTIFY_CMD
+from econext_gateway.protocol.constants import BEGIN_FRAME, END_FRAME, FRAME_MIN_LEN, Command
 from econext_gateway.protocol.frames import Frame
 
 logger = logging.getLogger(__name__)
@@ -76,7 +76,7 @@ class GM3Protocol(asyncio.Protocol):
                     self._stats["frames_filtered"] += 1
                     continue
             # Dedup consecutive IDENTIFY probes to same dest.
-            if frame.command == IDENTIFY_CMD:
+            if frame.command == Command.IDENTIFY:
                 if frame.destination == self._last_identify_dst:
                     self._stats["frames_filtered"] += 1
                     continue

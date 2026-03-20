@@ -11,8 +11,6 @@ from econext_gateway.core.models import Alarm, Parameter
 from econext_gateway.protocol.constants import (
     ALARM_REQUEST_PREFIX,
     PANEL_ADDRESS,
-    SERVICE_ANS_CMD,
-    SERVICE_CMD,
     Command,
     DataType,
 )
@@ -1717,7 +1715,7 @@ class TestReadAlarms:
             nonlocal call_count
             resp_data = [alarm_0_data, alarm_1_data, null_data][call_count]
             call_count += 1
-            return Frame(destination=TEST_BUS_ADDRESS, command=SERVICE_ANS_CMD, data=resp_data)
+            return Frame(destination=TEST_BUS_ADDRESS, command=Command.SERVICE_RESPONSE, data=resp_data)
 
         handler.send_and_receive = mock_send
 
@@ -1736,7 +1734,7 @@ class TestReadAlarms:
         null_data = bytes([0]) + b"\xff\xff\xff\xff\xff\xff\xff" + b"\xff\xff\xff\xff\xff\xff\xff"
 
         async def mock_send(command, data, expected_response=None, destination=None, **kwargs):
-            frame = Frame(destination=TEST_BUS_ADDRESS, command=SERVICE_ANS_CMD, data=null_data)
+            frame = Frame(destination=TEST_BUS_ADDRESS, command=Command.SERVICE_RESPONSE, data=null_data)
             frame.source = PANEL_ADDRESS
             return frame
 
@@ -1765,7 +1763,7 @@ class TestReadAlarms:
         async def mock_send(command, data, expected_response=None, destination=None, **kwargs):
             sent_commands.append((command, data, destination))
             null_data = bytes([0]) + b"\xff\xff\xff\xff\xff\xff\xff" + b"\xff\xff\xff\xff\xff\xff\xff"
-            frame = Frame(destination=TEST_BUS_ADDRESS, command=SERVICE_ANS_CMD, data=null_data)
+            frame = Frame(destination=TEST_BUS_ADDRESS, command=Command.SERVICE_RESPONSE, data=null_data)
             frame.source = PANEL_ADDRESS
             return frame
 
@@ -1775,7 +1773,7 @@ class TestReadAlarms:
 
         assert len(sent_commands) == 1
         cmd, data, dest = sent_commands[0]
-        assert cmd == SERVICE_CMD
+        assert cmd == Command.SERVICE
         assert dest == PANEL_ADDRESS
         assert data == ALARM_REQUEST_PREFIX + bytes([0])  # index 0
 
