@@ -61,9 +61,20 @@ async def lifespan(app: FastAPI):
             logger.info("Thermostat emulator created, will auto-register during pairing")
 
     app_state.cache = ParameterCache()
+    # Whitelist: only queue frames addressed to our devices. All other bus
+    # traffic (ecoNET300, controller↔panel, broadcast polls) is dropped at
+    # the protocol level to keep the frame queue shallow for fast thermostat
+    # response. Panel broadcasts (dst=65535) are always kept for device table.
+    gateway_addr = _load_address(settings.paired_address_file)
+    our_addresses: set[int] = set()
+    if gateway_addr:
+        our_addresses.add(gateway_addr)  # gateway (e.g. 114)
+    if thermostat_emulator and thermostat_emulator.address:
+        our_addresses.add(thermostat_emulator.address)  # virtual thermostat (e.g. 164)
     app_state.connection = GM3SerialTransport(
         port=settings.serial_port,
         baudrate=settings.serial_baud,
+        keep_destinations=our_addresses or None,  # None = no filtering
     )
     app_state.handler = ProtocolHandler(
         connection=app_state.connection,

@@ -629,7 +629,7 @@ class ProtocolHandler:
             data=data,
             source=self.THERMOSTAT_PAIRING_ADDRESS,
         )
-        await self._connection.protocol.write_frame(response, flush_after=True)
+        await self._connection.protocol.write_frame(response, flush_after=True, clear_echo=False)
         logger.info(
             "Thermostat: sent SERVICE_ANS to panel from addr %d (%d bytes)",
             self.THERMOSTAT_PAIRING_ADDRESS,
@@ -771,11 +771,10 @@ class ProtocolHandler:
                 data=IDENTIFY_RESPONSE_DATA,
                 source=self._source_address,
             )
-            # flush_after=True ensures proper RS-485 handling:
-            # 1. Clears RX buffer (flushInput) to discard any garbage during turnaround
-            # 2. Waits for TX buffer to empty (flush) to ensure data is fully transmitted
-            # This matches the original webserver's clearFrameBuffer() + flush() sequence
-            await self._connection.protocol.write_frame(response, flush_after=True)
+            # flush_after=True drains TX; clear_echo=False avoids wiping RX
+            # where the panel's next frame may already be arriving (half-duplex).
+            # Echo frames are harmlessly parsed and skipped by the handler.
+            await self._connection.protocol.write_frame(response, flush_after=True, clear_echo=False)
             logger.info("Responded to IDENTIFY from panel")
 
         elif frame.command == SERVICE_CMD:
@@ -1050,7 +1049,7 @@ class ProtocolHandler:
                     data=frame.data,  # Echo back the assignment data
                     source=assigned_addr,
                 )
-                await self._connection.protocol.write_frame(ack, flush_after=True)
+                await self._connection.protocol.write_frame(ack, flush_after=True, clear_echo=False)
                 # Register in device registry so it shows identity in bus device list
                 from econext_gateway.thermostat.emulator import THERMOSTAT_IDENTITY
                 self._device_registry[assigned_addr] = BusDevice(
@@ -1169,12 +1168,34 @@ class ProtocolHandler:
                 and frame.destination == self._thermostat.address
                 and frame.source == PANEL_ADDRESS
             ):
+                proto = self._connection.protocol
+                qsize = proto._frame_queue.qsize()
                 logger.info(
-                    "THERMO_WAIT src=%d dst=%d cmd=0x%02X len=%d data=%s",
+                    "THERMO_WAIT src=%d dst=%d cmd=0x%02X len=%d data=%s rxbuf=%d qsize=%d inv=%d",
                     frame.source, frame.destination, frame.command,
                     len(frame.data) if frame.data else 0,
                     frame.data.hex() if frame.data else "",
+                    len(proto._rx_buffer), qsize,
+                    proto._stats.get("frames_invalid", 0),
                 )
+                # TEMP DIAG: dump queue contents when backlogged
+                if qsize > 10:
+                    queued = []
+                    while not proto._frame_queue.empty():
+                        try:
+                            queued.append(proto._frame_queue.get_nowait())
+                        except asyncio.QueueEmpty:
+                            break
+                    summary: dict[str, int] = {}
+                    for f in queued:
+                        key = f"src={f.source},dst={f.destination},cmd=0x{f.command:02X}"
+                        summary[key] = summary.get(key, 0) + 1
+                    logger.info("THERMO_QUEUE_DUMP (%d frames): %s", len(queued), summary)
+                    for f in queued:
+                        try:
+                            proto._frame_queue.put_nowait(f)
+                        except asyncio.QueueFull:
+                            break
                 await self._thermostat.handle_frame(
                     frame, self._connection.protocol.write_frame
                 )

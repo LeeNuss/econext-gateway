@@ -175,7 +175,8 @@ class ThermostatEmulator:
                 command, len(data), data.hex(),
             )
 
-        success = await write_fn(response, flush_after=True, clear_echo=True)
+        # EXPERIMENT: skip flush/tcdrain -- just write and sleep for wire time
+        success = await write_fn(response, flush_after=False)
         write_ms = (_time.monotonic() - t0) * 1000
 
         # Wait for the USB converter to physically transmit the bytes.

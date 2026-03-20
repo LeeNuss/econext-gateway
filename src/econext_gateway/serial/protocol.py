@@ -19,16 +19,21 @@ class GM3Protocol(asyncio.Protocol):
     Writing is serialised through an asyncio.Lock.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, keep_destinations: set[int] | None = None, panel_address: int = 100) -> None:
         self._transport: asyncio.Transport | None = None
         self._rx_buffer = bytearray()
         self._frame_queue: asyncio.Queue[Frame | None] = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
         self._write_lock = asyncio.Lock()
         self._connected_event = asyncio.Event()
         self._disconnected_event = asyncio.Event()
+        # Whitelist: only queue frames addressed to us. Panel broadcasts
+        # (dst=65535, src=panel) are also kept for device table updates.
+        self._keep_destinations = keep_destinations
+        self._panel_address = panel_address
         self._stats = {
             "frames_read": 0,
             "frames_invalid": 0,
+            "frames_filtered": 0,
             "bytes_read": 0,
             "frames_written": 0,
         }
@@ -60,6 +65,13 @@ class GM3Protocol(asyncio.Protocol):
             if frame is None:
                 break
             self._stats["frames_read"] += 1
+            # Only keep frames addressed to us (or panel broadcasts).
+            if self._keep_destinations is not None:
+                dst = frame.destination
+                if (dst not in self._keep_destinations
+                        and not (dst == 65535 and frame.source == self._panel_address)):
+                    self._stats["frames_filtered"] += 1
+                    continue
             if self._frame_queue.full():
                 # Drop oldest frame to make room.
                 try:

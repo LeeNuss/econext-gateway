@@ -143,7 +143,7 @@ class FakeProtocol:
         except TimeoutError:
             return None
 
-    async def write_frame(self, frame: Frame, flush_after: bool = False) -> bool:
+    async def write_frame(self, frame: Frame, flush_after: bool = False, clear_echo: bool = True) -> bool:
         self._writes.append(frame)
         return True
 
