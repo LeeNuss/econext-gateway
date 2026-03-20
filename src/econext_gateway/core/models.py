@@ -211,13 +211,13 @@ class ThermostatStatusResponse(BaseModel):
 
     enabled: bool = Field(..., description="Whether virtual thermostat is enabled")
     temperature: float | None = Field(None, description="Current temperature value")
-    effective_temperature: float = Field(
-        ..., description="Temperature being reported on the bus (may be fallback)"
-    )
+    effective_temperature: float = Field(..., description="Temperature being reported on the bus (may be fallback)")
     is_stale: bool = Field(..., description="Whether the temperature reading is stale")
     age_seconds: float | None = Field(None, description="Seconds since last update")
     max_age_seconds: float = Field(..., description="Staleness threshold")
-    stale_fallback: float = Field(..., description="Temperature reported when stale")
+    stale_fallback: float = Field(..., description="Temperature reported when no reading received")
+    pairing_state: str | None = Field(None, description="Thermostat pairing state")
+    bus_address: int | None = Field(None, description="Assigned bus address")
 
 
 class HealthResponse(BaseModel):

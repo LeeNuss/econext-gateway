@@ -13,6 +13,7 @@ back. Only param 0 (IntrSens) is injected from the HA temperature.
 import asyncio
 import logging
 import struct
+import time as _time
 from typing import Any
 
 from econext_gateway.core.virtual_thermostat import VirtualThermostat
@@ -40,17 +41,19 @@ def _build_pairing_identity() -> bytes:
     Format: manufacturer\\0model\\0serial\\0class\\0sub\\0version\\0
     Assembled from the same defaults used in the parameter table.
     """
-    fn = get_default_value(THERMOSTAT_PARAMS[24])   # FN (serial)
-    hv = get_default_value(THERMOSTAT_PARAMS[25])   # HV
-    sw = get_default_value(THERMOSTAT_PARAMS[26])   # SW
+    fn = get_default_value(THERMOSTAT_PARAMS[24])  # FN (serial)
+    hv = get_default_value(THERMOSTAT_PARAMS[25])  # HV
+    sw = get_default_value(THERMOSTAT_PARAMS[26])  # SW
     version = f"{hv}_{sw}_D6AFC__"
     return (
         b"PLUM Sp. z o.o.\x00"
-        + b"ecoSTER_40\x00"           # model (same as real - panel caches struct for this model)
-        + fn.encode() + b"\x00"       # serial number (different from real)
-        + b"03\x00"                   # device class (same as real ecoSTER)
-        + b"00\x00"                   # sub-class
-        + version.encode() + b"\x00"
+        + b"ecoSTER_40\x00"  # model (same as real - panel caches struct for this model)
+        + fn.encode()
+        + b"\x00"  # serial number (different from real)
+        + b"03\x00"  # device class (same as real ecoSTER)
+        + b"00\x00"  # sub-class
+        + version.encode()
+        + b"\x00"
     )
 
 
@@ -77,7 +80,7 @@ class ThermostatEmulator:
         # Only serve struct once after pairing. Re-discovery resets panel temp to 0.
         self._struct_served = False
         # Uptime counter for param 30 (Run) - matches real thermostat behaviour
-        import time as _time
+
         self._start_time = _time.monotonic()
 
     def _get_param_value(self, param: ThermostatParam) -> Any:
@@ -96,7 +99,6 @@ class ThermostatEmulator:
 
         # Run (param 30): uptime counter in seconds, like real thermostat
         if param.index == 30:
-            import time as _time
             return int(_time.monotonic() - self._start_time)
 
         # Schedules (params 9-22): always return zeros like real thermostat
@@ -154,7 +156,7 @@ class ThermostatEmulator:
         and the panel's next request arrives before we've finished responding
         to the current one.
         """
-        import time as _time
+
         t0 = _time.monotonic()
 
         response = Frame(
@@ -167,7 +169,9 @@ class ThermostatEmulator:
         if data:
             logger.debug(
                 "Thermostat: responding cmd=0x%02X %db hex=%s",
-                command, len(data), data.hex(),
+                command,
+                len(data),
+                data.hex(),
             )
 
         # flush_after=True drains TX to wire; clear_echo=False preserves RX
@@ -184,15 +188,17 @@ class ThermostatEmulator:
         total_ms = (_time.monotonic() - t0) * 1000
         logger.debug(
             "Thermostat: write=%.1fms total=%.1fms (wire=%.1fms) %db success=%s",
-            write_ms, total_ms, wire_time * 1000, len(data), success,
+            write_ms,
+            total_ms,
+            wire_time * 1000,
+            len(data),
+            success,
         )
         return success
 
     async def _handle_identify(self, frame: Frame, write_fn) -> bool:
         """Respond to IDENTIFY probe from panel."""
-        await self._respond(
-            frame.source, Command.IDENTIFY_RESPONSE, THERMOSTAT_IDENTITY, write_fn
-        )
+        await self._respond(frame.source, Command.IDENTIFY_RESPONSE, THERMOSTAT_IDENTITY, write_fn)
         logger.debug("Thermostat: responded to IDENTIFY from %d", frame.source)
         return True
 
@@ -213,14 +219,10 @@ class ThermostatEmulator:
         count = frame.data[0]
         start_index = struct.unpack("<H", frame.data[1:3])[0]
 
-        params_in_range = [
-            p for p in THERMOSTAT_PARAMS if start_index <= p.index < start_index + count
-        ]
+        params_in_range = [p for p in THERMOSTAT_PARAMS if start_index <= p.index < start_index + count]
 
         if not params_in_range:
-            await self._respond(
-                frame.source, Command.NO_DATA, b"", write_fn
-            )
+            await self._respond(frame.source, Command.NO_DATA, b"", write_fn)
             logger.debug(
                 "Thermostat: NO_DATA for struct request start=%d count=%d",
                 start_index,
@@ -241,9 +243,7 @@ class ThermostatEmulator:
             batch_size += param_size
 
         data = build_struct_with_range_response(batch, start_index)
-        await self._respond(
-            frame.source, Command.GET_PARAMS_STRUCT_WITH_RANGE_RESPONSE, data, write_fn
-        )
+        await self._respond(frame.source, Command.GET_PARAMS_STRUCT_WITH_RANGE_RESPONSE, data, write_fn)
         logger.debug(
             "Thermostat: sent struct response for %d params starting at %d (%d bytes)",
             len(batch),
@@ -264,14 +264,10 @@ class ThermostatEmulator:
         count = frame.data[0]
         start_index = struct.unpack("<H", frame.data[1:3])[0]
 
-        params_in_range = [
-            p for p in THERMOSTAT_PARAMS if start_index <= p.index < start_index + count
-        ]
+        params_in_range = [p for p in THERMOSTAT_PARAMS if start_index <= p.index < start_index + count]
 
         if not params_in_range:
-            await self._respond(
-                frame.source, Command.NO_DATA, b"", write_fn
-            )
+            await self._respond(frame.source, Command.NO_DATA, b"", write_fn)
             logger.debug(
                 "Thermostat: NO_DATA for params request start=%d count=%d",
                 start_index,
@@ -281,9 +277,7 @@ class ThermostatEmulator:
 
         values = [(p, self._get_param_value(p)) for p in params_in_range]
         data = build_params_response(values, start_index, self._written_values)
-        await self._respond(
-            frame.source, Command.GET_PARAMS_RESPONSE, data, write_fn
-        )
+        await self._respond(frame.source, Command.GET_PARAMS_RESPONSE, data, write_fn)
         logger.info(
             "Thermostat: sent %d param values (temp=%.2f) starting at %d",
             len(params_in_range),
@@ -302,7 +296,7 @@ class ThermostatEmulator:
         try:
             first_null = data.index(0)
             second_null = data.index(0, first_null + 1)
-            return data[second_null + 1:]
+            return data[second_null + 1 :]
         except ValueError:
             return data  # No auth prefix, use as-is
 
@@ -323,7 +317,7 @@ class ThermostatEmulator:
                 payload.hex() if payload else "",
             )
             if len(payload) >= 3:
-                count = payload[0]
+                # payload[0] is count (always 1 for single-param writes)
                 param_index = struct.unpack("<H", payload[1:3])[0]
                 value_bytes = payload[3:]
                 param = self._params.get(param_index)
@@ -342,15 +336,11 @@ class ThermostatEmulator:
                         param_index,
                     )
 
-        await self._respond(
-            frame.source, Command.MODIFY_PARAM_RESPONSE, b"\x00", write_fn
-        )
+        await self._respond(frame.source, Command.MODIFY_PARAM_RESPONSE, b"\x00", write_fn)
         return True
 
 
-def build_struct_with_range_response(
-    params: list[ThermostatParam], first_index: int
-) -> bytes:
+def build_struct_with_range_response(params: list[ThermostatParam], first_index: int) -> bytes:
     """Build GET_PARAMS_STRUCT_WITH_RANGE response payload.
 
     Wire format:

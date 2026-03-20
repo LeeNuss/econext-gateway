@@ -44,6 +44,16 @@ class VirtualThermostat:
         return self._updated_at
 
     @property
+    def max_age(self) -> float:
+        """Staleness threshold in seconds."""
+        return self._max_age
+
+    @property
+    def stale_fallback(self) -> float:
+        """Temperature reported when no reading has ever been received."""
+        return self._stale_fallback
+
+    @property
     def age_seconds(self) -> float | None:
         """Seconds since last update, or None if never updated."""
         if self._updated_at is None:
@@ -101,8 +111,7 @@ class VirtualThermostat:
             temp = float(text)
             self._temperature = round(temp, 2)
             self._updated_at = time.monotonic()  # Treat as fresh until HA refreshes
-            # Don't set _updated_at - value is stale until HA refreshes
-            logger.info("Loaded persisted temperature: %.2f (stale until HA updates)", temp)
+            logger.info("Loaded persisted temperature: %.2f (fresh until max_age)", temp)
         except (FileNotFoundError, ValueError):
             pass
 

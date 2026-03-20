@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import struct
+import time as _time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -69,6 +70,54 @@ _CMD_NAMES: dict[int, str] = {
 
 def _cmd_name(cmd: int) -> str:
     return _CMD_NAMES.get(cmd, f"0x{cmd:02X}")
+
+
+# Known real thermostat addresses on the bus (for debug logging)
+_KNOWN_THERMOSTAT_ADDRS = frozenset({165, 166, 167})
+
+
+def _log_thermostat_frame(
+    frame: Frame,
+    thermostat_addrs: frozenset[int],
+    *,
+    truncate_hex: bool = False,
+) -> None:
+    """Log thermostat-related bus traffic at DEBUG level.
+
+    Args:
+        frame: The bus frame to log.
+        thermostat_addrs: Set of thermostat addresses (known + virtual).
+        truncate_hex: If True, truncate hex dump (used during polling).
+    """
+    if frame.source not in thermostat_addrs and frame.destination not in thermostat_addrs:
+        return
+
+    extra = ""
+    if frame.command == 0xC0 and frame.data and len(frame.data) >= 8:
+        try:
+            temp = struct.unpack("<f", frame.data[4:8])[0]
+            extra = f" temp={temp:.1f}"
+        except struct.error:
+            pass
+
+    hex_dump = ""
+    if frame.command == 0xC0 and frame.data:
+        if truncate_hex and frame.source in thermostat_addrs:
+            hex_dump = f" hex={frame.data[:20].hex()}..."
+        else:
+            hex_dump = f" hex={frame.data.hex()}"
+    elif frame.data:
+        hex_dump = f" data={frame.data.hex()}"
+
+    logger.debug(
+        "THERMO src=%d dst=%d %s [%db]%s%s",
+        frame.source,
+        frame.destination,
+        _cmd_name(frame.command),
+        len(frame.data) if frame.data else 0,
+        extra,
+        hex_dump,
+    )
 
 
 class ParamStructEntry:
@@ -665,7 +714,7 @@ class ProtocolHandler:
                 pass
 
         self._thermostat_reg_state = "pairing_requested"
-        self._thermostat_tentative_since = asyncio.get_event_loop().time()
+        self._thermostat_tentative_since = asyncio.get_running_loop().time()
         logger.info("Thermostat pairing requested via API, waiting for 0x2004 beacon")
         return True
 
@@ -679,6 +728,58 @@ class ProtocolHandler:
             logger.info("Saved thermostat address %d to %s", address, self._thermostat_address_file)
         except OSError as e:
             logger.warning("Failed to save thermostat address: %s", e)
+
+    def _process_device_table(self, data: bytes, now: float) -> list[DeviceTableEntry]:
+        """Parse a device table broadcast and update registry.
+
+        Shared by _handle_panel_frame (during polling) and _wait_for_token
+        (during registration/pairing). Updates _device_table, _device_registry,
+        and confirms thermostat registration if address appears.
+
+        Returns:
+            Parsed device table entries.
+        """
+        entries = parse_device_table(data)
+        self._device_table = entries
+        for e in entries:
+            dev = self._device_registry.setdefault(
+                e.address,
+                BusDevice(address=e.address, source="device_table"),
+            )
+            dev.temperature = e.temperature
+            dev.last_seen = now
+
+        # Log all known bus devices
+        parts = []
+        for d in sorted(self._device_registry.values(), key=lambda d: d.address):
+            label = d.identity or _KNOWN_ADDRESSES.get(d.address, "Unknown")
+            if d.temperature is not None:
+                parts.append(f"{d.address}({label} {d.temperature:.1f}C)")
+            else:
+                parts.append(f"{d.address}({label})")
+        logger.info("Bus devices (%d): %s", len(self._device_registry), ", ".join(parts))
+
+        # Thermostat registration: confirm when address appears in device table
+        if (
+            self._thermostat_reg_state == "tentative"
+            and self._thermostat is not None
+            and self._thermostat.address in {e.address for e in entries}
+        ):
+            self._thermostat_reg_state = "paired"
+            self._save_thermostat_address(self._thermostat.address)
+            logger.info(
+                "Thermostat address %d confirmed in device table, persisted",
+                self._thermostat.address,
+            )
+
+        return entries
+
+    @property
+    def _thermostat_log_addrs(self) -> frozenset[int]:
+        """Thermostat addresses for debug logging (known + virtual)."""
+        if self._thermostat is not None and self._thermostat.address != 0:
+            return _KNOWN_THERMOSTAT_ADDRS | {self._thermostat.address}
+        return _KNOWN_THERMOSTAT_ADDRS
 
     async def _resolve_min_max(self, entry: ParamStructEntry) -> tuple[float | None, float | None]:
         """Resolve min/max values, following parameter index references.
@@ -724,6 +825,18 @@ class ProtocolHandler:
     def running(self) -> bool:
         """Whether background polling is active."""
         return self._running
+
+    @property
+    def thermostat_pairing_state(self) -> str | None:
+        """Current thermostat pairing state, or None if thermostat not enabled."""
+        return self._thermostat_reg_state
+
+    @property
+    def thermostat_address(self) -> int | None:
+        """Bus address of the virtual thermostat, or None if not paired/enabled."""
+        if self._thermostat is not None and self._thermostat.address != 0:
+            return self._thermostat.address
+        return None
 
     async def start(self) -> None:
         """Start background polling task."""
@@ -781,38 +894,7 @@ class ProtocolHandler:
                 self._has_token = True
                 logger.info("Token received from master panel")
             elif func_code == DEVICE_TABLE_FUNC:
-                entries = parse_device_table(frame.data)
-                self._device_table = entries
-                now = asyncio.get_event_loop().time()
-                for e in entries:
-                    dev = self._device_registry.setdefault(
-                        e.address,
-                        BusDevice(address=e.address, source="device_table"),
-                    )
-                    dev.temperature = e.temperature
-                    dev.last_seen = now
-                # Log all known bus devices (registry merges device table + IDENTIFY)
-                parts = []
-                for d in sorted(self._device_registry.values(), key=lambda d: d.address):
-                    label = d.identity or _KNOWN_ADDRESSES.get(d.address, "Unknown")
-                    if d.temperature is not None:
-                        parts.append(f"{d.address}({label} {d.temperature:.1f}C)")
-                    else:
-                        parts.append(f"{d.address}({label})")
-                logger.info("Bus devices (%d): %s", len(self._device_registry), ", ".join(parts))
-
-                # Thermostat registration: confirm when address appears in device table
-                if (
-                    self._thermostat_reg_state == "tentative"
-                    and self._thermostat is not None
-                    and self._thermostat.address in {e.address for e in entries}
-                ):
-                    self._thermostat_reg_state = "paired"
-                    self._save_thermostat_address(self._thermostat.address)
-                    logger.info(
-                        "Thermostat address %d confirmed in device table, persisted",
-                        self._thermostat.address,
-                    )
+                self._process_device_table(frame.data, asyncio.get_running_loop().time())
             else:
                 logger.debug(
                     "SERVICE frame: dest=%d, func=0x%04X, data=%s",
@@ -855,7 +937,7 @@ class ProtocolHandler:
         else:
             logger.debug("Waiting for token from panel (%.0fs timeout)...", self._token_timeout)
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         deadline = None if self._token_required else loop.time() + self._token_timeout
         device_table_seen = len(self._device_table) > 0
         pairing_mode_active = False
@@ -898,34 +980,7 @@ class ProtocolHandler:
                 len(frame.data) if frame.data else 0,
             )
 
-            # Log thermostat bus traffic (both real and virtual)
-            _THERMOSTAT_ADDRS = {165, 166, 167}
-            if self._thermostat is not None and self._thermostat.address != 0:
-                _THERMOSTAT_ADDRS = _THERMOSTAT_ADDRS | {self._thermostat.address}
-            if frame.source in _THERMOSTAT_ADDRS or frame.destination in _THERMOSTAT_ADDRS:
-                extra = ""
-                # Decode temperature from GET_PARAMS_RESP (first param is float temp)
-                if frame.command == 0xC0 and frame.data and len(frame.data) >= 8:
-                    try:
-                        temp = struct.unpack("<f", frame.data[4:8])[0]
-                        extra = f" temp={temp:.1f}"
-                    except Exception:
-                        pass
-                # Show data hex for responses, and request data for GET_PARAMS
-                hex_dump = ""
-                if frame.command == 0xC0 and frame.data:
-                    hex_dump = f" hex={frame.data.hex()}"
-                elif frame.data:
-                    hex_dump = f" data={frame.data.hex()}"
-                logger.debug(
-                    "THERMO src=%d dst=%d %s [%db]%s%s",
-                    frame.source,
-                    frame.destination,
-                    _cmd_name(frame.command),
-                    len(frame.data) if frame.data else 0,
-                    extra,
-                    hex_dump,
-                )
+            _log_thermostat_frame(frame, self._thermostat_log_addrs)
 
             # Track IDENTIFY responses from other devices (bus sniff)
             if frame.command == Command.IDENTIFY_RESPONSE and frame.destination == PANEL_ADDRESS:
@@ -959,33 +1014,8 @@ class ProtocolHandler:
             if frame.source == PANEL_ADDRESS and frame.command == Command.SERVICE and len(frame.data) >= 2:
                 func_code = struct.unpack("<H", frame.data[0:2])[0]
                 if func_code == DEVICE_TABLE_FUNC:
-                    entries = parse_device_table(frame.data)
-                    self._device_table = entries
-                    addrs = [e.address for e in entries]
-                    logger.debug("Device table (sniffed): %d devices, addresses=%s", len(entries), addrs)
-                    for e in entries:
-                        logger.debug("  device addr=%d temp=%.1f", e.address, e.temperature)
-                    for e in entries:
-                        dev = self._device_registry.setdefault(
-                            e.address,
-                            BusDevice(address=e.address, source="device_table"),
-                        )
-                        dev.temperature = e.temperature
-                        dev.last_seen = loop.time()
+                    self._process_device_table(frame.data, loop.time())
                     device_table_seen = True
-
-                    # Thermostat registration: confirm when address appears in device table
-                    if (
-                        self._thermostat_reg_state == "tentative"
-                        and self._thermostat is not None
-                        and self._thermostat.address in {e.address for e in entries}
-                    ):
-                        self._thermostat_reg_state = "paired"
-                        self._save_thermostat_address(self._thermostat.address)
-                        logger.info(
-                            "Thermostat address %d confirmed in device table, persisted",
-                            self._thermostat.address,
-                        )
 
                 if func_code == PAIRING_BEACON_FUNC and not pairing_mode_active:
                     pairing_mode_active = True
@@ -1047,6 +1077,7 @@ class ProtocolHandler:
                 await self._connection.protocol.write_frame(ack, flush_after=True, clear_echo=False)
                 # Register in device registry so it shows identity in bus device list
                 from econext_gateway.thermostat.emulator import THERMOSTAT_IDENTITY
+
                 self._device_registry[assigned_addr] = BusDevice(
                     address=assigned_addr,
                     identity=_parse_identity(THERMOSTAT_IDENTITY),
@@ -1122,9 +1153,7 @@ class ProtocolHandler:
                 self._thermostat_reg_state = "tentative"
                 self._thermostat_tentative_since = loop.time()
                 # Respond with thermostat identity
-                await self._thermostat.handle_frame(
-                    frame, self._connection.protocol.write_frame
-                )
+                await self._thermostat.handle_frame(frame, self._connection.protocol.write_frame)
                 continue
 
             # Check tentative timeout: if we claimed an address but never got
@@ -1165,13 +1194,13 @@ class ProtocolHandler:
             ):
                 logger.info(
                     "THERMO_WAIT src=%d dst=%d cmd=0x%02X len=%d data=%s",
-                    frame.source, frame.destination, frame.command,
+                    frame.source,
+                    frame.destination,
+                    frame.command,
                     len(frame.data) if frame.data else 0,
                     frame.data.hex() if frame.data else "",
                 )
-                await self._thermostat.handle_frame(
-                    frame, self._connection.protocol.write_frame
-                )
+                await self._thermostat.handle_frame(frame, self._connection.protocol.write_frame)
                 continue
 
             # Only process frames addressed to us or broadcast
@@ -1183,11 +1212,8 @@ class ProtocolHandler:
             # time-critical thermostat frames (next in queue) get handled first.
             # The panel retries IDENTIFY probes anyway; a ~20ms delay is fine.
             if frame.source == PANEL_ADDRESS:
-                if (
-                    frame.command == Command.IDENTIFY
-                    and self._thermostat is not None
-                ):
-                    asyncio.ensure_future(self._handle_panel_frame(frame))
+                if frame.command == Command.IDENTIFY and self._thermostat is not None:
+                    asyncio.create_task(self._handle_panel_frame(frame))
                     continue
                 await self._handle_panel_frame(frame)
                 if self._has_token:
@@ -1281,31 +1307,7 @@ class ProtocolHandler:
             # Any frame received resets the silence counter
             consecutive_silence = 0
 
-            # Log thermostat frames seen during polling
-            _THERMO = {165, 166, 167}
-            if self._thermostat is not None and self._thermostat.address != 0:
-                _THERMO = _THERMO | {self._thermostat.address}
-            if response.source in _THERMO or response.destination in _THERMO:
-                extra = ""
-                if response.command == 0xC0 and response.data and len(response.data) >= 8:
-                    try:
-                        temp = struct.unpack("<f", response.data[4:8])[0]
-                        extra = f" temp={temp:.1f}"
-                    except Exception:
-                        pass
-                # Log full hex for real thermostat responses so we can compare with ours
-                hex_dump = ""
-                if response.source in _THERMO and response.command == 0xC0 and response.data:
-                    hex_dump = f" hex={response.data[:20].hex()}..."
-                logger.debug(
-                    "THERMO src=%d dst=%d %s [%db]%s%s",
-                    response.source,
-                    response.destination,
-                    _cmd_name(response.command),
-                    len(response.data) if response.data else 0,
-                    extra,
-                    hex_dump,
-                )
+            _log_thermostat_frame(response, self._thermostat_log_addrs, truncate_hex=True)
 
             # Handle frames addressed to the virtual thermostat
             if (
@@ -1313,9 +1315,7 @@ class ProtocolHandler:
                 and response.destination == self._thermostat.address
                 and response.source == PANEL_ADDRESS
             ):
-                await self._thermostat.handle_frame(
-                    response, self._connection.protocol.write_frame
-                )
+                await self._thermostat.handle_frame(response, self._connection.protocol.write_frame)
                 skipped += 1
                 continue
 
@@ -1768,7 +1768,6 @@ class ProtocolHandler:
         Returns:
             Total number of parameters discovered.
         """
-        import time as _time
 
         async with self._lock:
             new_structs: dict[int, ParamStructEntry] = {}

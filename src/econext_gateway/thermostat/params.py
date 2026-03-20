@@ -21,8 +21,14 @@ class ThermostatParam:
     """Definition of a single thermostat parameter."""
 
     __slots__ = (
-        "index", "name", "unit_string", "type_code",
-        "writable", "min_value", "max_value", "default",
+        "index",
+        "name",
+        "unit_string",
+        "type_code",
+        "writable",
+        "min_value",
+        "max_value",
+        "default",
     )
 
     def __init__(
@@ -54,9 +60,9 @@ SCHEDULE_PARAM_RANGE = range(9, 23)
 
 # Status bytes that precede each value in GET_PARAMS response.
 # From GM3 spec: b0=measured, b7=discontinuity.
-STATUS_DEFAULT = 0x00      # RO non-measured params, strings, counters
-STATUS_MODIFIED = 0x01     # Writable settings that have been written by panel
-STATUS_MEASURED = 0x81     # Measured values, schedules, monitors
+STATUS_DEFAULT = 0x00  # RO non-measured params, strings, counters
+STATUS_MODIFIED = 0x01  # Writable settings that have been written by panel
+STATUS_MEASURED = 0x81  # Measured values, schedules, monitors
 
 # Full parameter table matching real ecoSTER 200 (35 params).
 # Decoded from GET_PARAMS_STRUCT_WITH_RANGE capture 2026-03-18.
@@ -93,14 +99,10 @@ THERMOSTAT_PARAMS: list[ThermostatParam] = [
     # Param 23: external sensor - not connected
     ThermostatParam(23, "ExtSens", DataType.FLOAT, "'C"),
     # Param 24-27: identity strings
-    ThermostatParam(24, "FN", DataType.STRING, writable=True, max_value=11,
-                    default="0000000002"),
-    ThermostatParam(25, "HV", DataType.STRING, max_value=7,
-                    default="H2.0.0"),
-    ThermostatParam(26, "SW", DataType.STRING, max_value=8,
-                    default="S001.24"),
-    ThermostatParam(27, "", DataType.STRING, max_value=21,
-                    default="Dec 28 2022 10:41:09"),
+    ThermostatParam(24, "FN", DataType.STRING, writable=True, max_value=11, default="0000000002"),
+    ThermostatParam(25, "HV", DataType.STRING, max_value=7, default="H2.0.0"),
+    ThermostatParam(26, "SW", DataType.STRING, max_value=8, default="S001.24"),
+    ThermostatParam(27, "", DataType.STRING, max_value=21, default="Dec 28 2022 10:41:09"),
     # Param 28-29: test (TestStart is a trigger, not config - status must be 0x00)
     ThermostatParam(28, "TestStart", DataType.UINT8, max_value=1),
     ThermostatParam(29, "TestRes", DataType.UINT8),

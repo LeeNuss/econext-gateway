@@ -21,7 +21,7 @@ from econext_gateway.thermostat.emulator import (
     build_params_response,
     build_struct_with_range_response,
 )
-from econext_gateway.thermostat.params import THERMOSTAT_PARAMS, ThermostatParam
+from econext_gateway.thermostat.params import ThermostatParam
 
 THERMOSTAT_ADDR = 165
 
@@ -138,9 +138,7 @@ class TestResponseBuilders:
         assert type_byte & 0x20  # Writable flag set
 
     def test_build_params_response(self):
-        param = ThermostatParam(
-            index=0, name="RoomTemp", type_code=DataType.FLOAT, unit_string="'C"
-        )
+        param = ThermostatParam(index=0, name="RoomTemp", type_code=DataType.FLOAT, unit_string="'C")
         values = [(param, 21.5)]
         data = build_params_response(values, first_index=0)
 
@@ -352,8 +350,9 @@ class TestThermostatEmulator:
 
 class _FakeHandler:
     """Minimal handler stub for API tests."""
-    _thermostat_reg_state = "unpaired"
-    _thermostat = None
+
+    thermostat_pairing_state = "unpaired"
+    thermostat_address = None
 
 
 class TestThermostatApi:

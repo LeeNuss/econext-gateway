@@ -71,8 +71,7 @@ class GM3Protocol(asyncio.Protocol):
             # Only keep frames addressed to us (or panel broadcasts).
             if self._keep_destinations is not None:
                 dst = frame.destination
-                if (dst not in self._keep_destinations
-                        and not (dst == 65535 and frame.source == self._panel_address)):
+                if dst not in self._keep_destinations and not (dst == 65535 and frame.source == self._panel_address):
                     self._stats["frames_filtered"] += 1
                     continue
             # Dedup consecutive IDENTIFY probes to same dest.
@@ -166,7 +165,10 @@ class GM3Protocol(asyncio.Protocol):
             return None
 
     async def write_frame(
-        self, frame: Frame, flush_after: bool = False, clear_echo: bool = True,
+        self,
+        frame: Frame,
+        flush_after: bool = False,
+        clear_echo: bool = True,
     ) -> bool:
         """Serialise *frame* onto the transport.
 

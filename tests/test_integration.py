@@ -835,7 +835,6 @@ class TestThermostatRegistration:
     async def test_thermostat_responds_to_pairing_beacon(self, fake_conn, fake_proto, cache):
         """Thermostat sends SERVICE_ANS when pairing beacon is detected."""
 
-
         thermo_file = _make_empty_thermostat_file()
         emulator = _make_thermostat_emulator(address=0)
 
@@ -910,7 +909,6 @@ class TestThermostatRegistration:
     async def test_thermostat_responds_only_once_to_beacons(self, fake_conn, fake_proto, cache):
         """Thermostat only responds to the first pairing beacon, not subsequent ones."""
 
-
         thermo_file = _make_empty_thermostat_file()
         emulator = _make_thermostat_emulator(address=0)
 
@@ -938,7 +936,6 @@ class TestThermostatRegistration:
     async def test_thermostat_ignores_beacon_without_emulator(self, fake_conn, fake_proto, cache):
         """No SERVICE_ANS when thermostat emulator is not configured."""
 
-
         handler = make_handler(
             fake_conn,
             cache,
@@ -956,7 +953,6 @@ class TestThermostatRegistration:
     @pytest.mark.asyncio
     async def test_thermostat_already_paired_skips_beacon(self, fake_conn, fake_proto, cache):
         """When thermostat has a persisted address, it does not respond to beacons."""
-
 
         thermo_file = _make_empty_thermostat_file()
         emulator = _make_thermostat_emulator(address=167)  # Already has address
@@ -981,7 +977,6 @@ class TestThermostatRegistration:
     @pytest.mark.asyncio
     async def test_thermostat_ignores_beacon_without_api_request(self, fake_conn, fake_proto, cache):
         """Thermostat does NOT respond to beacons unless pairing is requested via API."""
-
 
         thermo_file = _make_empty_thermostat_file()
         emulator = _make_thermostat_emulator(address=0)
@@ -1009,7 +1004,9 @@ class TestThermostatRegistration:
         """API allows re-pairing when thermostat is already paired."""
         emulator = _make_thermostat_emulator(address=167)
         handler = make_handler(
-            fake_conn, cache, thermostat_emulator=emulator,
+            fake_conn,
+            cache,
+            thermostat_emulator=emulator,
             thermostat_address_file=_make_empty_thermostat_file(),
         )
         assert handler._thermostat_reg_state == "paired"
