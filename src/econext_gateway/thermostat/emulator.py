@@ -168,9 +168,8 @@ class ThermostatEmulator:
             source=self.address,
         )
 
-        # Log first 20 bytes of response data for comparison with real thermostat
         if data:
-            logger.info(
+            logger.debug(
                 "Thermostat: responding cmd=0x%02X %db hex=%s",
                 command, len(data), data.hex(),
             )
@@ -187,7 +186,7 @@ class ThermostatEmulator:
         await asyncio.sleep(wire_time + 0.002)  # +2ms USB margin
 
         total_ms = (_time.monotonic() - t0) * 1000
-        logger.info(
+        logger.debug(
             "Thermostat: write=%.1fms total=%.1fms (wire=%.1fms) %db success=%s",
             write_ms, total_ms, wire_time * 1000, len(data), success,
         )
@@ -198,7 +197,7 @@ class ThermostatEmulator:
         await self._respond(
             frame.source, IDENTIFY_ANS_CMD, THERMOSTAT_IDENTITY, write_fn
         )
-        logger.info("Thermostat: responded to IDENTIFY from %d", frame.source)
+        logger.debug("Thermostat: responded to IDENTIFY from %d", frame.source)
         return True
 
     # Max struct response size in bytes (excluding frame overhead).
@@ -226,7 +225,7 @@ class ThermostatEmulator:
             await self._respond(
                 frame.source, Command.NO_DATA, b"", write_fn
             )
-            logger.info(
+            logger.debug(
                 "Thermostat: NO_DATA for struct request start=%d count=%d",
                 start_index,
                 count,
@@ -249,7 +248,7 @@ class ThermostatEmulator:
         await self._respond(
             frame.source, Command.GET_PARAMS_STRUCT_WITH_RANGE_RESPONSE, data, write_fn
         )
-        logger.info(
+        logger.debug(
             "Thermostat: sent struct response for %d params starting at %d (%d bytes)",
             len(batch),
             start_index,
@@ -277,7 +276,7 @@ class ThermostatEmulator:
             await self._respond(
                 frame.source, Command.NO_DATA, b"", write_fn
             )
-            logger.info(
+            logger.debug(
                 "Thermostat: NO_DATA for params request start=%d count=%d",
                 start_index,
                 count,
@@ -321,7 +320,7 @@ class ThermostatEmulator:
         if frame.data and len(frame.data) >= 3:
             # Skip auth prefix (e.g., "USER-001\04096\0")
             payload = self._skip_auth_prefix(frame.data)
-            logger.info(
+            logger.debug(
                 "Thermostat: MODIFY_PARAM raw=%db payload=%db hex=%s",
                 len(frame.data),
                 len(payload),

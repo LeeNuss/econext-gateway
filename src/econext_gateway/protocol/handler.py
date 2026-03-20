@@ -921,7 +921,7 @@ class ProtocolHandler:
                     hex_dump = f" hex={frame.data.hex()}"
                 elif frame.data:
                     hex_dump = f" data={frame.data.hex()}"
-                logger.info(
+                logger.debug(
                     "THERMO src=%d dst=%d %s [%db]%s%s",
                     frame.source,
                     frame.destination,
@@ -997,7 +997,7 @@ class ProtocolHandler:
 
             # Capture SERVICE_ANS frames during pairing (thermostat responses)
             if frame.command == SERVICE_ANS_CMD and frame.destination == PANEL_ADDRESS:
-                logger.info(
+                logger.debug(
                     "THERMO_CAPTURE SERVICE_ANS src=%d dst=%d len=%d data=%s",
                     frame.source,
                     frame.destination,
@@ -1301,7 +1301,7 @@ class ProtocolHandler:
                 hex_dump = ""
                 if response.source in _THERMO and response.command == 0xC0 and response.data:
                     hex_dump = f" hex={response.data[:20].hex()}..."
-                logger.info(
+                logger.debug(
                     "THERMO src=%d dst=%d %s [%db]%s%s",
                     response.source,
                     response.destination,
