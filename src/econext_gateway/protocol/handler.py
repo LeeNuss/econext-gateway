@@ -1071,7 +1071,7 @@ class ProtocolHandler:
             try:
                 await asyncio.wait_for(self._token_event.wait(), timeout=wait_slice)
                 break
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 now_mono = _time.monotonic()
                 if now_mono - last_noprog_log >= 5.0:
                     logger.info(
@@ -1511,7 +1511,7 @@ class ProtocolHandler:
             # Same 2s patience as the pre-refactor loop (10 * 0.2s).
             try:
                 return await asyncio.wait_for(pending.future, timeout=2.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.debug(
                     f"No matching response for 0x{command:02X} within 2.0s"
                 )
