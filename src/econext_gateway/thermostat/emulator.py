@@ -187,7 +187,8 @@ class ThermostatEmulator:
 
         total_ms = (_time.monotonic() - t0) * 1000
         logger.debug(
-            "Thermostat: write=%.1fms total=%.1fms (wire=%.1fms) %db success=%s",
+            "THERM_RESP cmd=0x%02X write=%.1fms total=%.1fms wire=%.1fms %db success=%s",
+            command,
             write_ms,
             total_ms,
             wire_time * 1000,
@@ -278,7 +279,7 @@ class ThermostatEmulator:
         values = [(p, self._get_param_value(p)) for p in params_in_range]
         data = build_params_response(values, start_index, self._written_values)
         await self._respond(frame.source, Command.GET_PARAMS_RESPONSE, data, write_fn)
-        logger.info(
+        logger.debug(
             "Thermostat: sent %d param values (temp=%.2f) starting at %d",
             len(params_in_range),
             self._vt.effective_temperature,
@@ -323,7 +324,7 @@ class ThermostatEmulator:
                 param = self._params.get(param_index)
                 if param is not None:
                     self._written_values[param_index] = value_bytes
-                    logger.info(
+                    logger.debug(
                         "Thermostat: stored MODIFY_PARAM idx=%d (%s, %d bytes): %s",
                         param_index,
                         param.name,

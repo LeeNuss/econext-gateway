@@ -8,6 +8,7 @@ FastAPI API all use real code.
 import asyncio
 import struct
 import tempfile
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
@@ -27,8 +28,28 @@ from econext_gateway.protocol.constants import (
     Command,
     DataType,
 )
+from econext_gateway.protocol.dispatcher import FrameDispatcher
 from econext_gateway.protocol.frames import Frame
 from econext_gateway.protocol.handler import ParamStructEntry, ProtocolHandler
+
+
+@asynccontextmanager
+async def dispatcher_running(handler: ProtocolHandler):
+    """Run the handler's frame dispatcher for the duration of the block.
+
+    Pre-refactor integration tests pushed frames into the fake protocol's
+    queue and relied on `_wait_for_token` / `send_and_receive` to pull
+    them. Post-refactor, frames are routed by the dispatcher task, so
+    tests must start it explicitly.
+    """
+    handler._dispatcher = FrameDispatcher(handler._connection)
+    handler._dispatcher.subscribe(handler._route_inbound)
+    await handler._dispatcher.start()
+    try:
+        yield
+    finally:
+        await handler._dispatcher.stop()
+        handler._dispatcher = None
 
 # Must match conftest.TEST_BUS_ADDRESS
 TEST_BUS_ADDRESS = 200
@@ -258,7 +279,8 @@ class TestDiscoveryIntegration:
         # Panel: no params
         fake_proto.queue_frame(PANEL_ADDRESS, Command.NO_DATA)
 
-        total = await handler.discover_params()
+        async with dispatcher_running(handler):
+            total = await handler.discover_params()
 
         assert total == 2
         assert handler._param_structs[0].name == "Temperature"
@@ -294,7 +316,8 @@ class TestDiscoveryIntegration:
         fake_proto.queue_frame(PANEL_ADDRESS, Command.GET_PARAMS_STRUCT_RESPONSE, panel_data)
         fake_proto.queue_frame(PANEL_ADDRESS, Command.NO_DATA)
 
-        total = await handler.discover_params()
+        async with dispatcher_running(handler):
+            total = await handler.discover_params()
 
         assert total == 3
         # Regulator at offset 0
@@ -318,7 +341,8 @@ class TestDiscoveryIntegration:
         fake_proto.queue_frame(1, Command.NO_DATA)
         fake_proto.queue_frame(PANEL_ADDRESS, Command.NO_DATA)
 
-        total = await handler.discover_params()
+        async with dispatcher_running(handler):
+            total = await handler.discover_params()
 
         assert total == 1
         assert handler._param_structs[0].name == "Existing"
@@ -350,7 +374,8 @@ class TestPollIntegration:
         )
         fake_proto.queue_frame(1, Command.GET_PARAMS_RESPONSE, resp_data)
 
-        count = await handler.poll_all_params()
+        async with dispatcher_running(handler):
+            count = await handler.poll_all_params()
 
         assert count == 2
         temp = await cache.get(0)
@@ -394,7 +419,8 @@ class TestWriteIntegration:
 
         fake_proto.queue_frame(1, Command.MODIFY_PARAM_RESPONSE, b"\x00\x00\x41\x00")
 
-        result = await handler.write_param("SetPoint", 65)
+        async with dispatcher_running(handler):
+            result = await handler.write_param("SetPoint", 65)
 
         assert result is True
         updated = await cache.get(0)
@@ -495,7 +521,8 @@ class TestTokenIntegration:
         fake_proto.queue_frame(1, Command.NO_DATA)
         fake_proto.queue_frame(PANEL_ADDRESS, Command.NO_DATA)
 
-        await handler.discover_params()
+        async with dispatcher_running(handler):
+            await handler.discover_params()
 
         # Token was returned at the end
         assert handler._has_token is False
@@ -675,7 +702,8 @@ class TestRegistrationStateMachine:
         token_frame.source = PANEL_ADDRESS
         fake_proto._frame_queue.put_nowait(token_frame)
 
-        await handler._wait_for_token()
+        async with dispatcher_running(handler):
+            await handler._wait_for_token()
 
         assert handler._registration_state == "paired"
         assert handler._source_address == 112
@@ -856,7 +884,8 @@ class TestThermostatRegistration:
         # Pairing beacon triggers SERVICE_ANS response
         fake_proto._frame_queue.put_nowait(_make_pairing_beacon_frame())
 
-        await handler._wait_for_token()
+        async with dispatcher_running(handler):
+            await handler._wait_for_token()
 
         assert handler._thermostat_reg_state == "beacon_responded"
         # Should have written a SERVICE_ANS frame to the panel
@@ -891,7 +920,8 @@ class TestThermostatRegistration:
         assign_frame.source = PANEL_ADDRESS
         fake_proto._frame_queue.put_nowait(assign_frame)
 
-        await handler._wait_for_token()
+        async with dispatcher_running(handler):
+            await handler._wait_for_token()
 
         # Should be fully paired at address 165
         assert handler._thermostat_reg_state == "paired"
@@ -926,7 +956,8 @@ class TestThermostatRegistration:
         for _ in range(5):
             fake_proto._frame_queue.put_nowait(_make_pairing_beacon_frame())
 
-        await handler._wait_for_token()
+        async with dispatcher_running(handler):
+            await handler._wait_for_token()
 
         # Should have sent exactly one SERVICE_ANS
         service_ans = [w for w in fake_proto._writes if w.command == Command.SERVICE_RESPONSE]

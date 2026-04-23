@@ -84,6 +84,12 @@ class GM3Protocol(asyncio.Protocol):
                 self._last_identify_dst = None
             if self._frame_queue.full():
                 # Drop oldest frame to make room.
+                logger.warning(
+                    "FRAME_QUEUE FULL: dropping oldest. read=%d filtered=%d invalid=%d",
+                    self._stats["frames_read"],
+                    self._stats["frames_filtered"],
+                    self._stats["frames_invalid"],
+                )
                 try:
                     self._frame_queue.get_nowait()
                 except asyncio.QueueEmpty:
@@ -92,6 +98,16 @@ class GM3Protocol(asyncio.Protocol):
                 self._frame_queue.put_nowait(frame)
             except asyncio.QueueFull:
                 pass
+            # Sample queue depth when backlog appears.
+            qsize_now = self._frame_queue.qsize()
+            if qsize_now >= 8:
+                logger.info(
+                    "FRAME_QUEUE depth=%d read=%d filtered=%d invalid=%d",
+                    qsize_now,
+                    self._stats["frames_read"],
+                    self._stats["frames_filtered"],
+                    self._stats["frames_invalid"],
+                )
 
     # -- frame extraction (from FrameReader._extract_frame_from_buffer) ------
 

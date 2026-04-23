@@ -1,10 +1,11 @@
 """Main application entry point."""
 
 import logging
+import time as _time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from econext_gateway import __version__
 from econext_gateway.api.dependencies import app_state
@@ -122,6 +123,31 @@ app = FastAPI(
 )
 
 app.include_router(api_router)
+
+
+@app.middleware("http")
+async def _log_api_latency(request: Request, call_next):
+    """Phase 1 instrumentation: log end-to-end API request latency.
+
+    Measures time from request arrival to response return. Spikes above
+    1s indicate blocked handler lock or token wait.
+    """
+    t0 = _time.monotonic()
+    status = 0
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    finally:
+        delta_ms = (_time.monotonic() - t0) * 1000
+        if delta_ms > 100.0 or status >= 400 or status == 0:
+            logger.info(
+                "API method=%s path=%s status=%d delta=%.0fms",
+                request.method,
+                request.url.path,
+                status,
+                delta_ms,
+            )
 
 
 @app.get("/")
