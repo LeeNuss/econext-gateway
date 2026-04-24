@@ -127,10 +127,11 @@ app.include_router(api_router)
 
 @app.middleware("http")
 async def _log_api_latency(request: Request, call_next):
-    """Phase 1 instrumentation: log end-to-end API request latency.
+    """Log slow or failing HTTP requests for operational visibility.
 
-    Measures time from request arrival to response return. Spikes above
-    1s indicate blocked handler lock or token wait.
+    Silent for fast 2xx responses. Fires at INFO when a request takes
+    more than 100 ms or returns non-2xx — the first signal of a
+    regression in bus latency or handler contention.
     """
     t0 = _time.monotonic()
     status = 0

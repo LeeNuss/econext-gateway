@@ -661,6 +661,10 @@ class ProtocolHandler:
         # it can't grow unbounded in production.
         self._unmatched_response_buffer: list[Frame] = []
         self._unmatched_buffer_max = 8
+        # Track the last-logged device-table address set so we only emit
+        # the "Bus devices" summary on membership changes (panel broadcasts
+        # the table every ~10 s, but membership itself rarely changes).
+        self._last_logged_device_set: frozenset[int] | None = None
         # Last time any frame was seen on the bus — for bus-silence watchdog.
         self._last_frame_time: float = 0.0
         # Pairing-mode state (was local to `_wait_for_token` in the pre-refactor
@@ -679,12 +683,13 @@ class ProtocolHandler:
 
     @asynccontextmanager
     async def _traced_lock(self, name: str):
-        """Acquire self._lock with diagnostic logging of wait + hold times.
+        """Acquire self._lock and record contention as an operational signal.
 
-        Logs LOCK_WAIT at INFO when waiters are blocked > 200ms (contention
-        worth knowing about), and LOCK_HELD at INFO when a critical section
-        takes > 1s (unusual — pre-refactor baseline was 15–22s). Shorter
-        waits and holds go to DEBUG so steady-state operation stays quiet.
+        Emits LOCK_WAIT at INFO only when a caller is blocked more than
+        200 ms (meaningful contention) and LOCK_HELD at INFO only when a
+        critical section takes more than 1 s (unusual — anything shorter
+        is routine bus turnaround). Below those thresholds the events go
+        to DEBUG so steady-state operation is quiet.
         """
         wait_start = _time.monotonic()
         prior_holder = self._lock_holder
@@ -834,15 +839,23 @@ class ProtocolHandler:
             dev.temperature = e.temperature
             dev.last_seen = now
 
-        # Log all known bus devices
-        parts = []
-        for d in sorted(self._device_registry.values(), key=lambda d: d.address):
-            label = d.identity or _KNOWN_ADDRESSES.get(d.address, "Unknown")
-            if d.temperature is not None:
-                parts.append(f"{d.address}({label} {d.temperature:.1f}C)")
-            else:
-                parts.append(f"{d.address}({label})")
-        logger.info("Bus devices (%d): %s", len(self._device_registry), ", ".join(parts))
+        # Log the bus-device summary only when the address set changes.
+        # The panel broadcasts this every ~10 s; membership rarely does,
+        # so a state-change log is the useful signal. Temperatures still
+        # update on every broadcast via the registry above.
+        current_set = frozenset(self._device_registry.keys())
+        if current_set != self._last_logged_device_set:
+            parts = []
+            for d in sorted(self._device_registry.values(), key=lambda d: d.address):
+                label = d.identity or _KNOWN_ADDRESSES.get(d.address, "Unknown")
+                if d.temperature is not None:
+                    parts.append(f"{d.address}({label} {d.temperature:.1f}C)")
+                else:
+                    parts.append(f"{d.address}({label})")
+            logger.info(
+                "Bus devices (%d): %s", len(self._device_registry), ", ".join(parts)
+            )
+            self._last_logged_device_set = current_set
 
         # Thermostat registration: confirm when address appears in device table
         if (
@@ -991,7 +1004,7 @@ class ProtocolHandler:
             # The OS/USB driver drains TX asynchronously. clear_echo=False
             # preserves RX buffer on the half-duplex bus.
             await self._connection.protocol.write_frame(response, flush_after=False)
-            logger.info("Responded to IDENTIFY from panel")
+            logger.debug("Responded to IDENTIFY from panel")
 
         elif frame.command == Command.SERVICE:
             func_code = 0
@@ -1001,7 +1014,7 @@ class ProtocolHandler:
             if func_code == GET_TOKEN_FUNC:
                 self._has_token = True
                 self._token_event.set()
-                logger.info("Token received from master panel")
+                logger.debug("Token received from master panel")
             elif func_code == DEVICE_TABLE_FUNC:
                 self._process_device_table(frame.data, asyncio.get_running_loop().time())
             else:
@@ -1025,7 +1038,7 @@ class ProtocolHandler:
         await self._connection.protocol.write_frame(token_frame)
         self._has_token = False
         self._token_event.clear()
-        logger.info("Token returned to master panel")
+        logger.debug("Token returned to master panel")
 
     async def _wait_for_token(self) -> None:
         """Wait for bus token from the master panel.
@@ -1343,18 +1356,23 @@ class ProtocolHandler:
         ):
             proto = self._connection.protocol
             qsize = proto._frame_queue.qsize()
-            # Only log at INFO when there is backlog or lock contention; the
-            # common steady-state case (qsize=0, no holder) is DEBUG.
-            if qsize > 0 or self._lock_holder is not None:
-                logger.debug(
-                    "THERMO_WAIT src=%d dst=%d cmd=0x%02X len=%d qsize=%d holder=%s",
-                    frame.source,
-                    frame.destination,
-                    frame.command,
-                    len(frame.data) if frame.data else 0,
-                    qsize,
-                    self._lock_holder,
-                )
+            # INFO only when there is queue backlog or the handler lock is
+            # held (= we're racing with an outbound op). Steady-state
+            # (qsize=0, no holder) would be a flood, so that goes to DEBUG.
+            thermo_log = (
+                logger.info
+                if qsize > 0 or self._lock_holder is not None
+                else logger.debug
+            )
+            thermo_log(
+                "THERMO_WAIT src=%d dst=%d cmd=0x%02X len=%d qsize=%d holder=%s",
+                frame.source,
+                frame.destination,
+                frame.command,
+                len(frame.data) if frame.data else 0,
+                qsize,
+                self._lock_holder,
+            )
             if qsize > 10:
                 queued = list(proto._frame_queue._queue)  # type: ignore[attr-defined]
                 summary: dict[str, int] = {}
