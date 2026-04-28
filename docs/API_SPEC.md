@@ -195,6 +195,63 @@ API information.
 
 ---
 
+## Virtual Thermostat
+
+Endpoints for the gateway's emulated thermostat. Enabled by default (set `ECONEXT_THERMOSTAT_ENABLED=false` to disable).
+
+### POST /api/thermostat/temperature
+
+Submit the current room temperature reading. The gateway serves this value to the heat pump panel over the bus.
+
+**Request:**
+
+```json
+{ "temperature": 21.0 }
+```
+
+**Response:**
+
+```json
+{ "success": true, "temperature": 21.0 }
+```
+
+The gateway marks the reading stale after `ECONEXT_THERMOSTAT_MAX_AGE` seconds (default 300). When stale, it falls back to `ECONEXT_THERMOSTAT_STALE_FALLBACK` (default 19.0 C).
+
+### POST /api/thermostat/pair
+
+Request bus pairing. The panel must be put into pairing mode within 60 seconds for the gateway to be assigned an address as an `ecoSTER_40` thermostat.
+
+**Response:**
+
+```json
+{ "success": true, "message": "Pairing requested" }
+```
+
+### GET /api/thermostat/status
+
+Return current thermostat state.
+
+**Response:**
+
+```json
+{
+  "enabled": true,
+  "address": 164,
+  "temperature": 21.0,
+  "last_update": "2026-04-28T12:00:00Z",
+  "is_stale": false,
+  "paired": true,
+  "pairing_requested": false
+}
+```
+
+- `address`: panel-assigned bus address, or `null` if unpaired
+- `is_stale`: `true` if no temperature update has arrived within `ECONEXT_THERMOSTAT_MAX_AGE`
+- `paired`: whether a bus address has been assigned
+- `pairing_requested`: whether a pairing request is currently active (60s window)
+
+---
+
 ## Error Handling
 
 All error responses follow this format:

@@ -73,19 +73,19 @@ docker run -d \
 
 All settings are configured via environment variables with the `ECONEXT_` prefix. When using the systemd service, edit `/etc/systemd/system/econext-gateway.service` and run `sudo systemctl daemon-reload && sudo systemctl restart econext-gateway`.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ECONEXT_SERIAL_PORT` | `/dev/econext` | Serial port path |
-| `ECONEXT_SERIAL_BAUD` | `115200` | Baud rate |
-| `ECONEXT_API_HOST` | `0.0.0.0` | API listen address |
-| `ECONEXT_API_PORT` | `8000` | API listen port |
-| `ECONEXT_LOG_LEVEL` | `INFO` | Log level (DEBUG, INFO, WARNING, ERROR) |
-| `ECONEXT_POLL_INTERVAL` | `10.0` | Parameter poll interval in seconds |
-| `ECONEXT_TOKEN_REQUIRED` | `true` | Wait for bus token before sending requests |
-| `ECONEXT_DESTINATION_ADDRESS` | `1` | Controller address |
-| `ECONEXT_REQUEST_TIMEOUT` | `1.5` | Timeout for individual requests in seconds |
-| `ECONEXT_PARAMS_PER_REQUEST` | `100` | Parameters to fetch per poll cycle |
-| `ECONEXT_STATE_DIR` | `/var/lib/econext-gateway` | Directory for persistent state (paired address) |
+| Variable                      | Default                    | Description                                     |
+| ----------------------------- | -------------------------- | ----------------------------------------------- |
+| `ECONEXT_SERIAL_PORT`         | `/dev/econext`             | Serial port path                                |
+| `ECONEXT_SERIAL_BAUD`         | `115200`                   | Baud rate                                       |
+| `ECONEXT_API_HOST`            | `0.0.0.0`                  | API listen address                              |
+| `ECONEXT_API_PORT`            | `8000`                     | API listen port                                 |
+| `ECONEXT_LOG_LEVEL`           | `INFO`                     | Log level (DEBUG, INFO, WARNING, ERROR)         |
+| `ECONEXT_POLL_INTERVAL`       | `10.0`                     | Parameter poll interval in seconds              |
+| `ECONEXT_TOKEN_REQUIRED`      | `true`                     | Wait for bus token before sending requests      |
+| `ECONEXT_DESTINATION_ADDRESS` | `1`                        | Controller address                              |
+| `ECONEXT_REQUEST_TIMEOUT`     | `1.5`                      | Timeout for individual requests in seconds      |
+| `ECONEXT_PARAMS_PER_REQUEST`  | `100`                      | Parameters to fetch per poll cycle              |
+| `ECONEXT_STATE_DIR`           | `/var/lib/econext-gateway` | Directory for persistent state (paired address) |
 
 ## API
 
@@ -199,49 +199,70 @@ The gateway can emulate a thermostat on the RS-485 bus, allowing Home Assistant 
 
 ### Setup
 
-1. Install with thermostat support enabled:
-   ```bash
-   sudo ./deploy/install.sh --pre
-   ```
-   Or set the environment variable manually: `ECONEXT_THERMOSTAT_ENABLED=true`
+The virtual thermostat is enabled by default. To disable it, set `ECONEXT_THERMOSTAT_ENABLED=false` in the `econext-gateway.service` file.
 
-2. Submit a temperature (e.g. from Home Assistant):
+1. Submit a temperature (e.g. from Home Assistant — the [HA integration](#home-assistant-integration) does this for you):
    ```bash
    curl -X POST http://your-gateway:8000/api/thermostat/temperature \
      -H 'Content-Type: application/json' -d '{"temperature": 21.0}'
    ```
 
-3. Trigger pairing via the API:
+2. Trigger pairing via the API:
    ```bash
    curl -X POST http://your-gateway:8000/api/thermostat/pair
    ```
 
-4. Enter pairing mode on the panel within 60 seconds. The gateway will pair as an `ecoSTER_41` thermostat.
+3. Put the panel into pairing mode within 60 seconds. On the Grant Aerona Smart Controller, the quickest path is:
 
-5. Assign the new thermostat to a circuit on the panel.
+   - From the main menu, tap the **current temperature** of the circuit you want to assign the thermostat to.
+   - On the screen that opens, tap the **thermostat-with-plus** icon in the bottom-left corner. The pairing wizard starts.
+
+   (Alternative path: **System settings -> Circuit settings -> [target circuit] -> Thermostat**, confirm overwrite if prompted.)
+
+   The wizard waits for a thermostat to announce itself — tap `>` on the panel to accept. The panel will show `END` / `Succ` on success, and the gateway pairs as an `ecoSTER_40` thermostat assigned to that circuit.
 
 ### API Endpoints
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/thermostat/temperature` | Submit temperature reading (`{"temperature": 21.0}`) |
-| POST | `/api/thermostat/pair` | Request bus pairing (panel must be in pairing mode) |
-| GET | `/api/thermostat/status` | Get thermostat status (temperature, staleness, bus address) |
+| Method | Endpoint                      | Description                                                 |
+| ------ | ----------------------------- | ----------------------------------------------------------- |
+| POST   | `/api/thermostat/temperature` | Submit temperature reading (`{"temperature": 21.0}`)        |
+| POST   | `/api/thermostat/pair`        | Request bus pairing (panel must be in pairing mode)         |
+| GET    | `/api/thermostat/status`      | Get thermostat status (temperature, staleness, bus address) |
 
 ### Home Assistant Integration
 
-The [ecoNEXT HA integration](https://github.com/LeeNuss/econext) (feature/virtual-thermostat branch) adds:
+The [ecoNEXT HA integration](https://github.com/LeeNuss/econext) (main branch, install via HACS) adds:
 
-- **Virtual Thermostat** device with a Pair button and Bus temperature sensor
+- **Virtual Thermostat** device with Pair button, Reported temperature, State, and Source sensor entities
 - **Entity selector** in integration settings to automatically submit a temperature sensor reading every 10 seconds
 - Configure via: Settings -> Integrations -> ecoNEXT -> gear icon -> select temperature sensor
+
+See the integration's README for entity descriptions and full setup instructions.
 
 ### Notes
 
 - The virtual thermostat coexists with real ecoSTER thermostats on separate circuits
 - The last submitted temperature is persisted to disk and survives gateway restarts
-- If Home Assistant stops sending updates, the last known temperature is kept (no fallback to 0)
-- Re-pairing is supported: press the Pair button again to get a new bus address
+- If Home Assistant stops sending updates for longer than `ECONEXT_THERMOSTAT_MAX_AGE` (default 300s), the reading is marked stale and the gateway falls back to `ECONEXT_THERMOSTAT_STALE_FALLBACK` (default 19.0 C) on the bus
+- Re-pairing: press the Pair button (or POST `/api/thermostat/pair`) again to claim a new bus address. The previous address is released
+- To force a re-pair from the gateway side, delete `/var/lib/econext-gateway/thermostat_address` and restart the service
+
+### Troubleshooting
+
+**Pair request times out / "Pairing requested" stays stuck**
+- The panel was not in pairing mode within the 60s window. Re-trigger the request and confirm the panel shows pairing-mode UI before the window expires
+- Check `journalctl -u econext-gateway -n 100` for `pairing beacon` log lines — these confirm the panel is actually broadcasting pairing beacons (`SERVICE 0x2004`)
+- If beacons are absent, the panel is not in pairing mode
+
+**No address assigned after pairing**
+- Verify with `curl http://your-gateway:8000/api/thermostat/status`
+- Check logs for `thermostat paired` / `assigned address` entries
+- Try deleting `/var/lib/econext-gateway/thermostat_address` and pairing again
+
+**Temperature not appearing on the panel**
+- Confirm the new thermostat is assigned to a heating circuit on the panel
+- POST `/api/thermostat/status` should return a recent `temperature` and `is_stale: false`
+- Set `ECONEXT_LOG_LEVEL=DEBUG` to see the temperature being read by the panel
 
 ## Troubleshooting
 

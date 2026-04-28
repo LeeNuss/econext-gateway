@@ -26,8 +26,8 @@ class Settings(BaseSettings):
     token_required: bool = True
     state_dir: str = "/var/lib/econext-gateway"
 
-    # Virtual thermostat emulation
-    thermostat_enabled: bool = False
+    # Virtual thermostat emulation (set ECONEXT_THERMOSTAT_ENABLED=false to disable)
+    thermostat_enabled: bool = True
     thermostat_max_age: float = 300.0
     thermostat_stale_fallback: float = 19.0
 

@@ -5,7 +5,7 @@
 # Usage:
 #   sudo ./deploy/install.sh                  # install from source repo
 #   sudo ./deploy/install.sh /srv/econext      # custom prefix
-#   sudo ./deploy/install.sh --pre            # enable virtual thermostat + debug
+#   sudo ./deploy/install.sh --pre            # install pre-release + enables debug
 #   sudo ./deploy/install.sh --uninstall      # remove service and install dir
 #
 # Bundle install (used by bootstrap.sh):
@@ -37,7 +37,7 @@ ECONEXT_USER="${ECONEXT_USER:-$(logname 2>/dev/null || echo "$SUDO_USER")}"
 ECONEXT_SERIAL_PORT="${ECONEXT_SERIAL_PORT:-/dev/econext}"
 ECONEXT_LOG_LEVEL="${ECONEXT_LOG_LEVEL:-INFO}"
 ECONEXT_API_PORT="${ECONEXT_API_PORT:-8000}"
-ECONEXT_THERMOSTAT_ENABLED="${ECONEXT_THERMOSTAT_ENABLED:-false}"
+ECONEXT_THERMOSTAT_ENABLED="${ECONEXT_THERMOSTAT_ENABLED:-true}"
 
 # ---- helpers ---------------------------------------------------------------
 
@@ -243,9 +243,8 @@ case "${1:-}" in
         do_uninstall "${2:-$DEFAULT_PREFIX}"
         ;;
     --pre)
-        # Pre-release install: enable thermostat + debug logging
-        ECONEXT_THERMOSTAT_ENABLED=true
-        ECONEXT_LOG_LEVEL="${ECONEXT_LOG_LEVEL:-DEBUG}"
+        # Install with DEBUG logging (--pre kept as alias for backwards compat)
+        ECONEXT_LOG_LEVEL="DEBUG"
         do_install "${2:-$DEFAULT_PREFIX}"
         ;;
     --help|-h)
