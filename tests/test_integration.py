@@ -8,6 +8,7 @@ FastAPI API all use real code.
 import asyncio
 import struct
 import tempfile
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
@@ -21,14 +22,34 @@ from econext_gateway.protocol.constants import (
     CLAIMABLE_ADDRESS_RANGE,
     DEVICE_TABLE_FUNC,
     GET_TOKEN_FUNC,
-    IDENTIFY_CMD,
+    PAIRING_BEACON_FUNC,
     PANEL_ADDRESS,
-    SERVICE_CMD,
+    THERMOSTAT_CLAIMABLE_ADDRESS_RANGE,
     Command,
     DataType,
 )
+from econext_gateway.protocol.dispatcher import FrameDispatcher
 from econext_gateway.protocol.frames import Frame
 from econext_gateway.protocol.handler import ParamStructEntry, ProtocolHandler
+
+
+@asynccontextmanager
+async def dispatcher_running(handler: ProtocolHandler):
+    """Run the handler's frame dispatcher for the duration of the block.
+
+    Pre-refactor integration tests pushed frames into the fake protocol's
+    queue and relied on `_wait_for_token` / `send_and_receive` to pull
+    them. Post-refactor, frames are routed by the dispatcher task, so
+    tests must start it explicitly.
+    """
+    handler._dispatcher = FrameDispatcher(handler._connection)
+    handler._dispatcher.subscribe(handler._route_inbound)
+    await handler._dispatcher.start()
+    try:
+        yield
+    finally:
+        await handler._dispatcher.stop()
+        handler._dispatcher = None
 
 # Must match conftest.TEST_BUS_ADDRESS
 TEST_BUS_ADDRESS = 200
@@ -141,7 +162,7 @@ class FakeProtocol:
         except TimeoutError:
             return None
 
-    async def write_frame(self, frame: Frame, flush_after: bool = False) -> bool:
+    async def write_frame(self, frame: Frame, flush_after: bool = False, clear_echo: bool = True) -> bool:
         self._writes.append(frame)
         return True
 
@@ -205,7 +226,7 @@ def _make_device_table_frame(*addresses: int) -> Frame:
     data = struct.pack("<H", DEVICE_TABLE_FUNC) + b"\x00\x00"
     for addr in addresses:
         data += struct.pack("<Hf", addr, 20.0)  # address + dummy temperature
-    frame = Frame(destination=0xFFFF, command=SERVICE_CMD, data=data)
+    frame = Frame(destination=0xFFFF, command=Command.SERVICE, data=data)
     frame.source = PANEL_ADDRESS
     return frame
 
@@ -258,7 +279,8 @@ class TestDiscoveryIntegration:
         # Panel: no params
         fake_proto.queue_frame(PANEL_ADDRESS, Command.NO_DATA)
 
-        total = await handler.discover_params()
+        async with dispatcher_running(handler):
+            total = await handler.discover_params()
 
         assert total == 2
         assert handler._param_structs[0].name == "Temperature"
@@ -294,7 +316,8 @@ class TestDiscoveryIntegration:
         fake_proto.queue_frame(PANEL_ADDRESS, Command.GET_PARAMS_STRUCT_RESPONSE, panel_data)
         fake_proto.queue_frame(PANEL_ADDRESS, Command.NO_DATA)
 
-        total = await handler.discover_params()
+        async with dispatcher_running(handler):
+            total = await handler.discover_params()
 
         assert total == 3
         # Regulator at offset 0
@@ -318,7 +341,8 @@ class TestDiscoveryIntegration:
         fake_proto.queue_frame(1, Command.NO_DATA)
         fake_proto.queue_frame(PANEL_ADDRESS, Command.NO_DATA)
 
-        total = await handler.discover_params()
+        async with dispatcher_running(handler):
+            total = await handler.discover_params()
 
         assert total == 1
         assert handler._param_structs[0].name == "Existing"
@@ -350,7 +374,8 @@ class TestPollIntegration:
         )
         fake_proto.queue_frame(1, Command.GET_PARAMS_RESPONSE, resp_data)
 
-        count = await handler.poll_all_params()
+        async with dispatcher_running(handler):
+            count = await handler.poll_all_params()
 
         assert count == 2
         temp = await cache.get(0)
@@ -394,7 +419,8 @@ class TestWriteIntegration:
 
         fake_proto.queue_frame(1, Command.MODIFY_PARAM_RESPONSE, b"\x00\x00\x41\x00")
 
-        result = await handler.write_param("SetPoint", 65)
+        async with dispatcher_running(handler):
+            result = await handler.write_param("SetPoint", 65)
 
         assert result is True
         updated = await cache.get(0)
@@ -487,15 +513,16 @@ class TestTokenIntegration:
         handler = make_handler(fake_conn, cache, token_required=True)
 
         # Panel probes us
-        fake_proto.queue_frame(PANEL_ADDRESS, IDENTIFY_CMD)
+        fake_proto.queue_frame(PANEL_ADDRESS, Command.IDENTIFY)
         # Panel grants token
         token_data = struct.pack("<H", GET_TOKEN_FUNC) + b"\x00\x00"
-        fake_proto.queue_frame(PANEL_ADDRESS, SERVICE_CMD, token_data)
+        fake_proto.queue_frame(PANEL_ADDRESS, Command.SERVICE, token_data)
         # Empty discovery (both spaces)
         fake_proto.queue_frame(1, Command.NO_DATA)
         fake_proto.queue_frame(PANEL_ADDRESS, Command.NO_DATA)
 
-        await handler.discover_params()
+        async with dispatcher_running(handler):
+            await handler.discover_params()
 
         # Token was returned at the end
         assert handler._has_token is False
@@ -665,17 +692,18 @@ class TestRegistrationStateMachine:
         fake_proto._frame_queue.put_nowait(_make_device_table_frame(100, 166))
 
         # Panel scans address 112 (in claimable range)
-        identify_frame = Frame(destination=112, command=IDENTIFY_CMD, data=b"")
+        identify_frame = Frame(destination=112, command=Command.IDENTIFY, data=b"")
         identify_frame.source = PANEL_ADDRESS
         fake_proto._frame_queue.put_nowait(identify_frame)
 
         # Panel grants token to address 112
         token_data = struct.pack("<H", GET_TOKEN_FUNC) + b"\x00\x00"
-        token_frame = Frame(destination=112, command=SERVICE_CMD, data=token_data)
+        token_frame = Frame(destination=112, command=Command.SERVICE, data=token_data)
         token_frame.source = PANEL_ADDRESS
         fake_proto._frame_queue.put_nowait(token_frame)
 
-        await handler._wait_for_token()
+        async with dispatcher_running(handler):
+            await handler._wait_for_token()
 
         assert handler._registration_state == "paired"
         assert handler._source_address == 112
@@ -702,7 +730,7 @@ class TestRegistrationStateMachine:
         fake_proto._frame_queue.put_nowait(_make_device_table_frame(100, 166))
 
         # Panel scans address 119 (in claimable range) -- gateway claims tentatively
-        identify_frame = Frame(destination=119, command=IDENTIFY_CMD, data=b"")
+        identify_frame = Frame(destination=119, command=Command.IDENTIFY, data=b"")
         identify_frame.source = PANEL_ADDRESS
         fake_proto._frame_queue.put_nowait(identify_frame)
 
@@ -730,7 +758,7 @@ class TestRegistrationStateMachine:
         )
 
         # Panel scans address 100 (reserved panel address)
-        identify_frame = Frame(destination=100, command=IDENTIFY_CMD, data=b"")
+        identify_frame = Frame(destination=100, command=Command.IDENTIFY, data=b"")
         identify_frame.source = PANEL_ADDRESS
         fake_proto._frame_queue.put_nowait(identify_frame)
 
@@ -765,7 +793,7 @@ class TestRegistrationStateMachine:
             paired_address_file=paired_file,
         )
 
-        identify_frame = Frame(destination=32, command=IDENTIFY_CMD, data=b"")
+        identify_frame = Frame(destination=32, command=Command.IDENTIFY, data=b"")
         identify_frame.source = PANEL_ADDRESS
         fake_proto._frame_queue.put_nowait(identify_frame)
 
@@ -789,7 +817,7 @@ class TestRegistrationStateMachine:
             paired_address_file=paired_file,
         )
 
-        identify_frame = Frame(destination=193, command=IDENTIFY_CMD, data=b"")
+        identify_frame = Frame(destination=193, command=Command.IDENTIFY, data=b"")
         identify_frame.source = PANEL_ADDRESS
         fake_proto._frame_queue.put_nowait(identify_frame)
 
@@ -798,3 +826,230 @@ class TestRegistrationStateMachine:
         assert handler._registration_state == "unpaired"
         assert handler._source_address == 0
         assert not paired_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# Thermostat registration
+# ---------------------------------------------------------------------------
+
+
+def _make_pairing_beacon_frame() -> Frame:
+    """Build a SERVICE 0x2004 pairing beacon broadcast from the panel."""
+    data = struct.pack("<H", PAIRING_BEACON_FUNC) + b"\x00\x00"
+    frame = Frame(destination=0xFFFF, command=Command.SERVICE, data=data)
+    frame.source = PANEL_ADDRESS
+    return frame
+
+
+def _make_empty_thermostat_file() -> Path:
+    """Create a temporary directory for thermostat address file (file does not exist)."""
+    d = Path(tempfile.mkdtemp())
+    return d / "thermostat_address"
+
+
+def _make_thermostat_emulator(address: int = 0):
+    """Create a ThermostatEmulator with a VirtualThermostat for tests."""
+    from econext_gateway.core.virtual_thermostat import VirtualThermostat
+    from econext_gateway.thermostat.emulator import ThermostatEmulator
+
+    vt = VirtualThermostat(max_age=300, stale_fallback=0.0)
+    return ThermostatEmulator(address=address, virtual_thermostat=vt)
+
+
+class TestThermostatRegistration:
+    """Thermostat pairing via SERVICE_ANS response to 0x2004 beacons."""
+
+    @pytest.mark.asyncio
+    async def test_thermostat_responds_to_pairing_beacon(self, fake_conn, fake_proto, cache):
+        """Thermostat sends SERVICE_ANS when pairing beacon is detected."""
+
+        thermo_file = _make_empty_thermostat_file()
+        emulator = _make_thermostat_emulator(address=0)
+
+        handler = make_handler(
+            fake_conn,
+            cache,
+            token_required=False,
+            token_timeout=0.1,
+            thermostat_emulator=emulator,
+            thermostat_address_file=thermo_file,
+        )
+
+        assert handler._thermostat_reg_state == "unpaired"
+
+        # Must explicitly request pairing via API
+        assert handler.request_thermostat_pairing() is True
+        assert handler._thermostat_reg_state == "pairing_requested"
+
+        # Pairing beacon triggers SERVICE_ANS response
+        fake_proto._frame_queue.put_nowait(_make_pairing_beacon_frame())
+
+        async with dispatcher_running(handler):
+            await handler._wait_for_token()
+
+        assert handler._thermostat_reg_state == "beacon_responded"
+        # Should have written a SERVICE_ANS frame to the panel
+        service_ans = [w for w in fake_proto._writes if w.command == Command.SERVICE_RESPONSE]
+        assert len(service_ans) == 1
+        assert service_ans[0].destination == PANEL_ADDRESS
+
+    @pytest.mark.asyncio
+    async def test_thermostat_full_pairing_flow(self, fake_conn, fake_proto, cache):
+        """Full pairing: beacon -> SERVICE_ANS -> 0x2005 address assignment -> paired."""
+        from econext_gateway.protocol.constants import PAIRING_ASSIGN_FUNC
+
+        thermo_file = _make_empty_thermostat_file()
+        emulator = _make_thermostat_emulator(address=0)
+
+        handler = make_handler(
+            fake_conn,
+            cache,
+            token_required=False,
+            token_timeout=0.5,
+            thermostat_emulator=emulator,
+            thermostat_address_file=thermo_file,
+        )
+
+        # 1. Request pairing via API, then beacon
+        handler.request_thermostat_pairing()
+        fake_proto._frame_queue.put_nowait(_make_pairing_beacon_frame())
+
+        # 2. Panel assigns address 165 via SERVICE 0x2005
+        assign_data = struct.pack("<H", PAIRING_ASSIGN_FUNC) + b"\x00\x00" + struct.pack("<H", 165)
+        assign_frame = Frame(destination=0xFFFF, command=Command.SERVICE, data=assign_data)
+        assign_frame.source = PANEL_ADDRESS
+        fake_proto._frame_queue.put_nowait(assign_frame)
+
+        async with dispatcher_running(handler):
+            await handler._wait_for_token()
+
+        # Should be fully paired at address 165
+        assert handler._thermostat_reg_state == "paired"
+        assert emulator.address == 165
+        assert thermo_file.exists()
+        assert thermo_file.read_text().strip() == "165"
+
+        # Should have written SERVICE_ANS twice: once for beacon, once for ACK
+        service_ans = [w for w in fake_proto._writes if w.command == Command.SERVICE_RESPONSE]
+        assert len(service_ans) == 2
+        # ACK should be from the assigned address
+        assert service_ans[1].source == 165
+
+    @pytest.mark.asyncio
+    async def test_thermostat_responds_only_once_to_beacons(self, fake_conn, fake_proto, cache):
+        """Thermostat only responds to the first pairing beacon, not subsequent ones."""
+
+        thermo_file = _make_empty_thermostat_file()
+        emulator = _make_thermostat_emulator(address=0)
+
+        handler = make_handler(
+            fake_conn,
+            cache,
+            token_required=False,
+            token_timeout=0.1,
+            thermostat_emulator=emulator,
+            thermostat_address_file=thermo_file,
+        )
+
+        # Request pairing, then multiple beacons (like real panel sends ~10/sec)
+        handler.request_thermostat_pairing()
+        for _ in range(5):
+            fake_proto._frame_queue.put_nowait(_make_pairing_beacon_frame())
+
+        async with dispatcher_running(handler):
+            await handler._wait_for_token()
+
+        # Should have sent exactly one SERVICE_ANS
+        service_ans = [w for w in fake_proto._writes if w.command == Command.SERVICE_RESPONSE]
+        assert len(service_ans) == 1
+
+    @pytest.mark.asyncio
+    async def test_thermostat_ignores_beacon_without_emulator(self, fake_conn, fake_proto, cache):
+        """No SERVICE_ANS when thermostat emulator is not configured."""
+
+        handler = make_handler(
+            fake_conn,
+            cache,
+            token_required=False,
+            token_timeout=0.1,
+            # No thermostat emulator
+        )
+
+        fake_proto._frame_queue.put_nowait(_make_pairing_beacon_frame())
+        await handler._wait_for_token()
+
+        service_ans = [w for w in fake_proto._writes if w.command == Command.SERVICE_RESPONSE]
+        assert len(service_ans) == 0
+
+    @pytest.mark.asyncio
+    async def test_thermostat_already_paired_skips_beacon(self, fake_conn, fake_proto, cache):
+        """When thermostat has a persisted address, it does not respond to beacons."""
+
+        thermo_file = _make_empty_thermostat_file()
+        emulator = _make_thermostat_emulator(address=167)  # Already has address
+
+        handler = make_handler(
+            fake_conn,
+            cache,
+            token_required=False,
+            token_timeout=0.1,
+            thermostat_emulator=emulator,
+            thermostat_address_file=thermo_file,
+        )
+
+        assert handler._thermostat_reg_state == "paired"
+
+        fake_proto._frame_queue.put_nowait(_make_pairing_beacon_frame())
+        await handler._wait_for_token()
+
+        service_ans = [w for w in fake_proto._writes if w.command == Command.SERVICE_RESPONSE]
+        assert len(service_ans) == 0
+
+    @pytest.mark.asyncio
+    async def test_thermostat_ignores_beacon_without_api_request(self, fake_conn, fake_proto, cache):
+        """Thermostat does NOT respond to beacons unless pairing is requested via API."""
+
+        thermo_file = _make_empty_thermostat_file()
+        emulator = _make_thermostat_emulator(address=0)
+
+        handler = make_handler(
+            fake_conn,
+            cache,
+            token_required=False,
+            token_timeout=0.1,
+            thermostat_emulator=emulator,
+            thermostat_address_file=thermo_file,
+        )
+
+        # Pairing beacon present but NO API request -- should be ignored
+        fake_proto._frame_queue.put_nowait(_make_pairing_beacon_frame())
+
+        await handler._wait_for_token()
+
+        assert handler._thermostat_reg_state == "unpaired"
+        service_ans = [w for w in fake_proto._writes if w.command == Command.SERVICE_RESPONSE]
+        assert len(service_ans) == 0
+
+    @pytest.mark.asyncio
+    async def test_request_pairing_resets_when_paired(self, fake_conn, fake_proto, cache):
+        """API allows re-pairing when thermostat is already paired."""
+        emulator = _make_thermostat_emulator(address=167)
+        handler = make_handler(
+            fake_conn,
+            cache,
+            thermostat_emulator=emulator,
+            thermostat_address_file=_make_empty_thermostat_file(),
+        )
+        assert handler._thermostat_reg_state == "paired"
+        assert handler.request_thermostat_pairing() is True
+        assert handler._thermostat_reg_state == "pairing_requested"
+        assert emulator.address == 0  # Reset for re-pairing
+
+    @pytest.mark.asyncio
+    async def test_thermostat_address_range(self):
+        """Thermostat address range covers known thermostat addresses."""
+        assert 165 in THERMOSTAT_CLAIMABLE_ADDRESS_RANGE
+        assert 166 in THERMOSTAT_CLAIMABLE_ADDRESS_RANGE
+        # Gateway range should not overlap
+        for addr in CLAIMABLE_ADDRESS_RANGE:
+            assert addr not in THERMOSTAT_CLAIMABLE_ADDRESS_RANGE

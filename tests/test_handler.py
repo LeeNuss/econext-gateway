@@ -11,8 +11,6 @@ from econext_gateway.core.models import Alarm, Parameter
 from econext_gateway.protocol.constants import (
     ALARM_REQUEST_PREFIX,
     PANEL_ADDRESS,
-    SERVICE_ANS_CMD,
-    SERVICE_CMD,
     Command,
     DataType,
 )
@@ -418,15 +416,20 @@ class TestProtocolHandler:
         """Test successful send and receive."""
         handler, conn, cache = self._make_handler()
 
-        # Mock writer and reader
         response_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, b"\x01\x00\x00\x2d\x00")
         handler._connection.protocol.write_frame = AsyncMock(return_value=True)
-        handler._connection.protocol.receive_frame = AsyncMock(return_value=response_frame)
 
-        result = await handler.send_and_receive(
-            Command.GET_PARAMS,
-            b"\x01\x00\x00",
-            expected_response=Command.GET_PARAMS_RESPONSE,
+        async def deliver():
+            await asyncio.sleep(0.01)
+            await handler._route_inbound(response_frame)
+
+        result, _ = await asyncio.gather(
+            handler.send_and_receive(
+                Command.GET_PARAMS,
+                b"\x01\x00\x00",
+                expected_response=Command.GET_PARAMS_RESPONSE,
+            ),
+            deliver(),
         )
 
         assert result is not None
@@ -510,9 +513,15 @@ class TestProtocolHandler:
 
         response_frame = self._response_frame(Command.GET_PARAMS_STRUCT_WITH_RANGE_RESPONSE, response_data)
         handler._connection.protocol.write_frame = AsyncMock(return_value=True)
-        handler._connection.protocol.receive_frame = AsyncMock(return_value=response_frame)
 
-        entries, end_of_range = await handler.fetch_param_structs(0, 50)
+        async def deliver():
+            await asyncio.sleep(0.01)
+            await handler._route_inbound(response_frame)
+
+        (entries, end_of_range), _ = await asyncio.gather(
+            handler.fetch_param_structs(0, 50),
+            deliver(),
+        )
 
         assert len(entries) == 1
         assert entries[0].name == "TestParam"
@@ -527,9 +536,15 @@ class TestProtocolHandler:
 
         no_data_frame = self._response_frame(Command.NO_DATA, b"")
         handler._connection.protocol.write_frame = AsyncMock(return_value=True)
-        handler._connection.protocol.receive_frame = AsyncMock(return_value=no_data_frame)
 
-        entries, end_of_range = await handler.fetch_param_structs(500, 100)
+        async def deliver():
+            await asyncio.sleep(0.01)
+            await handler._route_inbound(no_data_frame)
+
+        (entries, end_of_range), _ = await asyncio.gather(
+            handler.fetch_param_structs(500, 100),
+            deliver(),
+        )
 
         assert len(entries) == 0
         assert end_of_range is True
@@ -551,9 +566,15 @@ class TestProtocolHandler:
 
         response_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, response_data)
         handler._connection.protocol.write_frame = AsyncMock(return_value=True)
-        handler._connection.protocol.receive_frame = AsyncMock(return_value=response_frame)
 
-        results = await handler.fetch_param_values(0, 2)
+        async def deliver():
+            await asyncio.sleep(0.01)
+            await handler._route_inbound(response_frame)
+
+        results, _ = await asyncio.gather(
+            handler.fetch_param_values(0, 2),
+            deliver(),
+        )
 
         assert len(results) == 2
         assert results[0] == (0, 55)
@@ -579,9 +600,15 @@ class TestProtocolHandler:
         response_data = struct.pack("<BH", 1, 0) + b"\xc2" + struct.pack("<h", 65)
         response_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, response_data)
         handler._connection.protocol.write_frame = AsyncMock(return_value=True)
-        handler._connection.protocol.receive_frame = AsyncMock(return_value=response_frame)
 
-        params = await handler.read_params(0, 1)
+        async def deliver():
+            await asyncio.sleep(0.01)
+            await handler._route_inbound(response_frame)
+
+        params, _ = await asyncio.gather(
+            handler.read_params(0, 1),
+            deliver(),
+        )
 
         assert len(params) == 1
         assert params[0].name == "Temp"
@@ -625,9 +652,15 @@ class TestProtocolHandler:
 
         response_frame = self._response_frame(Command.MODIFY_PARAM_RESPONSE)
         handler._connection.protocol.write_frame = AsyncMock(return_value=True)
-        handler._connection.protocol.receive_frame = AsyncMock(return_value=response_frame)
 
-        result = await handler.write_param("SetPoint", 65)
+        async def deliver():
+            await asyncio.sleep(0.01)
+            await handler._route_inbound(response_frame)
+
+        result, _ = await asyncio.gather(
+            handler.write_param("SetPoint", 65),
+            deliver(),
+        )
 
         assert result is True
 
@@ -837,9 +870,15 @@ class TestProtocolHandler:
 
         response_frame = self._response_frame(Command.MODIFY_PARAM_RESPONSE)
         handler._connection.protocol.write_frame = AsyncMock(return_value=True)
-        handler._connection.protocol.receive_frame = AsyncMock(return_value=response_frame)
 
-        result = await handler.write_param("SetPoint", 65)
+        async def deliver():
+            await asyncio.sleep(0.01)
+            await handler._route_inbound(response_frame)
+
+        result, _ = await asyncio.gather(
+            handler.write_param("SetPoint", 65),
+            deliver(),
+        )
 
         assert result is True
         assert return_token_called is True
@@ -1069,9 +1108,15 @@ class TestProtocolHandler:
 
         response_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, response_data)
         handler._connection.protocol.write_frame = AsyncMock(return_value=True)
-        handler._connection.protocol.receive_frame = AsyncMock(return_value=response_frame)
 
-        total = await handler.poll_all_params()
+        async def deliver():
+            await asyncio.sleep(0.01)
+            await handler._route_inbound(response_frame)
+
+        total, _ = await asyncio.gather(
+            handler.poll_all_params(),
+            deliver(),
+        )
 
         assert total == 2
         assert cache.count == 2
@@ -1102,9 +1147,35 @@ class TestProtocolHandler:
         response2 = self._response_frame(Command.GET_PARAMS_RESPONSE, response2_data)
 
         handler._connection.protocol.write_frame = AsyncMock(return_value=True)
-        handler._connection.protocol.receive_frame = AsyncMock(side_effect=[response1, response2])
 
-        total = await handler.poll_all_params()
+        # Each send_and_receive call needs its own response delivered. The
+        # handler makes 2 requests for this test (partial response forces
+        # a second batch). We schedule delivery by watching write_frame calls.
+        write_event = asyncio.Event()
+        write_count = [0]
+        original_write = handler._connection.protocol.write_frame
+
+        async def counting_write(*args, **kwargs):
+            result = await original_write(*args, **kwargs)
+            write_count[0] += 1
+            write_event.set()
+            return result
+
+        handler._connection.protocol.write_frame = counting_write
+
+        async def deliver():
+            # Wait for first write, then deliver response1.
+            await write_event.wait()
+            write_event.clear()
+            await handler._route_inbound(response1)
+            # Wait for second write, then deliver response2.
+            await write_event.wait()
+            await handler._route_inbound(response2)
+
+        total, _ = await asyncio.gather(
+            handler.poll_all_params(),
+            deliver(),
+        )
 
         assert total == 4
         assert cache.count == 4
@@ -1266,22 +1337,28 @@ class TestProtocolHandler:
         accepted_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, b"\x01\x00\x00\x2d\x00")
 
         handler._connection.protocol.write_frame = AsyncMock(return_value=True)
-        handler._connection.protocol.receive_frame = AsyncMock(side_effect=[rejected_frame, accepted_frame])
 
         def validator(frame: Frame) -> bool:
             first_index = struct.unpack("<H", frame.data[1:3])[0]
             return first_index == 0
 
-        result = await handler.send_and_receive(
-            Command.GET_PARAMS,
-            b"\x01\x00\x00",
-            expected_response=Command.GET_PARAMS_RESPONSE,
-            response_validator=validator,
+        async def deliver():
+            await asyncio.sleep(0.01)
+            await handler._route_inbound(rejected_frame)
+            await handler._route_inbound(accepted_frame)
+
+        result, _ = await asyncio.gather(
+            handler.send_and_receive(
+                Command.GET_PARAMS,
+                b"\x01\x00\x00",
+                expected_response=Command.GET_PARAMS_RESPONSE,
+                response_validator=validator,
+            ),
+            deliver(),
         )
 
         assert result is not None
         assert result is accepted_frame
-        assert handler._connection.protocol.receive_frame.call_count == 2
 
     @pytest.mark.asyncio
     async def test_fetch_param_values_skips_wrong_first_index(self):
@@ -1301,9 +1378,16 @@ class TestProtocolHandler:
         correct_frame = self._response_frame(Command.GET_PARAMS_RESPONSE, correct_response_data)
 
         handler._connection.protocol.write_frame = AsyncMock(return_value=True)
-        handler._connection.protocol.receive_frame = AsyncMock(side_effect=[wrong_frame, correct_frame])
 
-        results = await handler.fetch_param_values(0, 1)
+        async def deliver():
+            await asyncio.sleep(0.01)
+            await handler._route_inbound(wrong_frame)
+            await handler._route_inbound(correct_frame)
+
+        results, _ = await asyncio.gather(
+            handler.fetch_param_values(0, 1),
+            deliver(),
+        )
 
         assert len(results) == 1
         assert results[0] == (0, 42)
@@ -1328,9 +1412,16 @@ class TestProtocolHandler:
         correct_frame = self._response_frame(Command.GET_PARAMS_STRUCT_WITH_RANGE_RESPONSE, correct_data)
 
         handler._connection.protocol.write_frame = AsyncMock(return_value=True)
-        handler._connection.protocol.receive_frame = AsyncMock(side_effect=[wrong_frame, correct_frame])
 
-        entries, end_of_range = await handler.fetch_param_structs(0, 50)
+        async def deliver():
+            await asyncio.sleep(0.01)
+            await handler._route_inbound(wrong_frame)
+            await handler._route_inbound(correct_frame)
+
+        (entries, end_of_range), _ = await asyncio.gather(
+            handler.fetch_param_structs(0, 50),
+            deliver(),
+        )
 
         assert len(entries) == 1
         assert entries[0].name == "RightParam"
@@ -1717,7 +1808,7 @@ class TestReadAlarms:
             nonlocal call_count
             resp_data = [alarm_0_data, alarm_1_data, null_data][call_count]
             call_count += 1
-            return Frame(destination=TEST_BUS_ADDRESS, command=SERVICE_ANS_CMD, data=resp_data)
+            return Frame(destination=TEST_BUS_ADDRESS, command=Command.SERVICE_RESPONSE, data=resp_data)
 
         handler.send_and_receive = mock_send
 
@@ -1736,7 +1827,7 @@ class TestReadAlarms:
         null_data = bytes([0]) + b"\xff\xff\xff\xff\xff\xff\xff" + b"\xff\xff\xff\xff\xff\xff\xff"
 
         async def mock_send(command, data, expected_response=None, destination=None, **kwargs):
-            frame = Frame(destination=TEST_BUS_ADDRESS, command=SERVICE_ANS_CMD, data=null_data)
+            frame = Frame(destination=TEST_BUS_ADDRESS, command=Command.SERVICE_RESPONSE, data=null_data)
             frame.source = PANEL_ADDRESS
             return frame
 
@@ -1765,7 +1856,7 @@ class TestReadAlarms:
         async def mock_send(command, data, expected_response=None, destination=None, **kwargs):
             sent_commands.append((command, data, destination))
             null_data = bytes([0]) + b"\xff\xff\xff\xff\xff\xff\xff" + b"\xff\xff\xff\xff\xff\xff\xff"
-            frame = Frame(destination=TEST_BUS_ADDRESS, command=SERVICE_ANS_CMD, data=null_data)
+            frame = Frame(destination=TEST_BUS_ADDRESS, command=Command.SERVICE_RESPONSE, data=null_data)
             frame.source = PANEL_ADDRESS
             return frame
 
@@ -1775,7 +1866,7 @@ class TestReadAlarms:
 
         assert len(sent_commands) == 1
         cmd, data, dest = sent_commands[0]
-        assert cmd == SERVICE_CMD
+        assert cmd == Command.SERVICE
         assert dest == PANEL_ADDRESS
         assert data == ALARM_REQUEST_PREFIX + bytes([0])  # index 0
 

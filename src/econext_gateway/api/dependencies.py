@@ -2,6 +2,7 @@
 
 from econext_gateway.core.cache import ParameterCache
 from econext_gateway.core.config import Settings
+from econext_gateway.core.virtual_thermostat import VirtualThermostat
 from econext_gateway.protocol.handler import ProtocolHandler
 from econext_gateway.serial.connection import GM3SerialTransport
 
@@ -17,6 +18,7 @@ class AppState:
         self.connection: GM3SerialTransport | None = None
         self.cache: ParameterCache | None = None
         self.handler: ProtocolHandler | None = None
+        self.virtual_thermostat: VirtualThermostat | None = None
 
 
 # Global app state singleton
@@ -39,3 +41,9 @@ def get_settings() -> Settings:
     """Get the settings instance."""
     assert app_state.settings is not None, "App not initialized"
     return app_state.settings
+
+
+def get_virtual_thermostat() -> VirtualThermostat:
+    """Get the virtual thermostat instance."""
+    assert app_state.virtual_thermostat is not None, "App not initialized"
+    return app_state.virtual_thermostat

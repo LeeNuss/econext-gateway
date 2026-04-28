@@ -5,6 +5,7 @@
 # Usage:
 #   sudo ./deploy/install.sh                  # install from source repo
 #   sudo ./deploy/install.sh /srv/econext      # custom prefix
+#   sudo ./deploy/install.sh --pre            # enable virtual thermostat + debug
 #   sudo ./deploy/install.sh --uninstall      # remove service and install dir
 #
 # Bundle install (used by bootstrap.sh):
@@ -36,6 +37,7 @@ ECONEXT_USER="${ECONEXT_USER:-$(logname 2>/dev/null || echo "$SUDO_USER")}"
 ECONEXT_SERIAL_PORT="${ECONEXT_SERIAL_PORT:-/dev/econext}"
 ECONEXT_LOG_LEVEL="${ECONEXT_LOG_LEVEL:-INFO}"
 ECONEXT_API_PORT="${ECONEXT_API_PORT:-8000}"
+ECONEXT_THERMOSTAT_ENABLED="${ECONEXT_THERMOSTAT_ENABLED:-false}"
 
 # ---- helpers ---------------------------------------------------------------
 
@@ -147,6 +149,7 @@ do_install() {
     info "  Serial port: $ECONEXT_SERIAL_PORT"
     info "  API port:    $ECONEXT_API_PORT"
     info "  Log level:   $ECONEXT_LOG_LEVEL"
+    info "  Thermostat:  $ECONEXT_THERMOSTAT_ENABLED"
 
     # -- stop existing service if running --
     if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
@@ -199,6 +202,7 @@ RestartSec=10
 StateDirectory=econext-gateway
 Environment=ECONEXT_SERIAL_PORT=${ECONEXT_SERIAL_PORT}
 Environment=ECONEXT_LOG_LEVEL=${ECONEXT_LOG_LEVEL}
+Environment=ECONEXT_THERMOSTAT_ENABLED=${ECONEXT_THERMOSTAT_ENABLED}
 
 [Install]
 WantedBy=multi-user.target
@@ -237,6 +241,12 @@ EOF
 case "${1:-}" in
     --uninstall|-u)
         do_uninstall "${2:-$DEFAULT_PREFIX}"
+        ;;
+    --pre)
+        # Pre-release install: enable thermostat + debug logging
+        ECONEXT_THERMOSTAT_ENABLED=true
+        ECONEXT_LOG_LEVEL="${ECONEXT_LOG_LEVEL:-DEBUG}"
+        do_install "${2:-$DEFAULT_PREFIX}"
         ;;
     --help|-h)
         sed -n '2,/^$/s/^# \?//p' "$0"

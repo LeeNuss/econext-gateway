@@ -3,7 +3,7 @@
 import struct
 from typing import Optional
 
-from econext_gateway.protocol.constants import BEGIN_FRAME, END_FRAME, FRAME_MIN_LEN, SRC_ADDRESS
+from econext_gateway.protocol.constants import BEGIN_FRAME, END_FRAME, FRAME_MIN_LEN
 from econext_gateway.protocol.crc import calculate_crc16
 
 
@@ -21,7 +21,7 @@ class Frame:
         data: Payload data
     """
 
-    def __init__(self, destination: int, command: int, data: bytes = b"", source: int = SRC_ADDRESS):
+    def __init__(self, destination: int, command: int, data: bytes = b"", source: int = 0):
         """
         Initialize a frame.
 
@@ -29,7 +29,7 @@ class Frame:
             destination: Destination address (0-65535)
             command: Command byte (0-255)
             data: Optional payload data
-            source: Source address (0-65535), defaults to SRC_ADDRESS (131)
+            source: Source address (0-65535)
         """
         self.destination = destination
         self.source = source

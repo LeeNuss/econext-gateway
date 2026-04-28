@@ -1,7 +1,7 @@
 # ecoNEXT Gateway - Architecture & Design
 
-**Version**: 1.1 (Updated after HW verification)
-**Date**: 2026-02-06
+**Version**: 1.2 (Dispatcher refactor — HA write starvation fix)
+**Date**: 2026-04-23
 
 This document describes the architecture and design decisions for the ecoNEXT Gateway project - a local API server for GM3 protocol heat pump controllers.
 
@@ -101,6 +101,8 @@ This document describes the architecture and design decisions for the ecoNEXT Ga
 
 - `frames.py`: Frame construction and parsing
 - `handler.py`: Protocol handler (discovery, token handling, struct parsing, polling)
+- `dispatcher.py`: FrameDispatcher — single background task that consumes the
+  serial frame queue and routes each frame through registered subscribers
 - `constants.py`: Protocol constants (frame markers, CRC polynomials, addresses)
 - `codec.py`: Parameter encoding/decoding
 - `crc.py`: CRC-16 calculation
@@ -113,6 +115,42 @@ This document describes the architecture and design decisions for the ecoNEXT Ga
 - Token-based bus arbitration (IDENTIFY handshake + SERVICE token grant/return)
 - Two address spaces: regulator (WITH_RANGE) and panel (WITHOUT_RANGE)
 - Single token grant discovery: all 1870 params in 6.6s
+
+##### Frame dispatch pattern (v1.2)
+
+Before v1.2, `_wait_for_token()` and `send_and_receive()` both pulled frames
+directly from the serial queue **while holding the handler lock**. This
+serialised the full poll cycle — including multi-second token waits —
+against concurrent Home Assistant API calls. Measured HA write latency was
+9–18s when poll was active.
+
+The refactor introduces two pieces that decouple inbound frame handling
+from the outbound request lock:
+
+1. **`FrameDispatcher`** (`protocol/dispatcher.py`) — owns its own task that
+   loops on `GM3Protocol.receive_frame()` and dispatches each frame through
+   an ordered chain of subscriber callbacks. The handler registers
+   `_route_inbound` which contains all the frame-routing logic (pairing,
+   auto-registration, thermostat dispatch, panel IDENTIFY/SERVICE, bus
+   sniff).
+
+2. **Event-based token wait + future-based response matching** in the
+   handler:
+   - `_token_event: asyncio.Event` is set when the panel grants the token
+     (observed in the dispatcher's subscriber) and cleared on token return.
+     `_wait_for_token()` just awaits the event.
+   - `_pending_request: _PendingRequest | None` holds the frame that the
+     current `send_and_receive()` is waiting on. The dispatcher resolves
+     its `Future` on a matching response.
+   - A small size-capped `_unmatched_response_buffer` catches
+     response-shape frames that arrive in the gap between consecutive
+     `send_and_receive()` calls.
+
+With the frame queue drained by a background task, the handler lock now
+only covers the actual wire transaction and token return — so API calls
+no longer wait on the panel's token cycle. Measured HA write latency after
+the refactor: 50 ms – 5 s (typical 1–3 s), with short holds (<1 s) logged
+at DEBUG.
 
 #### 3. Serial Layer (`src/serial/`)
 **Responsibility**: Serial port communication, connection management

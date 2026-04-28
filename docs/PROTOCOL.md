@@ -147,13 +147,13 @@ need to communicate with the same controller.
 
 #### Observed Bus Devices
 
-| Address | Role           | Observed Behavior                                                              |
-| ------- | -------------- | ------------------------------------------------------------------------------ |
-| 1       | Controller     | Responds to GET_PARAMS, GET_PARAMS_STRUCT, MODIFY_PARAM                        |
-| 100     | Master Panel   | Sends IDENTIFY probes, SERVICE frames, MODIFY_PARAM to controller              |
-| *       | Gateway        | Auto-claimed address via panel IDENTIFY scan (persisted to state dir)          |
-| 165     | Thermostat     | Room thermostat - panel queries with GET_PARAMS (0x40), responds with 0xC0/0x7F |
-| 255     | Polling module | Continuously sends GET_PARAMS to controller (responses go to broadcast 0xFFFF) |
+| Address | Role           | Observed Behavior                                                                          |
+| ------- | -------------- | ------------------------------------------------------------------------------------------ |
+| 1       | Controller     | Responds to GET_PARAMS, GET_PARAMS_STRUCT, MODIFY_PARAM                                    |
+| 100     | Master Panel   | Sends IDENTIFY probes, SERVICE frames, MODIFY_PARAM to controller                          |
+| *       | Gateway        | Auto-claimed address via panel IDENTIFY scan (persisted to state dir)                      |
+| 166-167 | Thermostat     | Room thermostat - panel-assigned addr (varies per pairing), queried with GET_PARAMS (0x40) |
+| 255     | Polling module | Continuously sends GET_PARAMS to controller (responses go to broadcast 0xFFFF)             |
 
 #### Device Identification (IDENTIFY)
 
@@ -184,12 +184,12 @@ code is encoded as a little-endian uint16 in the first 2 bytes of the data paylo
 
 **Observed Service Functions:**
 
-| Function | Direction          | Destination          | Description                                              |
-| -------- | ------------------ | -------------------- | -------------------------------------------------------- |
-| 0x0801   | Panel -> Device    | Device address       | Token grant                                              |
-| 0x0023   | Panel -> Broadcast | 0xFFFF               | Clock/timer sync (20 bytes, includes date/time + flags)  |
-| 0x2001   | Panel -> Broadcast | 0xFFFF               | Device table broadcast (paired addresses + temperatures) |
-| 0x2004   | Panel -> Broadcast | 0xFFFF               | Pairing beacon (sent rapidly when panel is in pairing mode) |
+| Function | Direction          | Destination    | Description                                                 |
+| -------- | ------------------ | -------------- | ----------------------------------------------------------- |
+| 0x0801   | Panel -> Device    | Device address | Token grant                                                 |
+| 0x0023   | Panel -> Broadcast | 0xFFFF         | Clock/timer sync (20 bytes, includes date/time + flags)     |
+| 0x2001   | Panel -> Broadcast | 0xFFFF         | Device table broadcast (paired addresses + temperatures)    |
+| 0x2004   | Panel -> Broadcast | 0xFFFF         | Pairing beacon (sent rapidly when panel is in pairing mode) |
 
 **Token Grant (panel -> gateway):**
 - Source: 100 (master panel)
@@ -337,22 +337,94 @@ persisted address instantly.
 
 **Thermostat pairing protocol (SERVICE beacons):**
 
-The panel uses a separate beacon-based protocol (SERVICE `func=0x2004`/`0x2005`) for
-thermostat pairing. Devices registered this way receive direct data commands (0x02) but
-do NOT receive IDENTIFY probes or token grants. The gateway does not use this protocol.
+The panel uses a separate beacon-based protocol for thermostat pairing, completely
+different from the IDENTIFY-based gateway registration. Thermostats respond to SERVICE
+0x2004 beacons with SERVICE_ANS, receive a panel-assigned address, and are then polled
+directly (no token grants, no IDENTIFY probes to thermostat addresses during pairing).
 
-Observed thermostat pairing sequence (2026-02-26):
+Observed thermostat pairing sequence (2026-03-18, HW verified):
 
-1. Panel broadcasts SERVICE `func=0x2004` to 0xFFFF (pairing beacon, rapid repeat)
-2. Thermostat responds (method unknown -- not captured)
-3. Panel broadcasts SERVICE `func=0x0023` to 0xFFFF (config/time sync, 20 bytes)
-   - Contains flags, timestamp, and device type byte
-4. Panel writes MODIFY_PARAM (0x29) to controller to register the new device
-5. Panel broadcasts SERVICE `func=0x2001` to 0xFFFF (device table)
-   - Contains paired device addresses and temperature values (IEEE 754 floats)
-6. New thermostat (src=0xFFFF) downloads all parameters from controller via GET_PARAMS
-7. Panel broadcasts updated `func=0x2001` with the new device in the table
-8. Normal IDENTIFY cycle resumes, but thermostat-paired devices only get direct data commands
+1. Panel enters pairing mode (user action on panel UI)
+2. Panel broadcasts SERVICE `func=0x2004` to 0xFFFF (pairing beacon, ~10/sec, data=`04200000`)
+3. Thermostat responds with `SERVICE_ANS (0xE8)` to panel (addr 100):
+   - Source: thermostat's hardware/temporary address (observed: **164**)
+   - First response: 67 bytes (likely contains identity, serial, capabilities)
+   - Second response: 2 bytes (likely ack/confirmation)
+4. Panel sends IDENTIFY probes to low addresses (32, 102) -- scanning, not thermostat-related
+5. Panel assigns thermostat a final address (observed: 166, 167 -- varies per pairing)
+6. Device table broadcast (0x2001) now includes the new thermostat address + temperature
+7. Panel begins polling thermostat: GET_PARAMS_STRUCT (0x02), GET_PARAMS (0x40), MODIFY_PARAM (0x29)
+8. Normal bus cycle resumes with thermostat polled each cycle
+
+**Key differences from gateway registration:**
+- Thermostats do NOT respond to IDENTIFY probes (panel never sends IDENTIFY to thermostat range during pairing)
+- Thermostats do NOT receive tokens -- they are purely passive (panel reads/writes directly)
+- The thermostat address is panel-assigned, not self-claimed
+- The panel only scans thermostat-range addresses (160-199) during normal operation, not during pairing mode
+
+**Thermostat normal polling (per bus cycle):**
+```
+Panel -> Thermostat: GET_PARAMS (0x40) count=255, start=0
+Thermostat -> Panel: GET_PARAMS_RESP (0xC0) 35 params, 180 bytes
+Panel -> Thermostat: GET_PARAMS (0x40) count=255, start=35
+Thermostat -> Panel: NO_DATA (0x7F)
+```
+
+**Thermostat parameter table (ecoSTER 200, captured 2026-03-18):**
+
+35 parameters decoded from GET_PARAMS_STRUCT_WITH_RANGE (cmd 0x02/0x82):
+
+| Idx  | Name         | Type          | Unit | RW  | Range   | Description                              |
+| ---- | ------------ | ------------- | ---- | --- | ------- | ---------------------------------------- |
+| 0    | IntrSens     | float         | 'C   | RO  | -       | Room temperature (internal sensor)       |
+| 1    | WorkMode     | uint8         |      | RW  | -       | Operating mode                           |
+| 2    | AlMsk        | uint32        |      | RW  | -       | Alarm mask                               |
+| 3    | PresetNow    | float         | 'C   | RO  | -       | Current active setpoint                  |
+| 4    | PrDay        | float         | 'C   | RW  | 10-35   | Day temperature preset                   |
+| 5    | PrNight      | float         | 'C   | RW  | 10-35   | Night temperature preset                 |
+| 6    | Hyst         | float         | 'C   | RW  | -4 to 4 | Hysteresis                               |
+| 7    | MonitA       | uint32        |      | RW  | -       | Monitor flags A                          |
+| 8    | MonitB       | uint32        |      | RW  | -       | Monitor flags B                          |
+| 9-22 | Schedule A/B | uint32/uint16 |      | RW  | -       | Weekly schedule (7 days x 2 slots)       |
+| 23   | ExtSens      | float         | 'C   | RO  | -       | External sensor temperature              |
+| 24   | FN           | string        |      | RW  | 0-11    | Friendly name                            |
+| 25   | HV           | string        |      | RO  | 0-7     | Hardware version (e.g. "H2.0.0")         |
+| 26   | SW           | string        |      | RO  | 0-8     | Software version (e.g. "S001.24")        |
+| 27   | (unnamed)    | string        |      | RO  | 0-21    | Build date (e.g. "Dec 28 2022 10:41:09") |
+| 28   | TestStart    | uint8         |      | RW  | 0-1     | Test trigger                             |
+| 29   | TestRes      | uint8         |      | RO  | -       | Test result                              |
+| 30   | Run          | uint32        | s    | RO  | -       | Runtime in seconds                       |
+| 31   | RstCause     | uint8         |      | RO  | -       | Last reset cause                         |
+| 32   | Rtc CV       | uint8         |      | RO  | -       | RTC calibration value                    |
+| 33   | Afrz         | float         | 'C   | RW  | 5-30    | Anti-freeze temperature                  |
+| 34   | Corr         | float         | 'C   | RW  | -4 to 4 | Temperature correction offset            |
+
+Schedule params: A slots are uint32 (4 bytes), B slots are uint16 (2 bytes).
+Each day has two schedule entries (A and B), ordered Sun through Sat.
+
+**GET_PARAMS response wire format (thermostat):**
+```
+[count(1)][start_index_LE(2)] then for each param: [status_byte][value_bytes]
+```
+
+The status byte precedes each value (not a trailing separator). Values observed:
+- `0x00`: default status (RO non-measured params, strings, counters)
+- `0x01`: writable settings that have been modified (presets, correction, anti-freeze)
+- `0x81`: measured/schedule values (temperature, schedules, monitors)
+
+**Data flow for thermostat parameters:**
+
+The panel is the source of truth for all thermostat configuration. On pairing and
+periodically, the panel writes schedules, presets, hysteresis, and other settings to
+the thermostat via MODIFY_PARAM (0x29). The thermostat stores these values and echoes
+them back when polled with GET_PARAMS (0x40).
+
+The only value the thermostat generates itself is the room temperature (param 0,
+IntrSens). All other writable params are panel-written config that the thermostat
+buffers and returns.
+
+For a virtual thermostat: accept all MODIFY_PARAM writes, store the values, return
+them in GET_PARAMS. Only param 0 is injected (from the HA temperature submission).
 
 **SERVICE 0x2001 device table format (partial decode):**
 ```

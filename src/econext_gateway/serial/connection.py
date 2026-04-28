@@ -22,10 +22,12 @@ class GM3SerialTransport:
         port: str,
         baudrate: int = 115200,
         reconnect_delay: float = 5.0,
+        keep_destinations: set[int] | None = None,
     ):
         self.port = port
         self.baudrate = baudrate
         self.reconnect_delay = reconnect_delay
+        self._keep_destinations = keep_destinations
 
         self._protocol: GM3Protocol | None = None
         self._transport: asyncio.Transport | None = None
@@ -58,9 +60,10 @@ class GM3SerialTransport:
             import serial_asyncio
 
             loop = asyncio.get_running_loop()
+            kd = self._keep_destinations
             transport, protocol = await serial_asyncio.create_serial_connection(
                 loop,
-                GM3Protocol,
+                lambda: GM3Protocol(keep_destinations=kd),
                 self.port,
                 baudrate=self.baudrate,
             )

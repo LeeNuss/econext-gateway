@@ -4,14 +4,21 @@ Orchestrates serial communication, request/response correlation,
 parameter reading/writing, and cache management.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import struct
+import time as _time
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from econext_gateway.thermostat.emulator import ThermostatEmulator
 
 from econext_gateway.core.cache import ParameterCache
 from econext_gateway.core.models import Alarm, Parameter
@@ -19,24 +26,24 @@ from econext_gateway.protocol.codec import decode_value, encode_value
 from econext_gateway.protocol.constants import (
     ALARM_REQUEST_PREFIX,
     CLAIMABLE_ADDRESS_RANGE,
-    DEST_ADDRESSES,
+    CONTROLLER_ADDRESS,
     DEVICE_TABLE_FUNC,
     GET_TOKEN_FUNC,
     GIVE_BACK_TOKEN_DATA,
-    IDENTIFY_ANS_CMD,
-    IDENTIFY_CMD,
     IDENTIFY_RESPONSE_DATA,
+    PAIRING_ASSIGN_FUNC,
+    PAIRING_BEACON_FUNC,
     PANEL_ADDRESS,
     POLL_INTERVAL,
     REQUEST_TIMEOUT,
     RETRY_ATTEMPTS,
-    SERVICE_ANS_CMD,
-    SERVICE_CMD,
+    THERMOSTAT_CLAIMABLE_ADDRESS_RANGE,
     TOKEN_TIMEOUT,
     TYPE_SIZES,
     Command,
     DataType,
 )
+from econext_gateway.protocol.dispatcher import FrameDispatcher
 from econext_gateway.protocol.frames import Frame
 from econext_gateway.serial.connection import GM3SerialTransport
 
@@ -65,6 +72,54 @@ _CMD_NAMES: dict[int, str] = {
 
 def _cmd_name(cmd: int) -> str:
     return _CMD_NAMES.get(cmd, f"0x{cmd:02X}")
+
+
+# Known real thermostat addresses on the bus (for debug logging)
+_KNOWN_THERMOSTAT_ADDRS = frozenset({165, 166, 167})
+
+
+def _log_thermostat_frame(
+    frame: Frame,
+    thermostat_addrs: frozenset[int],
+    *,
+    truncate_hex: bool = False,
+) -> None:
+    """Log thermostat-related bus traffic at DEBUG level.
+
+    Args:
+        frame: The bus frame to log.
+        thermostat_addrs: Set of thermostat addresses (known + virtual).
+        truncate_hex: If True, truncate hex dump (used during polling).
+    """
+    if frame.source not in thermostat_addrs and frame.destination not in thermostat_addrs:
+        return
+
+    extra = ""
+    if frame.command == 0xC0 and frame.data and len(frame.data) >= 8:
+        try:
+            temp = struct.unpack("<f", frame.data[4:8])[0]
+            extra = f" temp={temp:.1f}"
+        except struct.error:
+            pass
+
+    hex_dump = ""
+    if frame.command == 0xC0 and frame.data:
+        if truncate_hex and frame.source in thermostat_addrs:
+            hex_dump = f" hex={frame.data[:20].hex()}..."
+        else:
+            hex_dump = f" hex={frame.data.hex()}"
+    elif frame.data:
+        hex_dump = f" data={frame.data.hex()}"
+
+    logger.debug(
+        "THERMO src=%d dst=%d %s [%db]%s%s",
+        frame.source,
+        frame.destination,
+        _cmd_name(frame.command),
+        len(frame.data) if frame.data else 0,
+        extra,
+        hex_dump,
+    )
 
 
 class ParamStructEntry:
@@ -125,6 +180,22 @@ class BusDevice:
     temperature: float | None = None
     source: str = ""
     last_seen: float = 0.0
+
+
+@dataclass
+class _PendingRequest:
+    """An outbound request awaiting a matching response frame.
+
+    Set by `send_and_receive` before writing, resolved by the frame
+    dispatcher when a matching frame arrives. Only one request is
+    in flight at a time; concurrent callers serialise via `_lock`.
+    """
+
+    destination: int  # expected response source (or 0xFFFF for broadcast)
+    expected_cmd: int | None
+    accept_cmds: set[int]
+    validator: Callable[[Frame], bool] | None
+    future: asyncio.Future
 
 
 _KNOWN_ADDRESSES: dict[int, str] = {
@@ -496,13 +567,15 @@ class ProtocolHandler:
         self,
         connection: GM3SerialTransport,
         cache: ParameterCache,
-        destination: int = DEST_ADDRESSES[0],
+        destination: int = CONTROLLER_ADDRESS,
         poll_interval: float = POLL_INTERVAL,
         request_timeout: float = REQUEST_TIMEOUT,
         params_per_request: int = 50,
         token_timeout: float = TOKEN_TIMEOUT,
         token_required: bool = True,
         paired_address_file: Path | None = None,
+        thermostat_emulator: ThermostatEmulator | None = None,
+        thermostat_address_file: Path | None = None,
     ):
         """Initialize protocol handler.
 
@@ -520,6 +593,12 @@ class ProtocolHandler:
                 On first boot the gateway claims a free address via the
                 panel's IDENTIFY scan and persists it here.  Delete the
                 file and restart to re-pair at a new address.
+            thermostat_emulator: Optional thermostat emulator for virtual
+                thermostat support. When set, the handler will delegate
+                frames addressed to the thermostat address to the emulator.
+            thermostat_address_file: Path to persist thermostat bus address.
+                When the thermostat has address=0 it will auto-register
+                via IDENTIFY during pairing and persist the address here.
         """
         self._connection = connection
         self._cache = cache
@@ -558,7 +637,90 @@ class ProtocolHandler:
         self._poll_task: asyncio.Task | None = None
         self._running = False
         self._lock = asyncio.Lock()
+        self._lock_holder: str | None = None
         self._has_token = False
+        self._thermostat = thermostat_emulator
+        self._thermostat_address_file = thermostat_address_file
+
+        # Dispatcher + listener state (Phase 2 refactor).
+        # The dispatcher runs a background task that consumes the protocol
+        # frame queue and routes each frame through subscribers. Previously
+        # `_wait_for_token` and `send_and_receive` both pulled from the queue
+        # while holding `_lock`, which serialised the entire poll cycle
+        # (including multi-second token waits) against HA API calls.
+        self._dispatcher: FrameDispatcher | None = None
+        self._watchdog_task: asyncio.Task | None = None
+        # Set when the panel grants us the bus token (SERVICE/GET_TOKEN).
+        # Cleared when we return the token. `_wait_for_token` waits on this.
+        self._token_event = asyncio.Event()
+        # Outbound request awaiting a matching response frame. The dispatcher
+        # resolves the future when a matching frame arrives.
+        self._pending_request: _PendingRequest | None = None
+        # Small buffer for response-shaped frames that arrived slightly
+        # before `send_and_receive` set the pending slot. Size-capped so
+        # it can't grow unbounded in production.
+        self._unmatched_response_buffer: list[Frame] = []
+        self._unmatched_buffer_max = 8
+        # Track the last-logged device-table address set so we only emit
+        # the "Bus devices" summary on membership changes (panel broadcasts
+        # the table every ~10 s, but membership itself rarely changes).
+        self._last_logged_device_set: frozenset[int] | None = None
+        # Last time any frame was seen on the bus — for bus-silence watchdog.
+        self._last_frame_time: float = 0.0
+        # Pairing-mode state (was local to `_wait_for_token` in the pre-refactor
+        # loop; now instance state so subscribers can see it).
+        self._pairing_mode_active: bool = False
+        self._device_table_seen: bool = len(self._device_table) > 0
+
+        # Thermostat registration state (None = thermostat not enabled)
+        if self._thermostat is not None and self._thermostat.address != 0:
+            self._thermostat_reg_state: str | None = "paired"
+        elif self._thermostat is not None:
+            self._thermostat_reg_state = "unpaired"
+        else:
+            self._thermostat_reg_state = None
+        self._thermostat_tentative_since: float | None = None
+
+    @asynccontextmanager
+    async def _traced_lock(self, name: str):
+        """Acquire self._lock and record contention as an operational signal.
+
+        Emits LOCK_WAIT at INFO only when a caller is blocked more than
+        200 ms (meaningful contention) and LOCK_HELD at INFO only when a
+        critical section takes more than 1 s (unusual — anything shorter
+        is routine bus turnaround). Below those thresholds the events go
+        to DEBUG so steady-state operation is quiet.
+        """
+        wait_start = _time.monotonic()
+        prior_holder = self._lock_holder
+        await self._lock.acquire()
+        wait_ms = (_time.monotonic() - wait_start) * 1000
+        if wait_ms > 200.0:
+            logger.info(
+                "LOCK_WAIT name=%s waited=%.0fms holder_was=%s",
+                name,
+                wait_ms,
+                prior_holder,
+            )
+        elif wait_ms > 5.0:
+            logger.debug(
+                "LOCK_WAIT name=%s waited=%.0fms holder_was=%s",
+                name,
+                wait_ms,
+                prior_holder,
+            )
+        self._lock_holder = name
+        held_start = _time.monotonic()
+        try:
+            yield
+        finally:
+            held_ms = (_time.monotonic() - held_start) * 1000
+            if held_ms > 1000.0:
+                logger.info("LOCK_HELD name=%s held=%.0fms", name, held_ms)
+            else:
+                logger.debug("LOCK_HELD name=%s held=%.0fms", name, held_ms)
+            self._lock_holder = None
+            self._lock.release()
 
     def _load_paired_address(self) -> int | None:
         """Load persisted paired address from file."""
@@ -580,6 +742,142 @@ class ProtocolHandler:
             logger.info("Saved paired address %d to %s", address, self._paired_address_file)
         except OSError as e:
             logger.warning("Failed to save paired address: %s", e)
+
+    # Temporary source address for thermostat pairing SERVICE_ANS response.
+    # Real ecoSTER uses 164; we use a different address to avoid collision.
+    THERMOSTAT_PAIRING_ADDRESS = 163
+
+    async def _thermostat_respond_to_beacon(self, beacon_frame: Frame) -> None:
+        """Respond to a 0x2004 pairing beacon with SERVICE_ANS.
+
+        The real thermostat sends SERVICE_ANS (0xE8) from a temporary address
+        to the panel with a 67-byte identity payload. The panel then assigns
+        a final address via SERVICE 0x2005.
+        """
+        from econext_gateway.thermostat.emulator import THERMOSTAT_PAIRING_IDENTITY
+
+        data = THERMOSTAT_PAIRING_IDENTITY
+        await asyncio.sleep(0.02)  # RS-485 turnaround
+        response = Frame(
+            destination=PANEL_ADDRESS,
+            command=Command.SERVICE_RESPONSE,
+            data=data,
+            source=self.THERMOSTAT_PAIRING_ADDRESS,
+        )
+        await self._connection.protocol.write_frame(response, flush_after=True, clear_echo=False)
+        logger.info(
+            "Thermostat: sent SERVICE_ANS to panel from addr %d (%d bytes)",
+            self.THERMOSTAT_PAIRING_ADDRESS,
+            len(data),
+        )
+
+    def request_thermostat_pairing(self) -> bool:
+        """Request thermostat pairing. Called from the API.
+
+        Resets current pairing (deletes address file, clears emulator address)
+        and sets state to 'pairing_requested' so the handler will respond to
+        the next 0x2004 pairing beacon. Allows re-pairing at a new address.
+
+        Returns:
+            True if pairing was requested, False if not applicable.
+        """
+        if self._thermostat is None:
+            return False
+
+        # Always allow - reset any current state
+        if self._thermostat_reg_state == "paired":
+            logger.info(
+                "Resetting thermostat pairing (was at address %d)",
+                self._thermostat.address,
+            )
+        elif self._thermostat_reg_state not in ("unpaired", None):
+            logger.info(
+                "Resetting thermostat pairing state (was %s)",
+                self._thermostat_reg_state,
+            )
+        self._thermostat.address = 0
+        # Keep _written_values - panel config and temperature survive re-pairing
+        if self._thermostat_address_file is not None:
+            try:
+                self._thermostat_address_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        self._thermostat_reg_state = "pairing_requested"
+        self._thermostat_tentative_since = asyncio.get_running_loop().time()
+        logger.info("Thermostat pairing requested via API, waiting for 0x2004 beacon")
+        return True
+
+    def _save_thermostat_address(self, address: int) -> None:
+        """Persist the thermostat bus address to file."""
+        if self._thermostat_address_file is None:
+            return
+        try:
+            self._thermostat_address_file.parent.mkdir(parents=True, exist_ok=True)
+            self._thermostat_address_file.write_text(str(address))
+            logger.info("Saved thermostat address %d to %s", address, self._thermostat_address_file)
+        except OSError as e:
+            logger.warning("Failed to save thermostat address: %s", e)
+
+    def _process_device_table(self, data: bytes, now: float) -> list[DeviceTableEntry]:
+        """Parse a device table broadcast and update registry.
+
+        Shared by _handle_panel_frame (during polling) and _wait_for_token
+        (during registration/pairing). Updates _device_table, _device_registry,
+        and confirms thermostat registration if address appears.
+
+        Returns:
+            Parsed device table entries.
+        """
+        entries = parse_device_table(data)
+        self._device_table = entries
+        for e in entries:
+            dev = self._device_registry.setdefault(
+                e.address,
+                BusDevice(address=e.address, source="device_table"),
+            )
+            dev.temperature = e.temperature
+            dev.last_seen = now
+
+        # Log the bus-device summary only when the address set changes.
+        # The panel broadcasts this every ~10 s; membership rarely does,
+        # so a state-change log is the useful signal. Temperatures still
+        # update on every broadcast via the registry above.
+        current_set = frozenset(self._device_registry.keys())
+        if current_set != self._last_logged_device_set:
+            parts = []
+            for d in sorted(self._device_registry.values(), key=lambda d: d.address):
+                label = d.identity or _KNOWN_ADDRESSES.get(d.address, "Unknown")
+                if d.temperature is not None:
+                    parts.append(f"{d.address}({label} {d.temperature:.1f}C)")
+                else:
+                    parts.append(f"{d.address}({label})")
+            logger.info(
+                "Bus devices (%d): %s", len(self._device_registry), ", ".join(parts)
+            )
+            self._last_logged_device_set = current_set
+
+        # Thermostat registration: confirm when address appears in device table
+        if (
+            self._thermostat_reg_state == "tentative"
+            and self._thermostat is not None
+            and self._thermostat.address in {e.address for e in entries}
+        ):
+            self._thermostat_reg_state = "paired"
+            self._save_thermostat_address(self._thermostat.address)
+            logger.info(
+                "Thermostat address %d confirmed in device table, persisted",
+                self._thermostat.address,
+            )
+
+        return entries
+
+    @property
+    def _thermostat_log_addrs(self) -> frozenset[int]:
+        """Thermostat addresses for debug logging (known + virtual)."""
+        if self._thermostat is not None and self._thermostat.address != 0:
+            return _KNOWN_THERMOSTAT_ADDRS | {self._thermostat.address}
+        return _KNOWN_THERMOSTAT_ADDRS
 
     async def _resolve_min_max(self, entry: ParamStructEntry) -> tuple[float | None, float | None]:
         """Resolve min/max values, following parameter index references.
@@ -626,17 +924,40 @@ class ProtocolHandler:
         """Whether background polling is active."""
         return self._running
 
+    @property
+    def thermostat_pairing_state(self) -> str | None:
+        """Current thermostat pairing state, or None if thermostat not enabled."""
+        return self._thermostat_reg_state
+
+    @property
+    def thermostat_address(self) -> int | None:
+        """Bus address of the virtual thermostat, or None if not paired/enabled."""
+        if self._thermostat is not None and self._thermostat.address != 0:
+            return self._thermostat.address
+        return None
+
     async def start(self) -> None:
-        """Start background polling task."""
+        """Start background polling + frame dispatcher + bus watchdog."""
         if self._running:
             return
 
         self._running = True
+        self._last_frame_time = asyncio.get_running_loop().time()
+
+        # Dispatcher owns the frame-queue read loop; it routes each frame
+        # through subscribers (currently a single `_route_inbound` handler).
+        self._dispatcher = FrameDispatcher(self._connection)
+        self._dispatcher.subscribe(self._route_inbound)
+        await self._dispatcher.start()
+
+        self._watchdog_task = asyncio.create_task(
+            self._bus_silence_watchdog(), name="BusSilenceWatchdog"
+        )
         self._poll_task = asyncio.create_task(self._poll_loop())
         logger.info("Protocol handler started")
 
     async def stop(self) -> None:
-        """Stop background polling task."""
+        """Stop background polling + frame dispatcher + bus watchdog."""
         self._running = False
 
         if self._poll_task is not None:
@@ -646,6 +967,18 @@ class ProtocolHandler:
             except asyncio.CancelledError:
                 pass
             self._poll_task = None
+
+        if self._watchdog_task is not None:
+            self._watchdog_task.cancel()
+            try:
+                await self._watchdog_task
+            except asyncio.CancelledError:
+                pass
+            self._watchdog_task = None
+
+        if self._dispatcher is not None:
+            await self._dispatcher.stop()
+            self._dispatcher = None
 
         logger.info("Protocol handler stopped")
 
@@ -658,51 +991,32 @@ class ProtocolHandler:
         Args:
             frame: Frame from the panel addressed to us.
         """
-        if frame.command == IDENTIFY_CMD:
+        if frame.command == Command.IDENTIFY:
             # Panel is asking "who are you?" - respond with device identity
-            # 20ms delay for RS-485 bus turnaround (matches original webserver)
-            await asyncio.sleep(0.02)
             response = Frame(
                 destination=PANEL_ADDRESS,
-                command=IDENTIFY_ANS_CMD,
+                command=Command.IDENTIFY_RESPONSE,
                 data=IDENTIFY_RESPONSE_DATA,
                 source=self._source_address,
             )
-            # flush_after=True ensures proper RS-485 handling:
-            # 1. Clears RX buffer (flushInput) to discard any garbage during turnaround
-            # 2. Waits for TX buffer to empty (flush) to ensure data is fully transmitted
-            # This matches the original webserver's clearFrameBuffer() + flush() sequence
-            await self._connection.protocol.write_frame(response, flush_after=True)
-            logger.info("Responded to IDENTIFY from panel")
+            # No flush: fire-and-forget write avoids blocking the event loop
+            # (~7ms tcdrain) which delays time-critical thermostat responses.
+            # The OS/USB driver drains TX asynchronously. clear_echo=False
+            # preserves RX buffer on the half-duplex bus.
+            await self._connection.protocol.write_frame(response, flush_after=False)
+            logger.debug("Responded to IDENTIFY from panel")
 
-        elif frame.command == SERVICE_CMD:
+        elif frame.command == Command.SERVICE:
             func_code = 0
             if len(frame.data) >= 2:
                 func_code = struct.unpack("<H", frame.data[0:2])[0]
 
             if func_code == GET_TOKEN_FUNC:
                 self._has_token = True
-                logger.info("Token received from master panel")
+                self._token_event.set()
+                logger.debug("Token received from master panel")
             elif func_code == DEVICE_TABLE_FUNC:
-                entries = parse_device_table(frame.data)
-                self._device_table = entries
-                now = asyncio.get_event_loop().time()
-                for e in entries:
-                    dev = self._device_registry.setdefault(
-                        e.address,
-                        BusDevice(address=e.address, source="device_table"),
-                    )
-                    dev.temperature = e.temperature
-                    dev.last_seen = now
-                # Log all known bus devices (registry merges device table + IDENTIFY)
-                parts = []
-                for d in sorted(self._device_registry.values(), key=lambda d: d.address):
-                    label = d.identity or _KNOWN_ADDRESSES.get(d.address, "Unknown")
-                    if d.temperature is not None:
-                        parts.append(f"{d.address}({label} {d.temperature:.1f}C)")
-                    else:
-                        parts.append(f"{d.address}({label})")
-                logger.info("Bus devices (%d): %s", len(self._device_registry), ", ".join(parts))
+                self._process_device_table(frame.data, asyncio.get_running_loop().time())
             else:
                 logger.debug(
                     "SERVICE frame: dest=%d, func=0x%04X, data=%s",
@@ -717,203 +1031,423 @@ class ProtocolHandler:
         await asyncio.sleep(0.02)
         token_frame = Frame(
             destination=PANEL_ADDRESS,
-            command=SERVICE_CMD,
+            command=Command.SERVICE,
             data=GIVE_BACK_TOKEN_DATA,
             source=self._source_address,
         )
         await self._connection.protocol.write_frame(token_frame)
         self._has_token = False
-        logger.info("Token returned to master panel")
+        self._token_event.clear()
+        logger.debug("Token returned to master panel")
 
     async def _wait_for_token(self) -> None:
         """Wait for bus token from the master panel.
 
-        Listens passively on the bus, responds to IDENTIFY probes,
-        and waits for the panel to grant us the token (SERVICE frame
-        with GET_TOKEN function code). This matches the original
-        webserver's checkIfMultimaster() + passive listen behavior.
+        Event-based: the frame dispatcher sets `_token_event` when a
+        SERVICE/GET_TOKEN from the panel arrives. This replaces the
+        pre-refactor inline frame-reading loop so the lock covering
+        the wait does not also cover a multi-second panel cycle.
 
-        When token_required=True, waits indefinitely (like the original
-        webserver which never sends without the token). When False,
-        falls back after token_timeout seconds.
+        When `token_required=True`, waits indefinitely (matches original
+        webserver behaviour). When False, falls back after
+        `token_timeout` seconds.
         """
         if not self._token_required and self._token_timeout <= 0:
             return
+        if self._has_token:
+            return
 
         if self._token_required:
-            logger.debug("Waiting for token from panel (indefinite, token_required=True)...")
+            logger.debug("Waiting for token from panel (indefinite)...")
         else:
-            logger.debug("Waiting for token from panel (%.0fs timeout)...", self._token_timeout)
-
-        loop = asyncio.get_event_loop()
-        deadline = None if self._token_required else loop.time() + self._token_timeout
-        device_table_seen = len(self._device_table) > 0
-        last_frame_time = loop.time()
-        bus_silence_limit = 30.0  # seconds of no bus traffic before reconnect
-
-        while True:
-            if deadline is not None:
-                remaining = deadline - loop.time()
-                if remaining <= 0:
-                    logger.debug("Token wait timed out after %.0fs, proceeding without token", self._token_timeout)
-                    return
-                read_timeout = min(remaining, 0.5)
-            else:
-                read_timeout = 0.5
-
-            frame = await self._connection.protocol.receive_frame(timeout=read_timeout)
-
-            if frame is None:
-                # Check for bus silence (no frames at all)
-                silence = loop.time() - last_frame_time
-                if silence >= bus_silence_limit:
-                    logger.warning(
-                        "Bus silent for %.0fs, reconnecting serial port",
-                        silence,
-                    )
-                    await self._connection.reconnect()
-                    raise ConnectionError("Bus silence detected, reconnected serial port")
-                continue
-
-            last_frame_time = loop.time()
-
-            # Log ALL bus traffic with human-readable command names
-            cmd_name = _cmd_name(frame.command)
             logger.debug(
-                "BUS  src=%-5d dst=%-5d %s  [%db]",
-                frame.source,
-                frame.destination,
-                cmd_name,
-                len(frame.data) if frame.data else 0,
+                "Waiting for token from panel (%.0fs timeout)...", self._token_timeout
             )
 
-            # Track IDENTIFY responses from other devices (bus sniff)
-            if frame.command == IDENTIFY_ANS_CMD and frame.destination == PANEL_ADDRESS:
-                identity_str = _parse_identity(frame.data) if frame.data else ""
-                logger.debug(
-                    "IDENTIFY_ANS from %d -> panel: identity=%r",
-                    frame.source,
-                    identity_str,
-                )
-                dev = self._device_registry.setdefault(
-                    frame.source,
-                    BusDevice(address=frame.source, source="identify"),
-                )
-                dev.identity = identity_str
-                dev.last_seen = loop.time()
+        token_wait_start = _time.monotonic()
+        last_noprog_log = token_wait_start
 
-            # Log all SERVICE frames with function codes
-            if frame.command == SERVICE_CMD and len(frame.data) >= 2:
-                func_code = struct.unpack("<H", frame.data[0:2])[0]
-                target_note = " (TO US)" if frame.destination == self._source_address else ""
-                logger.debug(
-                    "SERVICE src=%d dst=%d func=0x%04X%s",
-                    frame.source,
-                    frame.destination,
-                    func_code,
-                    target_note,
-                )
-
-            # Sniff device table broadcasts while waiting (even before we have
-            # an address) so we know which addresses are already occupied.
-            if frame.source == PANEL_ADDRESS and frame.command == SERVICE_CMD and len(frame.data) >= 2:
-                func_code = struct.unpack("<H", frame.data[0:2])[0]
-                if func_code == DEVICE_TABLE_FUNC:
-                    entries = parse_device_table(frame.data)
-                    self._device_table = entries
-                    addrs = [e.address for e in entries]
-                    logger.debug("Device table (sniffed): %d devices, addresses=%s", len(entries), addrs)
-                    for e in entries:
-                        logger.debug("  device addr=%d temp=%.1f", e.address, e.temperature)
-                    for e in entries:
-                        dev = self._device_registry.setdefault(
-                            e.address,
-                            BusDevice(address=e.address, source="device_table"),
-                        )
-                        dev.temperature = e.temperature
-                        dev.last_seen = loop.time()
-                    device_table_seen = True
-
-            # Log all IDENTIFY probes from the panel
-            if frame.source == PANEL_ADDRESS and frame.command == IDENTIFY_CMD:
-                logger.debug("Panel IDENTIFY probe to %d", frame.destination)
-
-            # Auto-registration: when unpaired, intercept IDENTIFY probes from
-            # the panel to addresses in the claimable range that aren't already
-            # occupied by another device. Wait for at least one device table
-            # broadcast so we know what's occupied.
-            occupied = {e.address for e in self._device_table}
-            if (
-                self._registration_state == "unpaired"
-                and device_table_seen
-                and frame.source == PANEL_ADDRESS
-                and frame.command == IDENTIFY_CMD
-                and frame.destination != self._source_address
-                and frame.destination in CLAIMABLE_ADDRESS_RANGE
-                and frame.destination not in occupied
-            ):
-                target = frame.destination
-                logger.info(
-                    "Scanning IDENTIFY to %d detected, claiming tentatively",
-                    target,
-                )
-                self._source_address = target
-                self._registration_state = "tentative"
-                self._tentative_since = loop.time()
-                # Respond to this IDENTIFY immediately (do NOT persist yet)
-                await self._handle_panel_frame(frame)
-                if self._has_token:
-                    self._registration_state = "paired"
-                    self._save_paired_address(target)
-                    self._device_registry[target] = BusDevice(
-                        address=target,
-                        identity=_parse_identity(IDENTIFY_RESPONSE_DATA),
-                        source="self",
-                        last_seen=loop.time(),
+        while not self._has_token:
+            now_mono = _time.monotonic()
+            if self._token_required:
+                wait_slice = 5.0
+            else:
+                remaining = self._token_timeout - (now_mono - token_wait_start)
+                if remaining <= 0:
+                    logger.info(
+                        "TOKEN timeout waited=%.1fs proceeding without token",
+                        now_mono - token_wait_start,
                     )
-                    logger.info("Address %d validated by token grant, persisted", target)
                     return
-                continue
+                wait_slice = min(remaining, 5.0)
 
-            # Check tentative timeout: if we claimed an address but never got
-            # a token, revert to unpaired so we try the next scanned address.
-            if (
-                self._registration_state == "tentative"
-                and self._tentative_since is not None
-                and loop.time() - self._tentative_since > 20.0
-            ):
-                logger.warning(
-                    "Tentative address %d timed out (no token in 20s), reverting",
+            try:
+                await asyncio.wait_for(self._token_event.wait(), timeout=wait_slice)
+                break
+            except TimeoutError:
+                now_mono = _time.monotonic()
+                if now_mono - last_noprog_log >= 5.0:
+                    logger.info(
+                        "TOKEN waited=%.1fs no_grant_yet lock_holder=%s",
+                        now_mono - token_wait_start,
+                        self._lock_holder,
+                    )
+                    last_noprog_log = now_mono
+
+        logger.debug(
+            "TOKEN granted waited=%.1fs", _time.monotonic() - token_wait_start
+        )
+
+    def _try_match_pending(self, frame: Frame) -> bool:
+        """If this frame is the response our `send_and_receive` is waiting
+        on, resolve the future and return True. Otherwise return False.
+        """
+        pending = self._pending_request
+        if pending is None or pending.future.done():
+            return False
+
+        if frame.destination != self._source_address and frame.destination != 0xFFFF:
+            return False
+
+        # Panel IDENTIFY / SERVICE belong to the panel subscriber unless we
+        # explicitly sent a request to the panel (e.g. alarm SERVICE query).
+        if frame.source == PANEL_ADDRESS and frame.command in (
+            Command.IDENTIFY,
+            Command.SERVICE,
+        ):
+            return False
+
+        if frame.source != pending.destination and pending.destination != 0xFFFF:
+            return False
+
+        if frame.command in pending.accept_cmds:
+            pending.future.set_result(frame)
+            return True
+
+        if frame.command != pending.expected_cmd:
+            return False
+
+        if pending.validator is not None and not pending.validator(frame):
+            return False
+
+        pending.future.set_result(frame)
+        return True
+
+    async def _route_inbound(self, frame: Frame) -> bool:
+        """Dispatcher subscriber: route a single inbound frame.
+
+        Contains the frame-handling logic extracted from the
+        pre-refactor `_wait_for_token` loop. Preserves the exact
+        decision order (response match, sniff, pairing, auto-reg,
+        thermostat, panel) so behaviour is unchanged, only the
+        execution context (background task instead of held lock).
+        """
+        loop = asyncio.get_running_loop()
+        self._last_frame_time = loop.time()
+
+        if self._try_match_pending(frame):
+            return True
+
+        cmd_name = _cmd_name(frame.command)
+        logger.debug(
+            "BUS  src=%-5d dst=%-5d %s  [%db]",
+            frame.source,
+            frame.destination,
+            cmd_name,
+            len(frame.data) if frame.data else 0,
+        )
+        _log_thermostat_frame(frame, self._thermostat_log_addrs)
+
+        if (
+            frame.command == Command.IDENTIFY_RESPONSE
+            and frame.destination == PANEL_ADDRESS
+        ):
+            identity_str = _parse_identity(frame.data) if frame.data else ""
+            logger.debug(
+                "IDENTIFY_ANS from %d -> panel: identity=%r",
+                frame.source,
+                identity_str,
+            )
+            dev = self._device_registry.setdefault(
+                frame.source,
+                BusDevice(address=frame.source, source="identify"),
+            )
+            dev.identity = identity_str
+            dev.last_seen = loop.time()
+
+        if frame.command == Command.SERVICE and len(frame.data) >= 2:
+            func_code = struct.unpack("<H", frame.data[0:2])[0]
+            target_note = (
+                " (TO US)" if frame.destination == self._source_address else ""
+            )
+            logger.debug(
+                "SERVICE src=%d dst=%d func=0x%04X%s",
+                frame.source,
+                frame.destination,
+                func_code,
+                target_note,
+            )
+
+        if (
+            frame.source == PANEL_ADDRESS
+            and frame.command == Command.SERVICE
+            and len(frame.data) >= 2
+        ):
+            func_code = struct.unpack("<H", frame.data[0:2])[0]
+            if func_code == DEVICE_TABLE_FUNC:
+                self._process_device_table(frame.data, loop.time())
+                self._device_table_seen = True
+            if func_code == PAIRING_BEACON_FUNC and not self._pairing_mode_active:
+                self._pairing_mode_active = True
+                logger.info("Pairing mode detected (SERVICE 0x2004 beacon)")
+
+        if (
+            frame.command == Command.SERVICE_RESPONSE
+            and frame.destination == PANEL_ADDRESS
+        ):
+            logger.debug(
+                "THERMO_CAPTURE SERVICE_ANS src=%d dst=%d len=%d data=%s",
+                frame.source,
+                frame.destination,
+                len(frame.data) if frame.data else 0,
+                frame.data.hex() if frame.data else "",
+            )
+
+        # Thermostat pairing: 0x2004 beacon response
+        if (
+            self._thermostat_reg_state == "pairing_requested"
+            and self._pairing_mode_active
+            and self._thermostat is not None
+            and frame.source == PANEL_ADDRESS
+            and frame.command == Command.SERVICE
+            and len(frame.data) >= 2
+            and struct.unpack("<H", frame.data[0:2])[0] == PAIRING_BEACON_FUNC
+        ):
+            self._thermostat_reg_state = "beacon_responded"
+            self._thermostat_tentative_since = loop.time()
+            logger.info("Thermostat: responding to pairing beacon with SERVICE_ANS")
+            await self._thermostat_respond_to_beacon(frame)
+            return True
+
+        # Thermostat pairing: 0x2005 address assignment
+        if (
+            self._thermostat_reg_state == "beacon_responded"
+            and self._thermostat is not None
+            and frame.source == PANEL_ADDRESS
+            and frame.command == Command.SERVICE
+            and len(frame.data) >= 6
+            and struct.unpack("<H", frame.data[0:2])[0] == PAIRING_ASSIGN_FUNC
+        ):
+            assigned_addr = struct.unpack("<H", frame.data[4:6])[0]
+            logger.info(
+                "Thermostat: panel assigned address %d (from SERVICE 0x2005)",
+                assigned_addr,
+            )
+            self._thermostat.address = assigned_addr
+            self._thermostat_reg_state = "paired"
+            self._save_thermostat_address(assigned_addr)
+            await asyncio.sleep(0.02)
+            ack = Frame(
+                destination=PANEL_ADDRESS,
+                command=Command.SERVICE_RESPONSE,
+                data=frame.data,
+                source=assigned_addr,
+            )
+            await self._connection.protocol.write_frame(
+                ack, flush_after=True, clear_echo=False
+            )
+            from econext_gateway.thermostat.emulator import THERMOSTAT_IDENTITY
+
+            self._device_registry[assigned_addr] = BusDevice(
+                address=assigned_addr,
+                identity=_parse_identity(THERMOSTAT_IDENTITY),
+                source="thermostat_pairing",
+                last_seen=loop.time(),
+            )
+            logger.info(
+                "Thermostat: ACK'd address assignment, now paired at %d",
+                assigned_addr,
+            )
+            return True
+
+        if frame.source == PANEL_ADDRESS and frame.command == Command.IDENTIFY:
+            logger.debug("Panel IDENTIFY probe to %d", frame.destination)
+
+        # Gateway auto-registration
+        occupied = {e.address for e in self._device_table}
+        if (
+            self._registration_state == "unpaired"
+            and self._device_table_seen
+            and frame.source == PANEL_ADDRESS
+            and frame.command == Command.IDENTIFY
+            and frame.destination != self._source_address
+            and frame.destination in CLAIMABLE_ADDRESS_RANGE
+            and frame.destination not in occupied
+        ):
+            target = frame.destination
+            logger.info(
+                "Scanning IDENTIFY to %d detected, claiming tentatively", target
+            )
+            self._source_address = target
+            self._registration_state = "tentative"
+            self._tentative_since = loop.time()
+            await self._handle_panel_frame(frame)
+            return True
+
+        # Thermostat auto-registration (pairing-mode only)
+        if (
+            self._thermostat_reg_state == "unpaired"
+            and self._pairing_mode_active
+            and self._device_table_seen
+            and frame.source == PANEL_ADDRESS
+            and frame.command == Command.IDENTIFY
+            and frame.destination in THERMOSTAT_CLAIMABLE_ADDRESS_RANGE
+            and frame.destination not in occupied
+            and frame.destination != self._source_address
+            and self._thermostat is not None
+        ):
+            target = frame.destination
+            logger.info(
+                "Thermostat: IDENTIFY to %d detected, claiming tentatively", target
+            )
+            self._thermostat.address = target
+            self._thermostat_reg_state = "tentative"
+            self._thermostat_tentative_since = loop.time()
+            await self._thermostat.handle_frame(
+                frame, self._connection.protocol.write_frame
+            )
+            return True
+
+        # Gateway tentative timeout
+        if (
+            self._registration_state == "tentative"
+            and self._tentative_since is not None
+            and loop.time() - self._tentative_since > 20.0
+        ):
+            logger.warning(
+                "Tentative address %d timed out (no token in 20s), reverting",
+                self._source_address,
+            )
+            self._source_address = 0
+            self._registration_state = "unpaired"
+            self._tentative_since = None
+
+        # Thermostat pairing timeout
+        if (
+            self._thermostat_reg_state
+            in ("pairing_requested", "tentative", "beacon_responded")
+            and self._thermostat_tentative_since is not None
+            and loop.time() - self._thermostat_tentative_since > 60.0
+        ):
+            logger.warning(
+                "Thermostat pairing timed out (state=%s, 60s elapsed), reverting",
+                self._thermostat_reg_state,
+            )
+            if self._thermostat is not None:
+                self._thermostat.address = 0
+            self._thermostat_reg_state = "unpaired"
+            self._thermostat_tentative_since = None
+
+        # Thermostat frames (dst = thermostat address, src = panel)
+        if (
+            self._thermostat is not None
+            and frame.destination == self._thermostat.address
+            and frame.source == PANEL_ADDRESS
+        ):
+            proto = self._connection.protocol
+            qsize = proto._frame_queue.qsize()
+            # INFO only when there is queue backlog or the handler lock is
+            # held (= we're racing with an outbound op). Steady-state
+            # (qsize=0, no holder) would be a flood, so that goes to DEBUG.
+            thermo_log = (
+                logger.info
+                if qsize > 0 or self._lock_holder is not None
+                else logger.debug
+            )
+            thermo_log(
+                "THERMO_WAIT src=%d dst=%d cmd=0x%02X len=%d qsize=%d holder=%s",
+                frame.source,
+                frame.destination,
+                frame.command,
+                len(frame.data) if frame.data else 0,
+                qsize,
+                self._lock_holder,
+            )
+            if qsize > 10:
+                queued = list(proto._frame_queue._queue)  # type: ignore[attr-defined]
+                summary: dict[str, int] = {}
+                for f in queued:
+                    if f is None:
+                        continue
+                    key = f"src={f.source},dst={f.destination},cmd=0x{f.command:02X}"
+                    summary[key] = summary.get(key, 0) + 1
+                logger.info("THERMO_QUEUE_DUMP qsize=%d summary=%s", qsize, summary)
+            await self._thermostat.handle_frame(
+                frame, self._connection.protocol.write_frame
+            )
+            return True
+
+        # Frames not addressed to us (bus sniff already done above).
+        if frame.destination != self._source_address and frame.destination != 0xFFFF:
+            return False
+
+        # Panel IDENTIFY / SERVICE to us (token grants, device table to us).
+        if frame.source == PANEL_ADDRESS and frame.command in (
+            Command.IDENTIFY,
+            Command.SERVICE,
+        ):
+            if frame.command == Command.IDENTIFY and self._thermostat is not None:
+                asyncio.create_task(self._handle_panel_frame(frame))
+                return True
+            await self._handle_panel_frame(frame)
+            if self._has_token and self._registration_state == "tentative":
+                self._registration_state = "paired"
+                self._save_paired_address(self._source_address)
+                self._device_registry[self._source_address] = BusDevice(
+                    address=self._source_address,
+                    identity=_parse_identity(IDENTIFY_RESPONSE_DATA),
+                    source="self",
+                    last_seen=loop.time(),
+                )
+                logger.info(
+                    "Address %d validated by token grant, persisted",
                     self._source_address,
                 )
-                self._source_address = 0
-                self._registration_state = "unpaired"
-                self._tentative_since = None
-                continue
+            return True
 
-            # Only process frames addressed to us or broadcast
-            if frame.destination != self._source_address and frame.destination != 0xFFFF:
-                continue
+        # Nothing claimed it. If it's addressed to us and looks like a
+        # response (not a panel IDENTIFY/SERVICE, already handled above),
+        # buffer it so a `send_and_receive` starting shortly can still
+        # pick it up — covers the race where a response arrives between
+        # two back-to-back requests.
+        self._unmatched_response_buffer.append(frame)
+        if len(self._unmatched_response_buffer) > self._unmatched_buffer_max:
+            self._unmatched_response_buffer.pop(0)
+        return False
 
-            # Handle panel frames (IDENTIFY and token grant)
-            if frame.source == PANEL_ADDRESS:
-                await self._handle_panel_frame(frame)
-                if self._has_token:
-                    # Validate tentative address on first token
-                    if self._registration_state == "tentative":
-                        self._registration_state = "paired"
-                        self._save_paired_address(self._source_address)
-                        self._device_registry[self._source_address] = BusDevice(
-                            address=self._source_address,
-                            identity=_parse_identity(IDENTIFY_RESPONSE_DATA),
-                            source="self",
-                            last_seen=loop.time(),
-                        )
-                        logger.info(
-                            "Address %d validated by token grant, persisted",
-                            self._source_address,
-                        )
-                    return
+    async def _bus_silence_watchdog(self) -> None:
+        """Reconnect the serial port if no frames arrive for a while.
+
+        Previously lived inside `_wait_for_token`. Now a standalone task
+        so it runs regardless of whether anyone is waiting for a token.
+        """
+        bus_silence_limit = 30.0
+        check_interval = 5.0
+        while self._running:
+            await asyncio.sleep(check_interval)
+            if self._last_frame_time == 0.0:
+                continue
+            now = asyncio.get_running_loop().time()
+            silence = now - self._last_frame_time
+            if silence >= bus_silence_limit:
+                logger.warning(
+                    "Bus silent for %.0fs, reconnecting serial port", silence
+                )
+                try:
+                    await self._connection.reconnect()
+                except Exception as e:  # noqa: BLE001
+                    logger.error("Reconnect failed: %s", e)
+                self._last_frame_time = now
 
     async def send_and_receive(
         self,
@@ -924,14 +1458,12 @@ class ProtocolHandler:
         response_validator: Callable[[Frame], bool] | None = None,
         destination: int | None = None,
     ) -> Frame | None:
-        """Send a frame and wait for response.
+        """Send a frame and wait for a matching response.
 
-        Matches the original webserver's writeAnswer/readFrameGm3 pattern:
-        1. 20ms bus turnaround delay (RS-485 line settle time)
-        2. Write request frame
-        3. Flush serial RX buffer + clear reader buffer (fresh read)
-        4. Wait for TX complete
-        5. Read response with 2s patience (10 empty reads * 0.2s)
+        Post-refactor: registers a `_PendingRequest` that the frame
+        dispatcher resolves when a matching response arrives. The old
+        inline polling loop is gone; only one request is in flight at
+        a time, serialised via `_lock` as before.
 
         Args:
             command: Command code to send.
@@ -941,96 +1473,70 @@ class ProtocolHandler:
                 terminal responses (e.g., NO_DATA, ERROR). These bypass
                 the response_validator.
             response_validator: Optional callable to validate response data.
-                If provided and returns False, the frame is skipped.
-                Only applied to expected_response frames, not also_accept.
             destination: Override destination address (default: self._destination).
 
         Returns:
             Response frame, or None on timeout.
         """
         dest = destination if destination is not None else self._destination
-        request = Frame(destination=dest, command=command, data=data, source=self._source_address)
-
-        # 20ms RS-485 bus turnaround delay before transmitting
-        # (matches original writeAnswer's time.sleep(0.02))
-        await asyncio.sleep(0.02)
-
-        # Write frame, then flush serial buffers and clear reader buffer.
-        # This matches the original webserver's writeAnswer() which does
-        # clearFrameBuffer() (data_buffer="" + flushInput()) + flush()
-        # after every write, ensuring each read starts fresh.
-        success = await self._connection.protocol.write_frame(request, flush_after=True)
-        if not success:
-            logger.warning(f"Failed to send command 0x{command:02X}")
-            return None
-
-        # Clear reader's Python-level buffer (matches original's data_buffer = b"")
-        self._connection.protocol.reset_buffer()
-
-        if expected_response is None:
-            return None
+        request = Frame(
+            destination=dest, command=command, data=data, source=self._source_address
+        )
 
         accept_set = set(also_accept_commands) if also_accept_commands else set()
 
-        skipped = 0
-        consecutive_silence = 0
-        # 10 empty reads * 0.2s = 2.0s patience per request
-        # (matches original's NOT_CONNECTED_0_BYTES_GM3=10 * PORT_TIMEOUT=0.2)
-        max_silence = 10
+        pending = _PendingRequest(
+            destination=dest,
+            expected_cmd=expected_response,
+            accept_cmds=accept_set,
+            validator=response_validator,
+            future=asyncio.get_running_loop().create_future(),
+        )
+        # Cancel any prior unresolved pending (shouldn't happen — lock serialises).
+        if (
+            self._pending_request is not None
+            and not self._pending_request.future.done()
+        ):
+            self._pending_request.future.cancel()
+        self._pending_request = pending
 
-        while consecutive_silence < max_silence:
-            # 0.2s per-read timeout matching original PORT_TIMEOUT
-            response = await self._connection.protocol.receive_frame(timeout=0.2)
+        # Check if a buffered response-shape frame already matches this
+        # pending request. Matched frames are removed; unmatched ones stay
+        # for a future request (still size-capped).
+        remaining: list[Frame] = []
+        matched_one = False
+        for buf_frame in self._unmatched_response_buffer:
+            if not matched_one and self._try_match_pending(buf_frame):
+                matched_one = True
+            else:
+                remaining.append(buf_frame)
+        self._unmatched_response_buffer = remaining
 
-            if response is None:
-                consecutive_silence += 1
-                continue
+        try:
+            # 20ms RS-485 bus turnaround delay
+            await asyncio.sleep(0.02)
 
-            # Any frame received resets the silence counter
-            consecutive_silence = 0
+            success = await self._connection.protocol.write_frame(
+                request, flush_after=True
+            )
+            if not success:
+                logger.warning(f"Failed to send command 0x{command:02X}")
+                return None
 
-            # Skip frames not addressed to us
-            if response.destination != self._source_address and response.destination != 0xFFFF:
-                skipped += 1
-                continue
+            if expected_response is None:
+                return None
 
-            # Handle panel protocol frames (IDENTIFY and SERVICE for token)
-            # Only intercept these specific commands; let data responses
-            # (e.g., 0x81 struct response) through when querying the panel
-            if response.source == PANEL_ADDRESS and response.command in (IDENTIFY_CMD, SERVICE_CMD):
-                await self._handle_panel_frame(response)
-                skipped += 1
-                continue
-
-            # Skip frames not from expected source
-            if response.source != dest and dest != 0xFFFF:
-                skipped += 1
-                continue
-
-            # Accept also_accept_commands immediately (terminal responses
-            # like NO_DATA/ERROR that don't need validation)
-            if response.command in accept_set:
-                return response
-
-            # Skip wrong response commands
-            if response.command != expected_response:
-                skipped += 1
-                continue
-
-            # Validate response payload if validator provided
-            if response_validator is not None and not response_validator(response):
+            # Same 2s patience as the pre-refactor loop (10 * 0.2s).
+            try:
+                return await asyncio.wait_for(pending.future, timeout=2.0)
+            except TimeoutError:
                 logger.debug(
-                    f"Response validator rejected frame cmd=0x{response.command:02X}, "
-                    f"first bytes: {response.data[:6].hex() if response.data else 'empty'}"
+                    f"No matching response for 0x{command:02X} within 2.0s"
                 )
-                skipped += 1
-                continue
-
-            return response
-
-        if skipped > 0:
-            logger.debug(f"No matching response for 0x{command:02X} (skipped {skipped} frames)")
-        return None
+                return None
+        finally:
+            if self._pending_request is pending:
+                self._pending_request = None
 
     async def _send_get_settings(self) -> None:
         """Send GET_SETTINGS as first request after receiving token.
@@ -1237,7 +1743,7 @@ class ProtocolHandler:
 
         data = build_modify_param_request(param.index, value, entry.type_code)
 
-        async with self._lock:
+        async with self._traced_lock(f"api:write_param:{name}"):
             try:
                 # Must hold the bus token to transmit on the RS-485 bus
                 await self._wait_for_token()
@@ -1293,7 +1799,7 @@ class ProtocolHandler:
         """
         alarms: list[Alarm] = []
 
-        async with self._lock:
+        async with self._traced_lock("api:read_alarms"):
             try:
                 await self._wait_for_token()
 
@@ -1301,9 +1807,9 @@ class ProtocolHandler:
                 while True:
                     data = ALARM_REQUEST_PREFIX + bytes([alarm_index & 0xFF])
                     response = await self.send_and_receive(
-                        SERVICE_CMD,
+                        Command.SERVICE,
                         data,
-                        expected_response=SERVICE_ANS_CMD,
+                        expected_response=Command.SERVICE_RESPONSE,
                         destination=PANEL_ADDRESS,
                     )
 
@@ -1438,9 +1944,8 @@ class ProtocolHandler:
         Returns:
             Total number of parameters discovered.
         """
-        import time as _time
 
-        async with self._lock:
+        async with self._traced_lock("poll:discover_params"):
             new_structs: dict[int, ParamStructEntry] = {}
 
             # Wait for token from panel
@@ -1512,7 +2017,7 @@ class ProtocolHandler:
         if not self._param_structs:
             return 0
 
-        async with self._lock:
+        async with self._traced_lock("poll:poll_all_params"):
             try:
                 await self._wait_for_token()
 

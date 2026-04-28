@@ -15,8 +15,7 @@ FRAME_MIN_LEN = 11  # BEGIN(1) + LEN(2) + DA(2) + SA(1) + RSV(1) + CMD(1) + CRC(
 # Addresses
 # ============================================================================
 
-SRC_ADDRESS = 131  # Gateway source address
-DEST_ADDRESSES = [1, 2, 237]  # Standard controller addresses
+CONTROLLER_ADDRESS = 1  # Heat pump controller
 PANEL_ADDRESS = 100  # Display panel address
 
 # Valid address range for auto-registration (panel peripheral range)
@@ -24,6 +23,11 @@ PANEL_ADDRESS = 100  # Display panel address
 # Addresses outside this range (e.g. 32, 193) receive IDENTIFY probes
 # but never get token grants, so claiming them is pointless.
 CLAIMABLE_ADDRESS_RANGE = range(105, 131)
+
+# Valid address range for thermostat auto-registration.
+# Known thermostat addresses are 165 and 166; the panel scans up to at
+# least 178 during normal operation. Use a wide range to cover pairing.
+THERMOSTAT_CLAIMABLE_ADDRESS_RANGE = range(160, 200)
 
 # ============================================================================
 # Command Codes
@@ -46,6 +50,14 @@ class Command(IntEnum):
     # Write operations
     MODIFY_PARAM = 0x29
     MODIFY_PARAM_RESPONSE = 0xA9
+
+    # Device identification
+    IDENTIFY = 0x09
+    IDENTIFY_RESPONSE = 0x89
+
+    # Service frames (token grant/return, pairing, device table)
+    SERVICE = 0x68
+    SERVICE_RESPONSE = 0xE8
 
     # Status responses
     ERROR = 0x7E
@@ -140,16 +152,13 @@ UNIT_NAMES = {
 # Token Passing (Bus Arbitration)
 # ============================================================================
 
-# Device identification (panel probes devices on the bus)
-IDENTIFY_CMD = 0x09  # Panel sends this to identify devices
-IDENTIFY_ANS_CMD = 0x89  # Device responds with identity
 IDENTIFY_RESPONSE_DATA = b"PLUM\x00EcoNEXT\x00\x00\x00\x00\x00"  # Distinct from ecoNET 300
 
-# Service frames (token grant/return)
-SERVICE_CMD = 0x68  # Service frame command byte (same value as BEGIN_FRAME)
-SERVICE_ANS_CMD = 0xE8  # Service answer command byte
-GET_TOKEN_FUNC = 0x0801  # Token grant function code (LE uint16 in data[0:2])
+# Service function codes (LE uint16 in SERVICE frame data[0:2])
+GET_TOKEN_FUNC = 0x0801  # Token grant function code
 DEVICE_TABLE_FUNC = 0x2001  # Device table broadcast function code
+PAIRING_BEACON_FUNC = 0x2004  # Pairing mode beacon (panel broadcasts rapidly)
+PAIRING_ASSIGN_FUNC = 0x2005  # Address assignment (panel assigns address after SERVICE_ANS)
 GIVE_BACK_TOKEN_DATA = b"\x00\x08\x00\x00"  # Token return payload
 TOKEN_TIMEOUT = 5.0  # Max time to wait for token grant (seconds, ~0.5 panel cycle)
 

@@ -3,7 +3,7 @@
 import asyncio
 import logging
 
-from econext_gateway.protocol.constants import BEGIN_FRAME, END_FRAME, FRAME_MIN_LEN
+from econext_gateway.protocol.constants import BEGIN_FRAME, END_FRAME, FRAME_MIN_LEN, Command
 from econext_gateway.protocol.frames import Frame
 
 logger = logging.getLogger(__name__)
@@ -19,16 +19,24 @@ class GM3Protocol(asyncio.Protocol):
     Writing is serialised through an asyncio.Lock.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, keep_destinations: set[int] | None = None, panel_address: int = 100) -> None:
         self._transport: asyncio.Transport | None = None
         self._rx_buffer = bytearray()
         self._frame_queue: asyncio.Queue[Frame | None] = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
         self._write_lock = asyncio.Lock()
         self._connected_event = asyncio.Event()
         self._disconnected_event = asyncio.Event()
+        # Whitelist: only queue frames addressed to us. Panel broadcasts
+        # (dst=65535, src=panel) are also kept for device table updates.
+        self._keep_destinations = keep_destinations
+        self._panel_address = panel_address
+        # Dedup consecutive IDENTIFY probes (cmd=0x09) to the same destination.
+        # The panel sends 3 identical probes; only the first needs queueing.
+        self._last_identify_dst: int | None = None
         self._stats = {
             "frames_read": 0,
             "frames_invalid": 0,
+            "frames_filtered": 0,
             "bytes_read": 0,
             "frames_written": 0,
         }
@@ -60,8 +68,28 @@ class GM3Protocol(asyncio.Protocol):
             if frame is None:
                 break
             self._stats["frames_read"] += 1
+            # Only keep frames addressed to us (or panel broadcasts).
+            if self._keep_destinations is not None:
+                dst = frame.destination
+                if dst not in self._keep_destinations and not (dst == 65535 and frame.source == self._panel_address):
+                    self._stats["frames_filtered"] += 1
+                    continue
+            # Dedup consecutive IDENTIFY probes to same dest.
+            if frame.command == Command.IDENTIFY:
+                if frame.destination == self._last_identify_dst:
+                    self._stats["frames_filtered"] += 1
+                    continue
+                self._last_identify_dst = frame.destination
+            else:
+                self._last_identify_dst = None
             if self._frame_queue.full():
                 # Drop oldest frame to make room.
+                logger.warning(
+                    "FRAME_QUEUE FULL: dropping oldest. read=%d filtered=%d invalid=%d",
+                    self._stats["frames_read"],
+                    self._stats["frames_filtered"],
+                    self._stats["frames_invalid"],
+                )
                 try:
                     self._frame_queue.get_nowait()
                 except asyncio.QueueEmpty:
@@ -70,6 +98,16 @@ class GM3Protocol(asyncio.Protocol):
                 self._frame_queue.put_nowait(frame)
             except asyncio.QueueFull:
                 pass
+            # Sample queue depth when backlog appears.
+            qsize_now = self._frame_queue.qsize()
+            if qsize_now >= 8:
+                logger.info(
+                    "FRAME_QUEUE depth=%d read=%d filtered=%d invalid=%d",
+                    qsize_now,
+                    self._stats["frames_read"],
+                    self._stats["frames_filtered"],
+                    self._stats["frames_invalid"],
+                )
 
     # -- frame extraction (from FrameReader._extract_frame_from_buffer) ------
 
@@ -93,7 +131,7 @@ class GM3Protocol(asyncio.Protocol):
             frame_length = length + 6
 
             if frame_length > 1024:
-                logger.warning("Invalid frame length %d, discarding BEGIN marker", frame_length)
+                logger.debug("Invalid frame length %d, discarding BEGIN marker", frame_length)
                 del self._rx_buffer[0]
                 self._stats["frames_invalid"] += 1
                 continue
@@ -104,7 +142,7 @@ class GM3Protocol(asyncio.Protocol):
             frame_data = bytes(self._rx_buffer[:frame_length])
 
             if frame_data[-1] != END_FRAME:
-                logger.warning("Invalid END marker 0x%02X, discarding BEGIN marker", frame_data[-1])
+                logger.debug("Invalid END marker 0x%02X, discarding BEGIN marker", frame_data[-1])
                 del self._rx_buffer[0]
                 self._stats["frames_invalid"] += 1
                 continue
@@ -142,8 +180,22 @@ class GM3Protocol(asyncio.Protocol):
         except TimeoutError:
             return None
 
-    async def write_frame(self, frame: Frame, flush_after: bool = False) -> bool:
+    async def write_frame(
+        self,
+        frame: Frame,
+        flush_after: bool = False,
+        clear_echo: bool = True,
+    ) -> bool:
         """Serialise *frame* onto the transport.
+
+        Args:
+            flush_after: Wait for TX to drain to wire (tcdrain) and optionally
+                clear the RX buffer.
+            clear_echo: When flush_after is True, also clear the RX input
+                buffer after flushing.  Set to False for thermostat responses
+                where the panel sends its next request immediately after
+                receiving our response -- reset_input_buffer() can race with
+                that next request and destroy it.
 
         Returns True on success, False when the transport is unavailable.
         """
@@ -159,12 +211,12 @@ class GM3Protocol(asyncio.Protocol):
                 serial_obj = getattr(self._transport, "serial", None)
                 if serial_obj is not None:
                     try:
-                        # Order matters for half-duplex RS-485:
-                        # 1. flush() -- block until TX buffer is drained to wire
-                        # 2. reset_input_buffer() -- discard echo/garbage that
-                        #    arrived during transmission
+                        # flush() -- block until TX buffer is drained to wire
                         serial_obj.flush()
-                        serial_obj.reset_input_buffer()
+                        if clear_echo:
+                            # reset_input_buffer() -- discard echo/garbage
+                            # that arrived during transmission
+                            serial_obj.reset_input_buffer()
                     except Exception as e:
                         logger.warning("Failed to flush serial port: %s", e)
 
