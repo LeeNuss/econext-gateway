@@ -87,8 +87,4 @@ WHEEL=$(ls "${TMPDIR}"/*.whl 2>/dev/null | head -1)
 
 # Run install script with the wheel
 export ECONEXT_WHEEL="$WHEEL"
-if [[ "$PRE_RELEASE" == true ]]; then
-    bash "${TMPDIR}/deploy/install.sh" --pre
-else
-    bash "${TMPDIR}/deploy/install.sh"
-fi
+bash "${TMPDIR}/deploy/install.sh"

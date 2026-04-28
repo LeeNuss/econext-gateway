@@ -5,8 +5,8 @@
 # Usage:
 #   sudo ./deploy/install.sh                  # install from source repo
 #   sudo ./deploy/install.sh /srv/econext      # custom prefix
-#   sudo ./deploy/install.sh --pre            # install pre-release + enables debug
 #   sudo ./deploy/install.sh --uninstall      # remove service and install dir
+#   ECONEXT_LOG_LEVEL=DEBUG sudo -E ./deploy/install.sh   # install with DEBUG logging
 #
 # Bundle install (used by bootstrap.sh):
 #   ECONEXT_WHEEL=/path/to/wheel.whl sudo ./deploy/install.sh
@@ -241,11 +241,6 @@ EOF
 case "${1:-}" in
     --uninstall|-u)
         do_uninstall "${2:-$DEFAULT_PREFIX}"
-        ;;
-    --pre)
-        # Install with DEBUG logging (--pre kept as alias for backwards compat)
-        ECONEXT_LOG_LEVEL="DEBUG"
-        do_install "${2:-$DEFAULT_PREFIX}"
         ;;
     --help|-h)
         sed -n '2,/^$/s/^# \?//p' "$0"
