@@ -8,6 +8,8 @@ from econext_gateway.api.dependencies import get_cache, get_handler, get_virtual
 from econext_gateway.core.cache import ParameterCache
 from econext_gateway.core.models import (
     AlarmsResponse,
+    ClockSyncRequest,
+    ClockSyncResponse,
     ErrorResponse,
     ParameterSetRequest,
     ParameterSetResponse,
@@ -91,6 +93,28 @@ async def set_parameter(
         old_value=old_value,
         new_value=request.value,
     )
+
+
+@router.post(
+    "/clock/sync",
+    response_model=ClockSyncResponse,
+    responses={503: {"model": ErrorResponse}},
+)
+async def sync_clock(
+    request: ClockSyncRequest,
+    handler: ProtocolHandler = Depends(get_handler),
+):
+    """Broadcast a SERVICE 0x0023 clock-sync frame on the bus.
+
+    Test endpoint: lets us probe whether the panel accepts an external
+    time source. Pass `when` to broadcast a deliberately-wrong time;
+    omit it to broadcast host current time.
+    """
+    if not handler.connected:
+        raise HTTPException(status_code=503, detail="Controller not connected")
+    target = request.when or datetime.now()
+    await handler.broadcast_clock_sync(target)
+    return ClockSyncResponse(success=True, broadcast=target)
 
 
 @router.get("/alarms", response_model=AlarmsResponse)
