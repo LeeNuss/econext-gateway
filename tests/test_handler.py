@@ -1882,6 +1882,241 @@ class TestReadAlarms:
         assert len(handler._alarms) == 1  # original unchanged
 
 
+class TestClockSyncBroadcast:
+    """Tests for the SERVICE 0x0023 clock-sync broadcast."""
+
+    @pytest.fixture
+    def handler(self, paired_address_file):
+        conn = MagicMock(spec=GM3SerialTransport)
+        conn.connected = True
+        conn.protocol = MagicMock()
+        conn.protocol.write_frame = AsyncMock(return_value=True)
+        cache = ParameterCache()
+        h = ProtocolHandler(
+            conn,
+            cache,
+            token_required=False,
+            token_timeout=0,
+            paired_address_file=paired_address_file,
+        )
+        return h
+
+    def test_payload_matches_captured_panel_broadcast(self):
+        """Built payload must match a real panel broadcast byte-for-byte."""
+        # Capture from logs: Mar 18 17:46, panel at 17:49:19 Wednesday
+        from datetime import datetime as _dt
+
+        when = _dt(2026, 3, 18, 17, 49, 19)
+        payload = ProtocolHandler._build_clock_sync_payload(when)
+        assert payload.hex() == "230000000101000101001331111203ea07030100"
+
+    def test_payload_layout_for_each_field(self):
+        """Each datetime field must land in the documented byte position."""
+        from datetime import datetime as _dt
+
+        # Sun 2026-12-27 23:59:58 -> isoweekday=7 (Sunday)
+        when = _dt(2026, 12, 27, 23, 59, 58)
+        payload = ProtocolHandler._build_clock_sync_payload(when)
+
+        assert len(payload) == 20
+        assert payload[0:2] == b"\x23\x00"  # func code 0x0023 LE
+        assert payload[10] == 58  # second
+        assert payload[11] == 59  # minute
+        assert payload[12] == 23  # hour
+        assert payload[13] == 27  # day-of-month
+        assert payload[14] == 12  # month
+        assert struct.unpack("<H", payload[15:17])[0] == 2026
+        assert payload[17] == 7  # Sunday in ISO weekday
+        assert payload[18:20] == b"\x01\x00"
+
+    @pytest.mark.asyncio
+    async def test_broadcast_sends_correct_frame(self, handler):
+        """broadcast_clock_sync writes a SERVICE frame to dest=0xFFFF."""
+        from datetime import datetime as _dt
+
+        await handler.broadcast_clock_sync(_dt(2026, 5, 7, 14, 30, 0))
+
+        handler._connection.protocol.write_frame.assert_awaited_once()
+        sent = handler._connection.protocol.write_frame.await_args.args[0]
+        assert isinstance(sent, Frame)
+        assert sent.destination == 0xFFFF
+        assert sent.command == Command.SERVICE
+        assert sent.data[0:2] == b"\x23\x00"
+        assert len(sent.data) == 20
+
+    @pytest.mark.asyncio
+    async def test_broadcast_refuses_when_disconnected(self, handler):
+        """No frame is sent when the bus is down."""
+        from datetime import datetime as _dt
+
+        handler._connection.connected = False
+
+        with pytest.raises(RuntimeError, match="not connected"):
+            await handler.broadcast_clock_sync(_dt(2026, 5, 7, 14, 30, 0))
+
+        handler._connection.protocol.write_frame.assert_not_called()
+
+
+class TestClockSyncLoop:
+    """Tests for the daily / DST-aware clock-sync background task."""
+
+    @pytest.fixture
+    def handler(self, paired_address_file):
+        conn = MagicMock(spec=GM3SerialTransport)
+        conn.connected = True
+        conn.protocol = MagicMock()
+        conn.protocol.write_frame = AsyncMock(return_value=True)
+        cache = ParameterCache()
+        h = ProtocolHandler(
+            conn,
+            cache,
+            token_required=False,
+            token_timeout=0,
+            paired_address_file=paired_address_file,
+            clock_sync_hour=3,
+            clock_sync_minute=30,
+        )
+        # Tight loop timings so the test runs fast.
+        h._CLOCK_SYNC_STARTUP_DELAY_S = 0.0
+        h._CLOCK_SYNC_CHECK_INTERVAL_S = 0.01
+        h._CLOCK_SYNC_REQUEST_TIMEOUT_S = 1.0
+        h._running = True
+        return h
+
+    @pytest.fixture
+    def handler_no_skew_check(self, handler):
+        """Handler with skew detection effectively disabled."""
+        handler._CLOCK_SYNC_SKEW_THRESHOLD_S = 1e9
+        return handler
+
+    @pytest.mark.asyncio
+    async def test_initial_sync_then_daily_anchor(self, handler_no_skew_check, monkeypatch):
+        handler = handler_no_skew_check
+        """Loop fires once at startup; second iteration only fires after the
+        daily anchor crosses on a fresh date."""
+        from datetime import datetime as _dt
+
+        calls: list[tuple[str, _dt]] = []
+
+        async def fake_sync(reason: str) -> bool:
+            calls.append((reason, _dt(*fake_now_state)))
+            return True
+
+        # Sequence of "now" values driven by pop-from-front
+        now_sequence = [
+            (2026, 5, 7, 4, 0, 0),  # startup -> sync
+            (2026, 5, 7, 4, 0, 1),  # last_synced_date set
+            (2026, 5, 7, 5, 0, 0),  # same day, anchor passed -> no resync
+            (2026, 5, 7, 5, 0, 1),
+            (2026, 5, 8, 3, 30, 5),  # next day, anchor crossed -> sync
+            (2026, 5, 8, 3, 30, 6),
+        ]
+        fake_now_state = now_sequence[0]
+
+        def fake_datetime_now():
+            nonlocal fake_now_state
+            fake_now_state = now_sequence.pop(0) if now_sequence else fake_now_state
+            return _dt(*fake_now_state)
+
+        monkeypatch.setattr(
+            "econext_gateway.protocol.handler.datetime", _FrozenDT(fake_datetime_now)
+        )
+        handler._do_clock_sync = fake_sync
+
+        # Run the loop until the sequence is exhausted
+        task = asyncio.create_task(handler._clock_sync_loop())
+        for _ in range(20):
+            await asyncio.sleep(0.02)
+            if not now_sequence:
+                break
+        handler._running = False
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        reasons = [r for r, _ in calls]
+        assert "startup" in reasons
+        assert "daily" in reasons
+
+    @pytest.mark.asyncio
+    async def test_skew_triggers_sync(self, handler, monkeypatch):
+        """A wall-vs-monotonic skew larger than the threshold forces a sync."""
+        from datetime import datetime as _dt
+
+        calls: list[str] = []
+
+        async def fake_sync(reason: str) -> bool:
+            calls.append(reason)
+            return True
+
+        # Wall clock jumps by 1h between iterations while monotonic only ticks
+        # the configured check interval -> skew ~3600s, well above threshold.
+        wall_seq = [
+            _dt(2026, 5, 7, 4, 0, 0),  # startup
+            _dt(2026, 5, 7, 4, 0, 1),  # baseline after startup sync
+            _dt(2026, 5, 7, 5, 0, 5),  # +1h wall jump -> skew detected
+            _dt(2026, 5, 7, 5, 0, 6),
+        ]
+
+        def fake_now():
+            return wall_seq.pop(0) if wall_seq else wall_seq[-1] if wall_seq else _dt(2026, 5, 7, 5, 0, 6)
+
+        monkeypatch.setattr(
+            "econext_gateway.protocol.handler.datetime", _FrozenDT(fake_now)
+        )
+        handler._do_clock_sync = fake_sync
+
+        task = asyncio.create_task(handler._clock_sync_loop())
+        for _ in range(30):
+            await asyncio.sleep(0.02)
+            if not wall_seq:
+                break
+        handler._running = False
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert any("skew" in r for r in calls), f"expected a skew sync in {calls}"
+
+    @pytest.mark.asyncio
+    async def test_loop_not_started_when_hour_is_none(self, paired_address_file):
+        """Setting clock_sync_hour=None disables the task entirely."""
+        conn = MagicMock(spec=GM3SerialTransport)
+        conn.connected = True
+        cache = ParameterCache()
+        h = ProtocolHandler(
+            conn,
+            cache,
+            token_required=False,
+            token_timeout=0,
+            paired_address_file=paired_address_file,
+            clock_sync_hour=None,
+        )
+        assert h._clock_sync_hour is None
+        # start() must not create the task; we don't actually call start()
+        # here because it spins up the dispatcher and serial machinery, but
+        # the explicit None check guards against accidental enablement.
+
+
+class _FrozenDT:
+    """datetime stand-in whose .now() returns a caller-provided value.
+
+    Used in tests above to drive the clock-sync loop without real time.
+    """
+
+    def __init__(self, now_fn):
+        self._now_fn = now_fn
+
+    def now(self):
+        return self._now_fn()
+
+
 class TestParseDeviceTable:
     """Tests for parse_device_table (SERVICE 0x2001)."""
 

@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     thermostat_max_age: float = 300.0
     thermostat_stale_fallback: float = 19.0
 
+    # Panel RTC sync. Gateway broadcasts SERVICE 0x0023 to keep the panel
+    # (and via its rebroadcast cycle, the controller) on host-clock time.
+    # Daily anchor at clock_sync_hour:clock_sync_minute local; an additional
+    # sync is triggered whenever a wall/monotonic skew is detected (DST or
+    # NTP step).
+    clock_sync_enabled: bool = True
+    clock_sync_hour: int = 3
+    clock_sync_minute: int = 30
+
     model_config = SettingsConfigDict(env_prefix="ECONEXT_")
 
     @property

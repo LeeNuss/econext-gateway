@@ -26,6 +26,7 @@ from econext_gateway.protocol.codec import decode_value, encode_value
 from econext_gateway.protocol.constants import (
     ALARM_REQUEST_PREFIX,
     CLAIMABLE_ADDRESS_RANGE,
+    CLOCK_SYNC_FUNC,
     CONTROLLER_ADDRESS,
     DEVICE_TABLE_FUNC,
     GET_TOKEN_FUNC,
@@ -37,6 +38,7 @@ from econext_gateway.protocol.constants import (
     POLL_INTERVAL,
     REQUEST_TIMEOUT,
     RETRY_ATTEMPTS,
+    SERVICE_FIXED_HEADER,
     THERMOSTAT_CLAIMABLE_ADDRESS_RANGE,
     TOKEN_TIMEOUT,
     TYPE_SIZES,
@@ -576,6 +578,8 @@ class ProtocolHandler:
         paired_address_file: Path | None = None,
         thermostat_emulator: ThermostatEmulator | None = None,
         thermostat_address_file: Path | None = None,
+        clock_sync_hour: int | None = 3,
+        clock_sync_minute: int = 30,
     ):
         """Initialize protocol handler.
 
@@ -599,6 +603,9 @@ class ProtocolHandler:
             thermostat_address_file: Path to persist thermostat bus address.
                 When the thermostat has address=0 it will auto-register
                 via IDENTIFY during pairing and persist the address here.
+            clock_sync_hour: Hour of day (local time) for the daily panel
+                RTC sync broadcast. Set to None to disable.
+            clock_sync_minute: Minute of the hour for the daily sync.
         """
         self._connection = connection
         self._cache = cache
@@ -635,6 +642,9 @@ class ProtocolHandler:
                 source="self",
             )
         self._poll_task: asyncio.Task | None = None
+        self._clock_sync_task: asyncio.Task | None = None
+        self._clock_sync_hour = clock_sync_hour
+        self._clock_sync_minute = clock_sync_minute
         self._running = False
         self._lock = asyncio.Lock()
         self._lock_holder: str | None = None
@@ -954,6 +964,10 @@ class ProtocolHandler:
             self._bus_silence_watchdog(), name="BusSilenceWatchdog"
         )
         self._poll_task = asyncio.create_task(self._poll_loop())
+        if self._clock_sync_hour is not None:
+            self._clock_sync_task = asyncio.create_task(
+                self._clock_sync_loop(), name="ClockSyncLoop"
+            )
         logger.info("Protocol handler started")
 
     async def stop(self) -> None:
@@ -975,6 +989,14 @@ class ProtocolHandler:
             except asyncio.CancelledError:
                 pass
             self._watchdog_task = None
+
+        if self._clock_sync_task is not None:
+            self._clock_sync_task.cancel()
+            try:
+                await self._clock_sync_task
+            except asyncio.CancelledError:
+                pass
+            self._clock_sync_task = None
 
         if self._dispatcher is not None:
             await self._dispatcher.stop()
@@ -1850,6 +1872,144 @@ class ProtocolHandler:
         self._alarms = alarms
         logger.info("Read %d alarms from controller", len(alarms))
         return alarms
+
+    @staticmethod
+    def _build_clock_sync_payload(when: datetime) -> bytes:
+        """Build the 20-byte SERVICE 0x0023 payload for *when*.
+
+        Layout (matches captured panel broadcasts byte-for-byte):
+        [0:2]  func code 0x0023 (LE16)
+        [2:10] fixed 8-byte header
+        [10]   second
+        [11]   minute
+        [12]   hour
+        [13]   day-of-month
+        [14]   month (1-12)
+        [15:17] year (LE16)
+        [17]   day-of-week (1=Mon..7=Sun)
+        [18:20] tail constants 0x01 0x00
+        """
+        return (
+            struct.pack("<H", CLOCK_SYNC_FUNC)
+            + SERVICE_FIXED_HEADER
+            + bytes([when.second, when.minute, when.hour, when.day, when.month])
+            + struct.pack("<H", when.year)
+            + bytes([when.isoweekday(), 0x01, 0x00])
+        )
+
+    async def broadcast_clock_sync(self, when: datetime) -> None:
+        """Broadcast SERVICE 0x0023 (clock sync) to all bus devices.
+
+        The master panel adopts our broadcast as its own RTC and propagates
+        it to the controller via the regular ~10s rebroadcast cycle. This
+        is the only mechanism that actually sets the panel's clock —
+        MODIFY_PARAM writes to the RTC fields are silently ignored.
+        """
+        if not self.connected:
+            raise RuntimeError("Cannot broadcast clock sync: bus not connected")
+
+        payload = self._build_clock_sync_payload(when)
+        frame = Frame(
+            destination=0xFFFF,
+            command=Command.SERVICE,
+            data=payload,
+            source=self._source_address,
+        )
+        async with self._traced_lock("api:broadcast_clock_sync"):
+            await self._wait_for_token()
+            try:
+                # Bus turnaround delay before transmitting (matches _return_token)
+                await asyncio.sleep(0.02)
+                await self._connection.protocol.write_frame(frame)
+            finally:
+                if self._has_token:
+                    await self._return_token()
+        logger.info(
+            "Broadcast clock sync: %s (payload=%s)",
+            when.isoformat(timespec="seconds"),
+            payload.hex(),
+        )
+
+    # Tunable parameters for the clock sync background task. Exposed at
+    # class level so tests can override them without monkey-patching globals.
+    _CLOCK_SYNC_STARTUP_DELAY_S = 60.0
+    _CLOCK_SYNC_CHECK_INTERVAL_S = 600.0
+    _CLOCK_SYNC_SKEW_THRESHOLD_S = 90.0
+    _CLOCK_SYNC_REQUEST_TIMEOUT_S = 30.0
+
+    async def _do_clock_sync(self, reason: str) -> bool:
+        """Run a single clock-sync broadcast, swallowing failures.
+
+        Returns True if the broadcast was sent, False otherwise. The task
+        loop uses the return to decide whether to update its "last synced"
+        bookkeeping.
+        """
+        try:
+            when = datetime.now()
+            await asyncio.wait_for(
+                self.broadcast_clock_sync(when),
+                timeout=self._CLOCK_SYNC_REQUEST_TIMEOUT_S,
+            )
+            logger.info(
+                "Clock sync (%s): broadcast %s",
+                reason,
+                when.isoformat(timespec="seconds"),
+            )
+            return True
+        except Exception:
+            logger.exception("Clock sync broadcast failed (%s)", reason)
+            return False
+
+    async def _clock_sync_loop(self) -> None:
+        """Keep the panel's RTC aligned with the host clock.
+
+        Runs one broadcast at startup (after the bus has settled), one
+        per day at the configured local hour:minute, and an extra one
+        whenever a wall vs monotonic skew larger than the threshold is
+        detected -- this catches DST transitions and NTP step corrections
+        that happen between daily anchors.
+        """
+        # Let the bus initialise (token grants, address registration)
+        # before transmitting. Cancellation during this window is a
+        # normal stop, not an error.
+        try:
+            await asyncio.sleep(self._CLOCK_SYNC_STARTUP_DELAY_S)
+        except asyncio.CancelledError:
+            return
+
+        await self._do_clock_sync("startup")
+        last_synced_date = datetime.now().date()
+        last_check_mono = _time.monotonic()
+        last_check_wall = datetime.now()
+
+        while self._running:
+            try:
+                await asyncio.sleep(self._CLOCK_SYNC_CHECK_INTERVAL_S)
+            except asyncio.CancelledError:
+                return
+            if not self._running:
+                return
+
+            now_wall = datetime.now()
+            now_mono = _time.monotonic()
+            wall_elapsed = (now_wall - last_check_wall).total_seconds()
+            mono_elapsed = now_mono - last_check_mono
+            skew = abs(wall_elapsed - mono_elapsed)
+            last_check_wall = now_wall
+            last_check_mono = now_mono
+
+            if skew > self._CLOCK_SYNC_SKEW_THRESHOLD_S:
+                if await self._do_clock_sync(f"clock-skew={skew:.0f}s"):
+                    last_synced_date = now_wall.date()
+                continue
+
+            anchor_passed = (now_wall.hour, now_wall.minute) >= (
+                self._clock_sync_hour,
+                self._clock_sync_minute,
+            )
+            if anchor_passed and last_synced_date != now_wall.date():
+                if await self._do_clock_sync("daily"):
+                    last_synced_date = now_wall.date()
 
     async def _discover_address_space(
         self,

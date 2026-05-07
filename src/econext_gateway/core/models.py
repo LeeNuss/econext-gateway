@@ -189,6 +189,22 @@ class ErrorResponse(BaseModel):
     )
 
 
+class ClockSyncRequest(BaseModel):
+    """Request model for POST /api/clock/sync."""
+
+    when: datetime | None = Field(
+        None,
+        description="Datetime to broadcast. Defaults to host current time.",
+    )
+
+
+class ClockSyncResponse(BaseModel):
+    """Response model for POST /api/clock/sync."""
+
+    success: bool = Field(True, description="Operation success status")
+    broadcast: datetime = Field(..., description="Datetime that was broadcast")
+
+
 class ThermostatSubmitRequest(BaseModel):
     """Request model for POST /api/thermostat/temperature."""
 

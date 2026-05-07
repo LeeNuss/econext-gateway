@@ -88,6 +88,8 @@ async def lifespan(app: FastAPI):
         paired_address_file=settings.paired_address_file,
         thermostat_emulator=thermostat_emulator,
         thermostat_address_file=settings.thermostat_address_file if settings.thermostat_enabled else None,
+        clock_sync_hour=settings.clock_sync_hour if settings.clock_sync_enabled else None,
+        clock_sync_minute=settings.clock_sync_minute,
     )
 
     # Connect and start polling

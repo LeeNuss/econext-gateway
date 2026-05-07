@@ -159,7 +159,12 @@ GET_TOKEN_FUNC = 0x0801  # Token grant function code
 DEVICE_TABLE_FUNC = 0x2001  # Device table broadcast function code
 PAIRING_BEACON_FUNC = 0x2004  # Pairing mode beacon (panel broadcasts rapidly)
 PAIRING_ASSIGN_FUNC = 0x2005  # Address assignment (panel assigns address after SERVICE_ANS)
+CLOCK_SYNC_FUNC = 0x0023  # Clock/timer sync (panel broadcasts current RTC every ~10s)
 GIVE_BACK_TOKEN_DATA = b"\x00\x08\x00\x00"  # Token return payload
+
+# 8-byte header common to SERVICE frames after the func code (alarm read,
+# clock sync). Captured identically across all observed broadcasts.
+SERVICE_FIXED_HEADER = b"\x00\x00\x01\x01\x00\x01\x01\x00"
 TOKEN_TIMEOUT = 5.0  # Max time to wait for token grant (seconds, ~0.5 panel cycle)
 
 # Alarm reading
