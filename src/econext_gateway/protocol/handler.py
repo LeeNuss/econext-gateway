@@ -1933,7 +1933,9 @@ class ProtocolHandler:
     # Tunable parameters for the clock sync background task. Exposed at
     # class level so tests can override them without monkey-patching globals.
     _CLOCK_SYNC_STARTUP_DELAY_S = 60.0
-    _CLOCK_SYNC_CHECK_INTERVAL_S = 600.0
+    # 60s gives ~minute-scale detection latency for DST and NTP-step events
+    # while staying nearly free (two clock reads + a comparison per wake).
+    _CLOCK_SYNC_CHECK_INTERVAL_S = 60.0
     _CLOCK_SYNC_SKEW_THRESHOLD_S = 90.0
     _CLOCK_SYNC_REQUEST_TIMEOUT_S = 30.0
 
