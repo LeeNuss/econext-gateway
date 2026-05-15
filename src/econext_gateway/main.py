@@ -92,6 +92,13 @@ async def lifespan(app: FastAPI):
         clock_sync_minute=settings.clock_sync_minute,
     )
 
+    # Always wire backup-source — handler auto-discovers wired thermostats from
+    # the controller's Circuit*ThermostatAddress params + panel's device-table
+    # broadcasts. Returns None until discovery has data, so this is safe.
+    app_state.virtual_thermostat.set_backup_source(
+        app_state.handler.get_backup_temperature
+    )
+
     # Connect and start polling
     connected = await app_state.connection.connect()
     if connected:

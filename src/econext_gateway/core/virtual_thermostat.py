@@ -8,8 +8,14 @@ Persists the last temperature to disk so it survives gateway restarts.
 import logging
 import time
 from pathlib import Path
+from typing import Callable
 
 logger = logging.getLogger(__name__)
+
+# Callback signature: takes the staleness threshold and returns
+# (temperature, source_label) for the freshest backup reading newer than
+# `max_age` seconds, or None if nothing fresh is available.
+BackupSource = Callable[[float], "tuple[float, str] | None"]
 
 
 class VirtualThermostat:
@@ -28,10 +34,20 @@ class VirtualThermostat:
         self._persist_file = persist_file
         self._last_persist_time: float = 0.0
         self._persist_interval: float = 120.0  # write to disk at most every 2 minutes
+        self._backup_source: BackupSource | None = None
+        self._last_effective_source: str = "none"
 
         # Load persisted temperature from last run
         if self._persist_file is not None:
             self._load_persisted()
+
+    def set_backup_source(self, source: BackupSource | None) -> None:
+        """Register a callback used when the primary HA push is stale.
+
+        The callback returns (temperature, label) for the freshest backup
+        reading newer than `max_age` seconds, or None.
+        """
+        self._backup_source = source
 
     @property
     def temperature(self) -> float | None:
@@ -71,13 +87,41 @@ class VirtualThermostat:
     def effective_temperature(self) -> float:
         """Temperature to report on the bus.
 
-        Returns the last known temperature, even if stale. This prevents
-        the heat pump from seeing 0.0 and running at maximum if HA stops
-        sending updates. The is_stale flag is still tracked for monitoring.
+        Resolution order:
+          1. Fresh HA push (`temperature` exists and not stale).
+          2. Backup-source callback if registered and returns a fresh value.
+          3. Last known HA push, even if stale (avoid 0.0 spike).
+          4. `stale_fallback` constant.
+
+        Side effect: updates `_last_effective_source` so callers can ask
+        which branch was taken via `effective_source`.
         """
-        if self._temperature is not None:
+        if self._temperature is not None and not self.is_stale:
+            self._last_effective_source = "primary"
             return self._temperature
+
+        if self._backup_source is not None:
+            backup = self._backup_source(self._max_age)
+            if backup is not None:
+                temp, label = backup
+                self._last_effective_source = f"backup:{label}"
+                return temp
+
+        if self._temperature is not None:
+            self._last_effective_source = "stale_cache"
+            return self._temperature
+
+        self._last_effective_source = "fallback"
         return self._stale_fallback
+
+    @property
+    def effective_source(self) -> str:
+        """Which source the most recent `effective_temperature` came from.
+
+        One of: `"primary"`, `"backup:<label>"`, `"stale_cache"`,
+        `"fallback"`, `"none"` (before first read).
+        """
+        return self._last_effective_source
 
     def update(self, temperature: float) -> float | None:
         """Submit a new temperature reading.

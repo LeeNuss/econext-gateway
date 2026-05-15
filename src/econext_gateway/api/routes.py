@@ -1,5 +1,6 @@
 """API route handlers."""
 
+import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -20,6 +21,8 @@ from econext_gateway.core.models import (
 )
 from econext_gateway.core.virtual_thermostat import VirtualThermostat
 from econext_gateway.protocol.handler import ProtocolHandler
+
+_logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
@@ -139,6 +142,11 @@ async def submit_thermostat_temperature(
 ):
     """Submit a room temperature reading from Home Assistant."""
     previous_age = thermostat.update(request.temperature)
+    _logger.info(
+        "Thermostat temp submitted: %.2f C (previous_age=%s s)",
+        request.temperature,
+        round(previous_age, 1) if previous_age is not None else None,
+    )
     return ThermostatSubmitResponse(
         success=True,
         temperature=thermostat.temperature,
@@ -170,15 +178,17 @@ async def get_thermostat_status(
 ):
     """Get virtual thermostat status including pairing state."""
     age = thermostat.age_seconds
+    effective_temp = thermostat.effective_temperature  # also updates effective_source
 
     return ThermostatStatusResponse(
         enabled=True,
         temperature=thermostat.temperature,
-        effective_temperature=thermostat.effective_temperature,
+        effective_temperature=effective_temp,
         is_stale=thermostat.is_stale,
         age_seconds=round(age, 1) if age is not None else None,
         max_age_seconds=thermostat.max_age,
         stale_fallback=thermostat.stale_fallback,
         pairing_state=handler.thermostat_pairing_state,
         bus_address=handler.thermostat_address,
+        effective_source=thermostat.effective_source,
     )

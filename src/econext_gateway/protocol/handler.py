@@ -616,6 +616,11 @@ class ProtocolHandler:
         self._token_timeout = token_timeout
         self._token_required = token_required
         self._paired_address_file = paired_address_file
+        # Auto-discovered backup thermostat addresses, refreshed from the cache.
+        # The discovery is opportunistic — empty until the first poll completes.
+        self._backup_thermostat_addrs: frozenset[int] = frozenset()
+        self._backup_addrs_refreshed_at: float = 0.0
+        self._last_logged_backup_addrs: frozenset[int] = frozenset()
 
         # Load persisted address from previous auto-registration
         paired_addr = self._load_paired_address()
@@ -1119,6 +1124,98 @@ class ProtocolHandler:
         logger.debug(
             "TOKEN granted waited=%.1fs", _time.monotonic() - token_wait_start
         )
+
+    # Refresh discovered backup-thermostat addresses at most this often.
+    _BACKUP_DISCOVER_TTL = 30.0
+    # Sensible room-temperature window for a residential thermostat reading.
+    # Outside this we assume the device-table entry is something other than a
+    # room thermostat (controller CPU temp, unconfigured slot, etc.).
+    _BACKUP_TEMP_MIN = 5.0
+    _BACKUP_TEMP_MAX = 35.0
+
+    def _refresh_backup_thermostat_addrs(self, now: float) -> frozenset[int]:
+        """Walk the controller param cache for Circuit*ThermostatAddress entries.
+
+        Cheap dict scan, so we just throttle it with a TTL rather than hooking
+        into the poll lifecycle. Excludes our own virtual-thermostat address
+        because that's the one we're trying to back up.
+        """
+        if (
+            self._backup_addrs_refreshed_at > 0.0
+            and now - self._backup_addrs_refreshed_at < self._BACKUP_DISCOVER_TTL
+        ):
+            return self._backup_thermostat_addrs
+
+        # Opportunistic read of the cache's underlying dict; we only need a
+        # consistent snapshot per-address-key, not across the whole cache.
+        try:
+            params = self._cache._parameters  # noqa: SLF001 — internal by design
+        except AttributeError:
+            return self._backup_thermostat_addrs
+
+        own_addr = self._thermostat.address if self._thermostat is not None else None
+        discovered: set[int] = set()
+        for p in params.values():
+            name = getattr(p, "name", "") or ""
+            if not name.startswith("Circuit") or "ThermostatAddress" not in name:
+                continue
+            try:
+                addr = int(getattr(p, "value", 0))
+            except (TypeError, ValueError):
+                continue
+            if addr <= 0 or addr == own_addr:
+                continue
+            discovered.add(addr)
+
+        new_set = frozenset(discovered)
+        self._backup_thermostat_addrs = new_set
+        self._backup_addrs_refreshed_at = now
+        if new_set != self._last_logged_backup_addrs:
+            logger.info(
+                "Backup thermostat candidates discovered: %s",
+                sorted(new_set) if new_set else "(none)",
+            )
+            self._last_logged_backup_addrs = new_set
+        return new_set
+
+    def get_backup_temperature(self, max_age: float) -> tuple[float, str] | None:
+        """Return the freshest sane backup room temp, or None.
+
+        Walks the panel-broadcast device registry for any address listed as a
+        Circuit*ThermostatAddress in the controller's cache, returns the
+        freshest temperature within `max_age` that falls in the residential
+        room-temp window. Label is the bus address as a string.
+        """
+        try:
+            now = asyncio.get_event_loop().time()
+        except RuntimeError:
+            return None
+
+        addrs = self._refresh_backup_thermostat_addrs(now)
+        if not addrs:
+            return None
+
+        best_addr: int | None = None
+        best_temp: float = 0.0
+        best_age: float = max_age
+        for addr in addrs:
+            dev = self._device_registry.get(addr)
+            if dev is None or dev.temperature is None:
+                continue
+            temp = dev.temperature
+            # Reject NaN and out-of-window values (sensor disconnected,
+            # uninitialised slot, controller CPU temp, etc.).
+            if temp != temp or temp < self._BACKUP_TEMP_MIN or temp > self._BACKUP_TEMP_MAX:
+                continue
+            age = now - dev.last_seen
+            if age > max_age:
+                continue
+            if best_addr is None or age < best_age:
+                best_addr, best_temp, best_age = addr, temp, age
+
+        if best_addr is None:
+            return None
+        return best_temp, str(best_addr)
 
     def _try_match_pending(self, frame: Frame) -> bool:
         """If this frame is the response our `send_and_receive` is waiting

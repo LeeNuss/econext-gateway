@@ -234,6 +234,15 @@ class ThermostatStatusResponse(BaseModel):
     stale_fallback: float = Field(..., description="Temperature reported when no reading received")
     pairing_state: str | None = Field(None, description="Thermostat pairing state")
     bus_address: int | None = Field(None, description="Assigned bus address")
+    effective_source: str = Field(
+        "none",
+        description=(
+            "Source of effective_temperature: 'primary' (HA push), "
+            "'backup:<addr>' (sniffed wired thermostat), "
+            "'stale_cache' (last HA value past max_age), 'fallback' (constant), "
+            "or 'none' (never read)."
+        ),
+    )
 
 
 class HealthResponse(BaseModel):
