@@ -7,8 +7,8 @@ Persists the last temperature to disk so it survives gateway restarts.
 
 import logging
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 logger = logging.getLogger(__name__)
 
