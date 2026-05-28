@@ -18,6 +18,7 @@ from econext_gateway.protocol.frames import Frame
 from econext_gateway.protocol.handler import (
     ParamStructEntry,
     ProtocolHandler,
+    _filter_sentinel,
     build_get_params_request,
     build_modify_param_request,
     build_struct_request,
@@ -348,6 +349,33 @@ class TestBuildFunctions:
         assert data[14] == 0x01
         assert struct.unpack("<H", data[15:17])[0] == 5
         assert data[17] == 1
+
+
+class TestFilterSentinel:
+    """Tests for the 999.0 disconnected-sensor sentinel filter."""
+
+    def test_temp_sentinel_returns_previous(self):
+        assert _filter_sentinel(999.0, name="Circuit2thermostatTemp", previous=21.5) == 21.5
+        assert _filter_sentinel(999.0, name="TempCWU", previous=43.4) == 43.4
+
+    def test_temp_sentinel_with_no_previous_returns_none(self):
+        assert _filter_sentinel(999.0, name="TempAhs", previous=None) is None
+
+    def test_temp_non_sentinel_passes_through(self):
+        assert _filter_sentinel(21.5, name="Circuit2thermostatTemp", previous=20.0) == 21.5
+        assert _filter_sentinel(0.0, name="TempCWU", previous=20.0) == 0.0
+        assert _filter_sentinel(-5.5, name="TempWthr", previous=None) == -5.5
+
+    def test_non_temp_param_keeps_999(self):
+        # A 999.0 on a non-temperature param is a real value, not a sentinel.
+        assert _filter_sentinel(999.0, name="HPStatusFanRPM", previous=42.0) == 999.0
+        assert _filter_sentinel(999.0, name="currentFlow", previous=None) == 999.0
+
+    def test_non_float_passes_through(self):
+        # int 999 (not the float sentinel) passes through even on a temp param.
+        assert _filter_sentinel(999, name="TempCWU", previous=20.0) == 999
+        assert _filter_sentinel("abc", name="TempCWU", previous=20.0) == "abc"
+        assert _filter_sentinel(None, name="TempCWU", previous=20.0) is None
 
 
 # ============================================================================

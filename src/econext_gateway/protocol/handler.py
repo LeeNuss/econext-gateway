@@ -164,6 +164,26 @@ UNIT_STRING_MAP = {
     "kWh": 8,
 }
 
+SENSOR_DISCONNECTED = 999.0  # Plum sentinel for a missing temperature sensor
+
+
+def _is_temp_param(name: str) -> bool:
+    """Detect temperature params by name.
+
+    The controller's struct sends inconsistent unit strings (most temp params come
+    through with no unit), so we key off the name instead. Matches `Temp*`,
+    `*thermostat*`, etc.
+    """
+    n = name.lower()
+    return "temp" in n or "thermostat" in n
+
+
+def _filter_sentinel(value: Any, name: str, previous: Any) -> Any:
+    """Return `previous` when `value` is the disconnected-sensor sentinel for a temp param."""
+    if isinstance(value, float) and value == SENSOR_DISCONNECTED and _is_temp_param(name):
+        return previous
+    return value
+
 
 @dataclass
 class DeviceTableEntry:
@@ -1811,10 +1831,15 @@ class ProtocolHandler:
                 continue
 
             min_val, max_val = await self._resolve_min_max(entry)
+            existing = await self._cache.get(index)
+            filtered = _filter_sentinel(value, entry.name, existing.value if existing else None)
+            if filtered is None:
+                # First-ever read is the sentinel; skip until a real value arrives.
+                continue
             param = Parameter(
                 index=index,
                 name=entry.name,
-                value=value,
+                value=filtered,
                 type=entry.type_code,
                 unit=entry.unit,
                 writable=entry.writable,
@@ -2325,10 +2350,17 @@ class ProtocolHandler:
                         if entry is None or not entry.name:
                             continue
                         min_val, max_val = await self._resolve_min_max(entry)
+                        existing = await self._cache.get(index)
+                        filtered = _filter_sentinel(
+                            value, entry.name, existing.value if existing else None
+                        )
+                        if filtered is None:
+                            # First-ever read is the sentinel; skip until a real value arrives.
+                            continue
                         param = Parameter(
                             index=index,
                             name=entry.name,
-                            value=value,
+                            value=filtered,
                             type=entry.type_code,
                             unit=entry.unit,
                             writable=entry.writable,
