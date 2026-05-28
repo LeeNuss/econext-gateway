@@ -58,6 +58,17 @@ TEMPERATURE_PARAM_INDEX = 0
 # Schedule param range (7 days x 2 slots).
 SCHEDULE_PARAM_RANGE = range(9, 23)
 
+# The panel uses the bound thermostat's own schedule params (9-22) as the governed
+# circuit's weekly schedule. The thermostat table maps 1:1 by position onto the
+# controller's Circuit{N}<Day><AM|PM> params (14 contiguous indices starting at
+# Circuit{N}SundayAM), same Sunday-first day order and A/B == AM/PM pairing:
+#   param 9  (A Sun, UINT32) -> Circuit{N}SundayAM
+#   param 10 (B Sun, UINT16) -> Circuit{N}SundayPM
+#   ... through param 22     -> Circuit{N}SaturdayPM
+# AM slots use the full 32-bit "A" field; PM slots fit the 16-bit "B" field.
+# The base index is resolved at runtime from the circuit assigned to the virtual
+# thermostat (Circuit{N}ThermostatAddress == our bus address); not hardcoded.
+
 # Status bytes that precede each value in GET_PARAMS response.
 # From GM3 spec: b0=measured, b7=discontinuity.
 STATUS_DEFAULT = 0x00  # RO non-measured params, strings, counters

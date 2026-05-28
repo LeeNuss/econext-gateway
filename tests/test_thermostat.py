@@ -7,6 +7,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from econext_gateway.api.dependencies import app_state
+from econext_gateway.core.cache import ParameterCache
+from econext_gateway.core.models import Parameter
 from econext_gateway.core.virtual_thermostat import VirtualThermostat
 from econext_gateway.protocol.codec import decode_value
 from econext_gateway.protocol.constants import (
@@ -341,6 +343,192 @@ class TestThermostatEmulator:
 
         handled = await emulator.handle_frame(frame, fake_write)
         assert not handled
+
+
+# ---------------------------------------------------------------------------
+# Schedule served from the controller's Circuit 2 schedule
+# ---------------------------------------------------------------------------
+
+
+class TestThermostatScheduleFromCache:
+    """The thermostat's schedule params (9-22) mirror the controller's Circuit 2
+    schedule (297-310), so the panel does not sync our (otherwise zero) schedule
+    back over Circuit 2. Mapping is 1:1 by position: param i -> 297 + (i - 9),
+    with odd indices (A slots) UINT32 and even indices (B slots) UINT16.
+
+    The controller stores a circuit schedule in a different packing than a
+    thermostat reports it (verified against a real ecoSTER bus capture):
+        AM slot (UINT32): thermostat = controller | 0xFF000000
+        PM slot (UINT16): thermostat = controller >> 8
+    The emulator applies this transform; these tests assert it.
+    """
+
+    # Realistic controller storage (top byte 0 for AM; 24-bit for PM).
+    AM_VALUE = 16760832  # 0x00FFC600
+    PM_VALUE = 1032447  # 0x000FC0FF -- would overflow UINT16 if served raw
+
+    @pytest.fixture
+    def vt(self):
+        vt = VirtualThermostat(max_age=300.0, stale_fallback=0.0)
+        vt.update(21.0)
+        return vt
+
+    async def _request_schedule(self, emulator):
+        """Send GET_PARAMS for the schedule range (params 9-22) and return the payload."""
+        frame = Frame(
+            destination=THERMOSTAT_ADDR,
+            command=Command.GET_PARAMS,
+            data=struct.pack("<BH", 14, 9),  # count=14, start=9
+            source=PANEL_ADDRESS,
+        )
+        written_frames = []
+
+        async def fake_write(f, **kwargs):
+            written_frames.append(f)
+            return True
+
+        await emulator.handle_frame(frame, fake_write)
+        resp = written_frames[0]
+        assert resp.command == Command.GET_PARAMS_RESPONSE
+        return resp.data
+
+    def _decode_schedule(self, data):
+        """Decode the 14 schedule values from a GET_PARAMS response payload."""
+        assert data[0] == 14
+        assert struct.unpack("<H", data[1:3])[0] == 9
+        values = {}
+        offset = 3
+        for i in range(14):
+            param_index = 9 + i
+            offset += 1  # status byte
+            if param_index % 2 == 1:  # 9, 11, ... = "A" slots = UINT32
+                values[param_index] = decode_value(data[offset : offset + 4], DataType.UINT32)
+                offset += 4
+            else:  # 10, 12, ... = "B" slots = UINT16
+                values[param_index] = decode_value(data[offset : offset + 2], DataType.UINT16)
+                offset += 2
+        return values
+
+    _DAYS = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+
+    async def _populate_circuit(self, cache, *, circuit, addr, base_index):
+        """Set up Circuit{circuit} assigned to `addr` with a 14-slot schedule."""
+        await cache.set(
+            Parameter(
+                index=200 + circuit, name=f"Circuit{circuit}ThermostatAddress",
+                value=addr, type=DataType.UINT32, unit=0, writable=False,
+            )
+        )
+        for i in range(14):
+            day = self._DAYS[i // 2]
+            slot = "AM" if i % 2 == 0 else "PM"
+            await cache.set(
+                Parameter(
+                    index=base_index + i, name=f"Circuit{circuit}{day}{slot}",
+                    value=self.AM_VALUE if i % 2 == 0 else self.PM_VALUE,
+                    type=DataType.UINT32, unit=0, writable=True,
+                )
+            )
+
+    @pytest.mark.asyncio
+    async def test_schedule_served_from_cache(self, vt):
+        cache = ParameterCache()
+        # Virtual thermostat (addr 165) governs Circuit 2; schedule base at 297.
+        await self._populate_circuit(cache, circuit=2, addr=THERMOSTAT_ADDR, base_index=297)
+        emulator = ThermostatEmulator(address=THERMOSTAT_ADDR, virtual_thermostat=vt, cache=cache)
+
+        values = self._decode_schedule(await self._request_schedule(emulator))
+
+        # param 9 <-> 297 (AM), param 10 <-> 298 (PM), ... param 22 <-> 310 (PM)
+        # Emulator applies the controller->thermostat transform.
+        for param_index in range(9, 23):
+            if param_index % 2 == 1:  # AM slot (UINT32)
+                expected = self.AM_VALUE | 0xFF000000
+            else:  # PM slot (UINT16)
+                expected = (self.PM_VALUE >> 8) & 0xFFFF
+            assert values[param_index] == expected, f"param {param_index}"
+
+    async def _request_schedule_response(self, emulator):
+        """Send a schedule-range GET_PARAMS and return the raw response Frame."""
+        frame = Frame(
+            destination=THERMOSTAT_ADDR,
+            command=Command.GET_PARAMS,
+            data=struct.pack("<BH", 14, 9),  # count=14, start=9
+            source=PANEL_ADDRESS,
+        )
+        written = []
+
+        async def fake_write(f, **kwargs):
+            written.append(f)
+            return True
+
+        await emulator.handle_frame(frame, fake_write)
+        return written[0]
+
+    @pytest.mark.asyncio
+    async def test_schedule_served_from_assigned_circuit_not_hardcoded(self, vt):
+        # Virtual thermostat governs Circuit 1 (base 247), not Circuit 2 — the base
+        # index must be resolved from the assignment, not hardcoded to 297.
+        cache = ParameterCache()
+        await self._populate_circuit(cache, circuit=1, addr=THERMOSTAT_ADDR, base_index=247)
+        emulator = ThermostatEmulator(address=THERMOSTAT_ADDR, virtual_thermostat=vt, cache=cache)
+
+        values = self._decode_schedule(await self._request_schedule(emulator))
+
+        for param_index in range(9, 23):
+            if param_index % 2 == 1:
+                expected = self.AM_VALUE | 0xFF000000
+            else:
+                expected = (self.PM_VALUE >> 8) & 0xFFFF
+            assert values[param_index] == expected, f"param {param_index}"
+
+    @pytest.mark.asyncio
+    async def test_schedule_deferred_without_cache(self, vt):
+        # No cache -> schedule never becomes ready -> we must NOT serve a (zero)
+        # schedule (that would let the panel wipe Circuit 2). Respond NO_DATA.
+        emulator = ThermostatEmulator(address=THERMOSTAT_ADDR, virtual_thermostat=vt)
+
+        resp = await self._request_schedule_response(emulator)
+
+        assert resp.command == Command.NO_DATA
+
+    @pytest.mark.asyncio
+    async def test_schedule_deferred_on_cache_miss(self, vt):
+        # Cache present but Circuit 2 schedule not polled yet -> defer (NO_DATA),
+        # do not serve zeros.
+        emulator = ThermostatEmulator(
+            address=THERMOSTAT_ADDR, virtual_thermostat=vt, cache=ParameterCache()
+        )
+
+        resp = await self._request_schedule_response(emulator)
+
+        assert resp.command == Command.NO_DATA
+
+    @pytest.mark.asyncio
+    async def test_full_poll_serves_temp_but_truncates_schedule_when_not_ready(self, vt):
+        # Before the schedule is retrieved, a full-table poll (start=0) still reports
+        # temperature/presets but truncates at the schedule range (no schedule served).
+        emulator = ThermostatEmulator(
+            address=THERMOSTAT_ADDR, virtual_thermostat=vt, cache=ParameterCache()
+        )
+        frame = Frame(
+            destination=THERMOSTAT_ADDR,
+            command=Command.GET_PARAMS,
+            data=struct.pack("<BH", 35, 0),  # count=35, start=0 (full table)
+            source=PANEL_ADDRESS,
+        )
+        written = []
+
+        async def fake_write(f, **kwargs):
+            written.append(f)
+            return True
+
+        await emulator.handle_frame(frame, fake_write)
+        resp = written[0]
+        assert resp.command == Command.GET_PARAMS_RESPONSE
+        # Response covers params 0..8 only (count=9), schedule (9+) truncated.
+        assert resp.data[0] == 9
+        assert struct.unpack("<H", resp.data[1:3])[0] == 0
 
 
 # ---------------------------------------------------------------------------

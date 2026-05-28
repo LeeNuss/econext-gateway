@@ -48,6 +48,8 @@ async def lifespan(app: FastAPI):
     if settings.thermostat_enabled:
         logger.info("Virtual thermostat enabled (max_age=%.0fs)", settings.thermostat_max_age)
 
+    app_state.cache = ParameterCache()
+
     # Create thermostat emulator if enabled (address=0 triggers auto-registration)
     thermostat_emulator = None
     if settings.thermostat_enabled:
@@ -55,13 +57,12 @@ async def lifespan(app: FastAPI):
         thermostat_emulator = ThermostatEmulator(
             address=thermostat_addr or 0,
             virtual_thermostat=app_state.virtual_thermostat,
+            cache=app_state.cache,
         )
         if thermostat_addr is not None:
             logger.info("Thermostat emulator active at address %d", thermostat_addr)
         else:
             logger.info("Thermostat emulator created, will auto-register during pairing")
-
-    app_state.cache = ParameterCache()
     # Whitelist: only queue frames addressed to our devices. All other bus
     # traffic (ecoNET300, controller↔panel, broadcast polls) is dropped at
     # the protocol level to keep the frame queue shallow for fast thermostat

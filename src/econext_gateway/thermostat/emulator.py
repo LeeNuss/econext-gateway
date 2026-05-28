@@ -14,7 +14,7 @@ import asyncio
 import logging
 import struct
 import time as _time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from econext_gateway.core.virtual_thermostat import VirtualThermostat
 from econext_gateway.protocol.codec import encode_value
@@ -28,6 +28,9 @@ from econext_gateway.thermostat.params import (
     get_default_value,
     get_status_byte,
 )
+
+if TYPE_CHECKING:
+    from econext_gateway.core.cache import ParameterCache
 
 # Re-export for handler.py imports
 __all__ = ["ThermostatEmulator", "THERMOSTAT_IDENTITY", "THERMOSTAT_PAIRING_IDENTITY"]
@@ -71,19 +74,30 @@ class ThermostatEmulator:
     to panel queries (IDENTIFY, GET_PARAMS_STRUCT, GET_PARAMS, MODIFY_PARAM).
     """
 
-    def __init__(self, address: int, virtual_thermostat: VirtualThermostat) -> None:
+    def __init__(
+        self,
+        address: int,
+        virtual_thermostat: VirtualThermostat,
+        cache: "ParameterCache | None" = None,
+    ) -> None:
         self.address = address
         self._vt = virtual_thermostat
+        # Controller parameter cache; used to serve the real Circuit 2 schedule
+        # on our schedule params (9-22). Optional so tests can omit it.
+        self._cache = cache
         self._params = {p.index: p for p in THERMOSTAT_PARAMS}
         # Values the panel has written to us via MODIFY_PARAM
         self._written_values: dict[int, Any] = {}
         # Only serve struct once after pairing. Re-discovery resets panel temp to 0.
         self._struct_served = False
+        # Controller index of <assigned-circuit>SundayAM, resolved per poll from the
+        # cache. None until known; gates serving our schedule params (9-22).
+        self._schedule_base: int | None = None
         # Uptime counter for param 30 (Run) - matches real thermostat behaviour
 
         self._start_time = _time.monotonic()
 
-    def _get_param_value(self, param: ThermostatParam) -> Any:
+    async def _get_param_value(self, param: ThermostatParam) -> Any:
         """Get the current value for a parameter.
 
         For the temperature parameter, returns the HA-submitted value.
@@ -101,8 +115,27 @@ class ThermostatEmulator:
         if param.index == 30:
             return int(_time.monotonic() - self._start_time)
 
-        # Schedules (params 9-22): always return zeros like real thermostat
+        # Schedules (params 9-22): serve the assigned circuit's real schedule from
+        # the controller cache so the panel doesn't sync our (otherwise zero)
+        # schedule back over the circuit. `_schedule_base` is resolved per poll in
+        # _handle_get_params; when it's None the schedule is deferred (not served).
+        #
+        # The controller stores a circuit schedule in a different packing than a
+        # thermostat reports it on the bus. Verified against a real ecoSTER
+        # (2026-05-28 bus capture): for the SAME schedule,
+        #   AM slot (UINT32): thermostat = controller | 0xFF000000  (top byte 0->FF)
+        #   PM slot (UINT16): thermostat = controller >> 8
+        # We must apply this transform, otherwise AM slots carry the wrong top
+        # byte and PM controller values (e.g. 0x000FC0FF) overflow UINT16.
         if param.index in SCHEDULE_PARAM_RANGE:
+            if self._cache is not None and self._schedule_base is not None:
+                offset = param.index - SCHEDULE_PARAM_RANGE.start
+                cached = await self._cache.get(self._schedule_base + offset)
+                if cached is not None:
+                    raw = int(cached.value)
+                    if offset % 2 == 0:  # AM slot, UINT32
+                        return raw | 0xFF000000
+                    return (raw >> 8) & 0xFFFF  # PM slot, UINT16
             return 0
 
         if param.index in self._written_values:
@@ -253,6 +286,26 @@ class ThermostatEmulator:
         )
         return True
 
+    async def _resolve_schedule_base(self) -> int | None:
+        """Controller index of <assigned-circuit>SundayAM, or None if not yet known.
+
+        The virtual thermostat governs the circuit whose Circuit{N}ThermostatAddress
+        equals our bus address; that circuit's 14 contiguous schedule params
+        (SundayAM..SaturdayPM) are what the panel mirrors from our params 9-22.
+        Returns None until both the assignment and the schedule have been polled
+        into the cache - that gates serving the schedule (serving 0 before then
+        would let the panel wipe the circuit's schedule).
+        """
+        if self._cache is None or not self.address:
+            return None
+        for n in range(1, 8):  # circuits 1-7
+            addr = await self._cache.get_by_name(f"Circuit{n}ThermostatAddress")
+            if addr is None or int(addr.value) != self.address:
+                continue
+            base = await self._cache.get_by_name(f"Circuit{n}SundayAM")
+            return base.index if base is not None else None
+        return None
+
     async def _handle_get_params(self, frame: Frame, write_fn) -> bool:
         """Respond to GET_PARAMS request.
 
@@ -267,6 +320,18 @@ class ThermostatEmulator:
 
         params_in_range = [p for p in THERMOSTAT_PARAMS if start_index <= p.index < start_index + count]
 
+        # Defer the schedule params (9-22) until we've actually retrieved the
+        # assigned circuit's schedule from the controller. Before then, serving 0
+        # would make the panel mirror 0 back onto the circuit and wipe it (bootstrap
+        # race on startup, before our first poll populates the cache). We keep
+        # reporting everything below the schedule (temperature, presets) and truncate
+        # there; once the schedule base resolves we serve the full table.
+        self._schedule_base = await self._resolve_schedule_base()
+        if self._schedule_base is None:
+            params_in_range = [
+                p for p in params_in_range if p.index < SCHEDULE_PARAM_RANGE.start
+            ]
+
         if not params_in_range:
             await self._respond(frame.source, Command.NO_DATA, b"", write_fn)
             logger.debug(
@@ -276,7 +341,7 @@ class ThermostatEmulator:
             )
             return True
 
-        values = [(p, self._get_param_value(p)) for p in params_in_range]
+        values = [(p, await self._get_param_value(p)) for p in params_in_range]
         data = build_params_response(values, start_index, self._written_values)
         await self._respond(frame.source, Command.GET_PARAMS_RESPONSE, data, write_fn)
         logger.debug(
