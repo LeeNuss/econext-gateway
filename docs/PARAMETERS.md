@@ -187,6 +187,44 @@ The `info` field encodes the parameter type and editability:
 | 55   | 0x37 | float     | Yes      |
 | 60   | 0x3c | string    | Yes      |
 
+## Bitfield Decodes
+
+### Circuit{N}Settings (per-circuit configuration bitfield)
+
+`Circuit{N}Settings` (Circuit1 = 231, Circuit2 = 281, Circuit3 = 331, ...) is a 32-bit
+configuration bitfield **owned and recomputed by the controller**. It reads reliably, but
+raw API writes are limited: *disabling* by clearing a bit works, while *enabling* generally
+requires the controller's installer menu (the controller reverts an enable-write on its next
+poll cycle).
+
+Factory/disabled baseline (a brand-new radiator circuit): `8406268` (`0x8044FC`). XOR a
+value against this baseline to read the meaningful bits.
+
+| Bit    | Mask       | Meaning                                    | Notes                                                                                                                                                                                                                       |
+| ------ | ---------- | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0      | `0x1`      | **Circuit support** (master enable)        | Enables the circuit and starts its circulation pump. Confirmed live: the panel "Circuit support" toggle moved this bit, and pump (`HPStatusCircPStat{N-1}`), the config alarm, and main-display visibility all followed it. |
+| 1      | `0x2`      | type = **UFH** (underfloor)                | Part of the type encoding (see below).                                                                                                                                                                                      |
+| 8      | `0x100`    | **room thermostat / ecoSTER bound**        | Set when a room thermostat is assigned. **Independent of the enable bit, NOT a visibility gate** - a *disabled* circuit can still have a thermostat bound (e.g. C1: bit 8 = 1, bit 0 = 0, off the main screen).             |
+| 13     | `0x2000`   | **pump-only mode**                         |                                                                                                                                                                                                                             |
+| 17     | `0x20000`  | **cooling enable**                         | Set automatically when the circuit type is fan-coil.                                                                                                                                                                        |
+| 20     | `0x100000` | **heating enable, inverted** (1 = OFF)     |                                                                                                                                                                                                                             |
+| 11, 16 | -          | other feature flags (mixer / weather-comp) | Co-vary on fully configured circuits; not individually confirmed.                                                                                                                                                           |
+
+**Type encoding**: `Circuit{N}TypeSettings` is the authoritative enum (1 = radiator,
+2 = UFH, 3 = fan-coil). `Settings` mirrors it: radiator = neither bit 1 nor bit 17,
+UFH = bit 1, fan-coil = bit 17 (cooling).
+
+**Circuit enabled / shown on main display**: gated by **bit 0 (circuit support) alone** -
+`(Settings & 0x1) != 0`. This is independent of bit 8: a disabled circuit can still have a
+room thermostat bound (bit 8 = 1, bit 0 = 0) and stays off the main display (visible only in
+the installer menu). Consumers (e.g. the Home Assistant integration) should gate circuit
+existence on **bit 0**, **not** `Circuit{N}active` (which reads 0 whenever an enabled circuit
+is merely switched off - the cause of the "Circuit unavailable in HA" bug).
+
+> `Circuit{N}active` is a separate **runtime** parameter (0 = not running, 1 = standby,
+> 2 = actively running/pumping), not a config flag - it reads 0 whenever a circuit is
+> switched off, so it must not gate whether a circuit is shown.
+
 ## Parameter List
 
 ### Editable Parameters
