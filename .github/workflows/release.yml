@@ -47,10 +47,32 @@ jobs:
             echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Build release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          # CHANGELOG.md section: everything between "## [VERSION]" and the next "## [" heading.
+          awk -v v="$VERSION" '
+            /^## \[/ { if (found) exit; found = ($0 ~ "^## \\[" v "\\]") ; next }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if [[ ! -s release-notes.md ]]; then
+            echo "No CHANGELOG.md entry for ${VERSION}; using generated notes only."
+          fi
+          # Generated notes (merged PRs, compare link) against the latest stable
+          # release, not the most recent pre-release.
+          PREV=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name 2>/dev/null || true)
+          echo "Generating notes against previous release: ${PREV:-<none>}"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="v${VERSION}" \
+            ${PREV:+-f previous_tag_name="$PREV"} \
+            --jq .body >> release-notes.md
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          body_path: release-notes.md
           prerelease: ${{ steps.prerelease.outputs.is_prerelease == 'true' }}
           files: |
             dist/*.whl
