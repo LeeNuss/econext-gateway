@@ -26,6 +26,8 @@ Local REST API gateway for heat pump controllers using a serial protocol. Runs o
 
 Connect the USB-RS485 adapter to the controller's RS-485 bus (A/B terminals) and plug the USB end into the Raspberry Pi. The included udev rule creates a `/dev/econext` symlink automatically for ecoLINK3 adapters. For other adapters, see [Troubleshooting](#troubleshooting).
 
+The simplest option is to unplug the ecoLINK3 cable from your ecoNET300 module and plug it into the Pi. If you want to keep the ecoNET300 (and the econet24 cloud/app) working at the same time, see [Running Alongside ecoNET300](#running-alongside-econet300).
+
 ## Installation
 
 ### Quick Install (recommended)
@@ -193,6 +195,18 @@ sudo systemctl restart econext-gateway
 - Addresses already occupied by other devices on the bus are skipped.
 - Set `ECONEXT_LOG_LEVEL=DEBUG` to see all bus traffic, including IDENTIFY probes and token grants.
 
+## Running Alongside ecoNET300
+
+The gateway can share the RS-485 bus with the ecoNET300, keeping the econet24 cloud/app and installer access working. Requires gateway v0.2.0 or later.
+
+1. Leave the ecoNET300 on the controller's **G3** socket.
+2. Wire a second USB-RS485 converter (e.g. Waveshare FT232RL, `0403:6001`) to the **G1** socket, in parallel with the touch panel. Power the controller down for wiring.
+3. Add a udev rule for the converter in `/etc/udev/rules.d/99-econext-local.rules` (see [Troubleshooting](#troubleshooting)) or set `ECONEXT_SERIAL_PORT`.
+4. If the gateway previously ran standalone, `sudo rm -f /var/lib/econext-gateway/paired_address`.
+5. Power the controller up and start the gateway. It auto-registers at a free address (2-3 min); no further configuration needed.
+
+Details, bus trace of a healthy setup and troubleshooting: [docs/PARALLEL_ECONET300.md](docs/PARALLEL_ECONET300.md).
+
 ## Virtual Thermostat
 
 The gateway can emulate a thermostat on the RS-485 bus, allowing Home Assistant to submit a room temperature that the heat pump controller uses for heating control. This is useful if you have multiple temperature sensors (e.g. Aqara) and want to use a weighted average instead of a single-point reading from a physical thermostat.
@@ -287,12 +301,18 @@ adapters you have two options:
    ```bash
    udevadm info -a /dev/ttyUSB0 | grep -E 'idVendor|idProduct|serial|manufacturer|product'
    ```
-2. Edit `/etc/udev/rules.d/99-econext.rules`. For FT232H adapters (USB ID `0403:6014`)
-   uncomment the FT232H line already in the file. If you have multiple FTDI devices on
-   the same system, add a serial number match to target the right one:
+2. Create `/etc/udev/rules.d/99-econext-local.rules` with a line matching your adapter
+   (this file survives upgrades; `99-econext.rules` is overwritten by the installer).
+   FT232H (USB ID `0403:6014`):
    ```
-   SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6014", ATTRS{serial}=="YOUR_SERIAL", SYMLINK+="econext", MODE="0666"
+   SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6014", SYMLINK+="econext", MODE="0666"
    ```
+   FT232RL, e.g. Waveshare (`0403:6001`):
+   ```
+   SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", SYMLINK+="econext", MODE="0666"
+   ```
+   If you have several FTDI devices on the same system, add `ATTRS{serial}=="YOUR_SERIAL"`
+   to target the right one.
 3. Reload rules and verify:
    ```bash
    sudo udevadm control --reload-rules && sudo udevadm trigger
@@ -304,10 +324,8 @@ adapters you have two options:
 If the udev rule is inconvenient (e.g. generic adapter with no unique serial), you can
 bypass it entirely and set the serial port path directly:
 ```bash
-# In the systemd override or environment
-ECONEXT_SERIAL_PORT=/dev/ttyUSB0
+sudo systemctl edit econext-gateway
 ```
-Or edit the service: `sudo systemctl edit econext-gateway` and add:
 ```ini
 [Service]
 Environment=ECONEXT_SERIAL_PORT=/dev/ttyUSB0

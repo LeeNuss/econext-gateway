@@ -1,7 +1,11 @@
 # Stable symlink for USB-RS485 adapters used with ecoNET controllers.
 # Creates /dev/econext -> /dev/ttyUSBx
 #
-# Install:
+# This file is installed (and overwritten on upgrade) by deploy/install.sh.
+# Do not edit it in /etc/udev/rules.d; put custom rules for other adapters
+# in /etc/udev/rules.d/99-econext-local.rules instead (see README).
+#
+# Manual install:
 #   sudo cp 99-econext.rules /etc/udev/rules.d/
 #   sudo udevadm control --reload-rules
 #   sudo udevadm trigger
@@ -9,8 +13,13 @@
 # PLUM ecoLINK3 (default, matches by manufacturer/product)
 SUBSYSTEM=="tty", ATTRS{manufacturer}=="PLUM sp. z o.o", ATTRS{product}=="ecoLINK3", SYMLINK+="econext", MODE="0666"
 
-# FTDI FT232H (older ecoLINK cables, USB ID 0403:6014)
-# Uncomment if using an FT232H-based adapter (e.g. from an original TP-Link
-# ecoNET300 router). Matches ANY FT232H device on the system; if you have
-# multiple, add ATTRS{serial}=="YOUR_SERIAL" to distinguish.
+# Examples for other adapters. Copy the matching line into
+# /etc/udev/rules.d/99-econext-local.rules. If you have several FTDI devices,
+# add ATTRS{serial}=="YOUR_SERIAL" to distinguish them.
+#
+# FTDI FT232H (older ecoLINK cables, USB ID 0403:6014):
 #SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6014", SYMLINK+="econext", MODE="0666"
+#
+# FTDI FT232RL (e.g. Waveshare Industrial USB-RS485, USB ID 0403:6001), used
+# when running the gateway alongside an ecoNET300 (docs/PARALLEL_ECONET300.md):
+#SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", SYMLINK+="econext", MODE="0666"
