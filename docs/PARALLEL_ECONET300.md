@@ -34,7 +34,7 @@ Power down the controller before wiring.
 
 ## Bus addressing
 
-No configuration is needed. The ecoNET300 uses the fixed address 131 and identifies as `PLUM EcoNET`. The gateway never claims 131; it identifies as `PLUM EcoNEXT` and auto-registers at a free panel peripheral address (105-130). Both devices are polled by the panel and receive their own token.
+No configuration is needed. The ecoNET300 uses the fixed address 131 and identifies as `PLUM EcoNET`. The gateway never claims 131; it identifies as `ecoNEXT gateway` and auto-registers at a free panel peripheral address (105-130). Both devices are polled by the panel and receive their own token.
 
 A healthy parallel bus in `ECONEXT_LOG_LEVEL=DEBUG` (gateway at 114, ecoNET300 at 131, thermostat at 166):
 
@@ -45,7 +45,7 @@ src=100 dst=131 SERVICE func=0x0801   <- token grant to ecoNET300
 src=131 dst=100 SERVICE func=0x0200   <- ecoNET300 exchanges (repeats)
 src=131 dst=100 SERVICE func=0x0800   <- token return
 src=100 dst=114 IDENTIFY
-src=114 dst=100 IDENTIFY_ANS  identity='PLUM EcoNEXT'
+src=114 dst=100 IDENTIFY_ANS  identity='ecoNEXT gateway'
 ...
 ```
 

@@ -48,6 +48,10 @@ def _build_pairing_identity() -> bytes:
     hv = get_default_value(THERMOSTAT_PARAMS[25])  # HV
     sw = get_default_value(THERMOSTAT_PARAMS[26])  # SW
     version = f"{hv}_{sw}_D6AFC__"
+    # The manufacturer/model/class fields intentionally match a real ecoSTER:
+    # the panel rejects thermostats with any other identity and re-discovers
+    # the parameter struct if the model name differs. This is required for
+    # interoperability, not branding; the gateway itself identifies as ecoNEXT.
     return (
         b"PLUM Sp. z o.o.\x00"
         + b"ecoSTER_40\x00"  # model (same as real - panel caches struct for this model)
