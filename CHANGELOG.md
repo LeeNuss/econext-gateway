@@ -43,6 +43,9 @@ First stable release since 0.1.0-beta.2. Everything below shipped through the
 
 ### Changed
 
+- License changed from MIT to PolyForm Noncommercial 1.0.0: free for
+  private, non-profit, educational and government use; commercial use requires
+  a paid license. Earlier releases remain MIT.
 - Frame dispatching moved off the handler lock, so Home Assistant writes are no
   longer starved by bus traffic.
 - Steady-state logging is much quieter at INFO.

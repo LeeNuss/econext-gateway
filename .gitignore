@@ -54,3 +54,6 @@ logs/
 # Temporary files
 *.tmp
 *.bak
+
+# Claude Code project files
+.claude/

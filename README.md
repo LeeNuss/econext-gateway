@@ -391,4 +391,11 @@ uv run uvicorn econext_gateway.main:app --host 0.0.0.0 --port 8000
 
 ## License
 
-MIT
+Copyright 2026 Linus Reitmayr. Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+
+- **Free** for personal / private use, and for non-profit, educational, research and government use. You may use, modify and redistribute the gateway for those purposes.
+- **Commercial use requires a paid license.** This includes use by heating installers, heat pump manufacturers or distributors, energy service providers, or bundling the gateway into a product or service. Contact the author via GitHub ([LeeNuss](https://github.com/LeeNuss)) to arrange one.
+
+Versions released before this change (up to v0.2.0b4) remain available under their original MIT license.
+
+By contributing to this repository you agree that your contribution is licensed under the same terms and that the copyright holder may also license it commercially.
