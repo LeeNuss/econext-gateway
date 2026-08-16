@@ -41,8 +41,20 @@ curl -fsSL https://raw.githubusercontent.com/LeeNuss/econext-gateway/main/deploy
 To install a specific version:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LeeNuss/econext-gateway/main/deploy/bootstrap.sh | sudo bash -s -- --version 0.1.0
+curl -fsSL https://raw.githubusercontent.com/LeeNuss/econext-gateway/main/deploy/bootstrap.sh | sudo bash -s -- --version 0.2.0
 ```
+
+### Upgrading
+
+Re-run the quick install one-liner. It stops the service, installs the new version into the existing `/opt/econext-gateway`, and starts it again. Persistent state (`/var/lib/econext-gateway`), `systemctl edit` overrides and any `/etc/udev/rules.d/99-econext-local.rules` you created are kept. The service unit and `/etc/udev/rules.d/99-econext.rules` are regenerated, so put customisations in the override / local files, not there.
+
+The installer prints `Installed version: ...` at the end. Give the gateway a couple of minutes, then check that parameters are flowing:
+
+```bash
+curl http://<gateway-ip>:8000/health
+```
+
+Version-specific notes are in [CHANGELOG.md](CHANGELOG.md). Update the Home Assistant integration through HACS as usual; the required minimum is listed there.
 
 ### Manual Install
 
@@ -73,7 +85,18 @@ docker run -d \
 
 ## Configuration
 
-All settings are configured via environment variables with the `ECONEXT_` prefix. When using the systemd service, edit `/etc/systemd/system/econext-gateway.service` and run `sudo systemctl daemon-reload && sudo systemctl restart econext-gateway`.
+All settings are configured via environment variables with the `ECONEXT_` prefix. When using the systemd service, add them as an override so they survive upgrades:
+
+```bash
+sudo systemctl edit econext-gateway
+```
+
+```ini
+[Service]
+Environment=ECONEXT_LOG_LEVEL=DEBUG
+```
+
+Then `sudo systemctl restart econext-gateway`. Do not edit `/etc/systemd/system/econext-gateway.service` directly; the installer regenerates it on every upgrade.
 
 | Variable                      | Default                    | Description                                     |
 | ----------------------------- | -------------------------- | ----------------------------------------------- |
@@ -88,6 +111,12 @@ All settings are configured via environment variables with the `ECONEXT_` prefix
 | `ECONEXT_REQUEST_TIMEOUT`     | `1.5`                      | Timeout for individual requests in seconds      |
 | `ECONEXT_PARAMS_PER_REQUEST`  | `100`                      | Parameters to fetch per poll cycle              |
 | `ECONEXT_STATE_DIR`           | `/var/lib/econext-gateway` | Directory for persistent state (paired address) |
+| `ECONEXT_THERMOSTAT_ENABLED`  | `true`                     | Enable the virtual thermostat (see below)       |
+| `ECONEXT_THERMOSTAT_MAX_AGE`  | `300.0`                    | Seconds before a submitted temperature is stale |
+| `ECONEXT_THERMOSTAT_STALE_FALLBACK` | `19.0`               | Temperature reported on the bus when stale      |
+| `ECONEXT_CLOCK_SYNC_ENABLED`  | `true`                     | Sync the panel clock from the host once a day   |
+| `ECONEXT_CLOCK_SYNC_HOUR`     | `3`                        | Hour (local time) of the daily clock sync       |
+| `ECONEXT_CLOCK_SYNC_MINUTE`   | `30`                       | Minute of the daily clock sync                  |
 
 ## API
 
@@ -213,7 +242,7 @@ The gateway can emulate a thermostat on the RS-485 bus, allowing Home Assistant 
 
 ### Setup
 
-The virtual thermostat is enabled by default. To disable it, set `ECONEXT_THERMOSTAT_ENABLED=false` in the `econext-gateway.service` file.
+The virtual thermostat is enabled by default. To disable it, set `ECONEXT_THERMOSTAT_ENABLED=false` via `sudo systemctl edit econext-gateway` (see [Configuration](#configuration)).
 
 1. Submit a temperature (e.g. from Home Assistant — the [HA integration](#home-assistant-integration) does this for you):
    ```bash
