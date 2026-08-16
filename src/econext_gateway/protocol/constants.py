@@ -152,7 +152,10 @@ UNIT_NAMES = {
 # Token Passing (Bus Arbitration)
 # ============================================================================
 
-IDENTIFY_RESPONSE_DATA = b"PLUM\x00EcoNEXT\x00\x00\x00\x00\x00"  # Distinct from ecoNET 300
+# Identity the gateway reports in IDENTIFY_ANS: manufacturer\0model\0 padded to
+# the same 17 bytes as the ecoNET300's own identity. Must not collide with the
+# ecoNET300 ("PLUM\0EcoNET"), and does not claim to be a Plum device.
+IDENTIFY_RESPONSE_DATA = b"ecoNEXT\x00gateway\x00\x00"
 
 # Service function codes (LE uint16 in SERVICE frame data[0:2])
 GET_TOKEN_FUNC = 0x0801  # Token grant function code
