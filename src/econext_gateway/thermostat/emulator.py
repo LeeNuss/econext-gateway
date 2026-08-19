@@ -38,6 +38,16 @@ __all__ = ["ThermostatEmulator", "THERMOSTAT_IDENTITY", "THERMOSTAT_PAIRING_IDEN
 logger = logging.getLogger(__name__)
 
 
+# Thermostat identity. The panel validates the model name and device class
+# (class 03 below): any other model makes it re-request the param struct
+# every cycle and zero the temperature (ecoSTER_41 tested), so the model
+# must match a real ecoSTER byte for byte. The manufacturer field is free
+# (verified 2026-08-19: existing pairing kept and fresh pairing accepted with
+# this value), so the gateway reports its own name there.
+ECOSTER_MANUFACTURER = b"ecoNEXT gateway"
+ECOSTER_MODEL = b"ecoSTER_40"
+
+
 def _build_pairing_identity() -> bytes:
     """Build SERVICE_ANS payload from params defaults.
 
@@ -48,13 +58,11 @@ def _build_pairing_identity() -> bytes:
     hv = get_default_value(THERMOSTAT_PARAMS[25])  # HV
     sw = get_default_value(THERMOSTAT_PARAMS[26])  # SW
     version = f"{hv}_{sw}_D6AFC__"
-    # The manufacturer/model/class fields intentionally match a real ecoSTER:
-    # the panel rejects thermostats with any other identity and re-discovers
-    # the parameter struct if the model name differs. This is required for
-    # interoperability, not branding; the gateway itself identifies as ecoNEXT.
     return (
-        b"PLUM Sp. z o.o.\x00"
-        + b"ecoSTER_40\x00"  # model (same as real - panel caches struct for this model)
+        ECOSTER_MANUFACTURER
+        + b"\x00"
+        + ECOSTER_MODEL
+        + b"\x00"  # panel caches the param struct per model name
         + fn.encode()
         + b"\x00"  # serial number (different from real)
         + b"03\x00"  # device class (same as real ecoSTER)

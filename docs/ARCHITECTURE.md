@@ -562,7 +562,7 @@ uvicorn src.main:app --reload
 ## References
 
 ### Related Projects
-- PyPlumIO: Open-source alternative for other plum controller not using GM3 protocol
+- PyPlumIO: open-source library for ecoMAX controllers that use the older (non-GM3) protocol
 - Home Assistant: Target integration platform
 - GM3-analyze: Same GM3 protocol via Ethernet-RS485
 

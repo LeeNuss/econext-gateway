@@ -15,7 +15,7 @@
 #   1. Creates PREFIX directory (default /opt/econext-gateway)
 #   2. Creates a venv and installs the package (from wheel or source)
 #   3. Generates and installs a systemd service unit
-#   4. Installs the udev rule for PLUM ecoLINK3 adapter
+#   4. Installs the udev rule for the ecoLINK3 adapter
 #   5. Enables and starts the service
 #
 # Prerequisites:

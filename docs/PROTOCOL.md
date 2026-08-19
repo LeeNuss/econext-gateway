@@ -120,7 +120,7 @@ The gateway initiates all communication, with the controller responding to reque
 **Startup Sequence (HW verified 2026-02-06):**
 1. Open serial port (baud toggle reset: open 9600 -> close -> open 115200)
 2. Listen for IDENTIFY (0x09) from panel (address 100)
-3. Respond with IDENTIFY_ANS (0x89) + "PLUM\x00EcoNET\x00\x00\x00\x00\x00"
+3. Respond with IDENTIFY_ANS (0x89) + the gateway identity (`IDENTIFY_RESPONSE_DATA`, see below)
 4. Wait for SERVICE 0x0801 (token grant) from panel
 5. Discovery (single token grant, ~6.6s total):
    a. GET_PARAMS_STRUCT_WITH_RANGE(0, 100) to controller -- regulator params
@@ -167,10 +167,11 @@ Devices must respond to register their presence.
 
 **IDENTIFY Response (device -> panel):**
 - Command: `0x89` (IDENTIFY_ANS_CMD)
-- Data: `"PLUM\x00EcoNET\x00\x00\x00\x00\x00"` (16 bytes)
-  - Null-terminated device manufacturer string ("PLUM")
-  - Null-terminated device type string ("EcoNET")
-  - 4 zero bytes (padding/reserved)
+- Data: 17 bytes, null-separated manufacturer and model strings, zero padded
+  - ecoNET300 (captured): `"PLUM\x00EcoNET\x00\x00\x00\x00\x00"`
+  - ecoNEXT gateway: `"ecoNEXT\x00gateway\x00\x00"` (`IDENTIFY_RESPONSE_DATA`)
+  - The panel stores this string in its device list; it must differ from the
+    ecoNET300's so both can share a bus
 
 #### Service Frames
 

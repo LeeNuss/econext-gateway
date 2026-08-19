@@ -19,7 +19,7 @@ Local REST API gateway for heat pump controllers using a serial protocol. Runs o
 ## Hardware Requirements
 
 - **Raspberry Pi** (or any Linux SBC) with a free USB port
-- **USB-RS485 adapter**: Plum ecoLINK3 (recommended, auto-detected) or FTDI-based adapters (see [Troubleshooting](#troubleshooting))
+- **USB-RS485 adapter**: the ecoLINK3 cable that comes with the ecoNET300 (recommended, auto-detected) or any FTDI-based adapter (see [Troubleshooting](#troubleshooting))
 - **Supported controller**: ecoTRONIC, ecoMAX, or other compatible heat pump controllers
 
 ### Wiring
@@ -234,7 +234,7 @@ The gateway can share the RS-485 bus with the ecoNET300, keeping the econet24 cl
 4. If the gateway previously ran standalone, `sudo rm -f /var/lib/econext-gateway/paired_address`.
 5. Power the controller up and start the gateway. It auto-registers at a free address (2-3 min); no further configuration needed.
 
-Details, bus trace of a healthy setup and troubleshooting: [docs/PARALLEL_ECONET300.md](docs/PARALLEL_ECONET300.md).
+Details and troubleshooting: [docs/PARALLEL_ECONET300.md](docs/PARALLEL_ECONET300.md).
 
 ## Virtual Thermostat
 
@@ -317,11 +317,11 @@ See the integration's README for entity descriptions and full setup instructions
 **No parameters discovered**
 - Make sure no other process uses the RS-485 device
 - Check `ECONEXT_LOG_LEVEL=DEBUG` for bus traffic details
-- Verify the adapter is plugged in: `lsusb | grep -i plum` or `dmesg | grep ttyUSB`
+- Verify the adapter is plugged in: `ls /dev/serial/by-id/` (the ecoLINK3 shows up as `usb-..._ecoLINK3_...`) or `dmesg | grep ttyUSB`
 
 **Using a non-ecoLINK3 adapter (e.g. FTDI FT232H)**
 
-The default udev rule only matches the Plum ecoLINK3 adapter. For other USB-RS485
+The default udev rule only matches the ecoLINK3 cable. For other USB-RS485
 adapters you have two options:
 
 *Option A: Add a udev rule (creates the `/dev/econext` symlink)*
