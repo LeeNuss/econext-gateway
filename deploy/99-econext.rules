@@ -10,8 +10,9 @@
 #   sudo udevadm control --reload-rules
 #   sudo udevadm trigger
 
-# PLUM ecoLINK3 (default, matches by manufacturer/product)
-SUBSYSTEM=="tty", ATTRS{manufacturer}=="PLUM sp. z o.o", ATTRS{product}=="ecoLINK3", SYMLINK+="econext", MODE="0666"
+# ecoLINK3 cable (default), matched by the product string it reports over USB.
+# (Its CP2102 bridge VID/PID 10c4:ea60 is generic, so the name is the reliable match.)
+SUBSYSTEM=="tty", ATTRS{product}=="ecoLINK3", SYMLINK+="econext", MODE="0666"
 
 # Examples for other adapters. Copy the matching line into
 # /etc/udev/rules.d/99-econext-local.rules. If you have several FTDI devices,

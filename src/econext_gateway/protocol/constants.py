@@ -152,9 +152,9 @@ UNIT_NAMES = {
 # Token Passing (Bus Arbitration)
 # ============================================================================
 
-# Identity the gateway reports in IDENTIFY_ANS: manufacturer\0model\0 padded to
-# the same 17 bytes as the ecoNET300's own identity. Must not collide with the
-# ecoNET300 ("PLUM\0EcoNET"), and does not claim to be a Plum device.
+# Identity the gateway reports in IDENTIFY_ANS: manufacturer\0model\0, padded
+# to the same 17 bytes as the ecoNET300's identity so the panel's device list
+# shows the gateway under its own name and never confuses it with the ecoNET300.
 IDENTIFY_RESPONSE_DATA = b"ecoNEXT\x00gateway\x00\x00"
 
 # Service function codes (LE uint16 in SERVICE frame data[0:2])

@@ -164,7 +164,7 @@ UNIT_STRING_MAP = {
     "kWh": 8,
 }
 
-SENSOR_DISCONNECTED = 999.0  # Plum sentinel for a missing temperature sensor
+SENSOR_DISCONNECTED = 999.0  # controller sentinel for a missing temperature sensor
 
 
 def _is_temp_param(name: str) -> bool:
