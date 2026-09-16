@@ -8,7 +8,7 @@
 #   sudo ./deploy/install-sniffer.sh --uninstall      # remove everything
 #
 # Environment variables:
-#   NFS_SHARE       NFS share for database storage (e.g. mynas:/vol/modbus)
+#   NFS_SHARE       NFS share the daily ship appends to (e.g. mynas:/vol/modbus)
 #   INSTALL_USER    User to own files (default: invoking user)
 #
 # What it does:
@@ -16,7 +16,10 @@
 #   2. Copies the sniffer tools and creates a venv with pyserial
 #   3. Installs the udev rule for the Waveshare USB-RS485 adapter
 #   4. Creates wrapper scripts in /usr/local/bin
-#   5. Optionally creates an NFS mount unit (if NFS_SHARE is set)
+#   5. Installs modbus-sniffer.service (capture to /var/lib/modbus-sniffer,
+#      never touches the NAS) and modbus-sniffer-ship.timer (one NAS write
+#      a day at 02:05 local time)
+#   6. Optionally creates the NFS mount unit (if NFS_SHARE is set)
 #
 # Prerequisites:
 #   - Python 3.11+
@@ -31,12 +34,14 @@ DEFAULT_PREFIX="/opt/modbus-sniffer"
 UDEV_FILE="/etc/udev/rules.d/99-modbus-sniffer.rules"
 MOUNT_UNIT="mnt-nas-modbus.mount"
 MOUNT_POINT="/mnt/nas/modbus"
+STATE_DIR="/var/lib/modbus-sniffer"
+DEFAULTS_FILE="/etc/default/modbus-sniffer"
 
-# NFS share for database storage (optional).
-# Set NFS_SHARE to enable, e.g.:
+# NFS share the daily ship writes to (optional). If unset, an existing
+# mount unit is left alone and the ship step simply fails until the share
+# is mounted at $MOUNT_POINT by other means.
 #   NFS_SHARE=mynas:/volume1/modbus sudo ./deploy/install-sniffer.sh
 NFS_SHARE="${NFS_SHARE:-}"
-DB_DIR="${MOUNT_POINT}"
 
 INSTALL_USER="${INSTALL_USER:-$(logname 2>/dev/null || echo "$SUDO_USER")}"
 
@@ -106,14 +111,16 @@ do_uninstall() {
     check_root
     info "Uninstalling modbus-sniffer..."
 
-    # Stop and disable service
-    if systemctl is-active --quiet modbus-sniffer 2>/dev/null; then
-        systemctl stop modbus-sniffer
-    fi
-    if systemctl is-enabled --quiet modbus-sniffer 2>/dev/null; then
-        systemctl disable modbus-sniffer
-    fi
-    rm -fv /etc/systemd/system/modbus-sniffer.service
+    local unit
+    for unit in modbus-sniffer-ship.timer modbus-sniffer-ship.service modbus-sniffer.service; do
+        if systemctl is-active --quiet "$unit" 2>/dev/null; then
+            systemctl stop "$unit"
+        fi
+        if systemctl is-enabled --quiet "$unit" 2>/dev/null; then
+            systemctl disable "$unit"
+        fi
+        rm -fv "/etc/systemd/system/$unit"
+    done
 
     # Unmount and remove NFS mount unit
     if systemctl is-active --quiet "$MOUNT_UNIT" 2>/dev/null; then
@@ -143,11 +150,19 @@ do_uninstall() {
     fi
 
     info "Uninstall complete."
-    info "Data directory $DB_DIR left in place (remove manually if desired)."
+    info "State directory $STATE_DIR (unshipped chunks, alerts.log) and $DEFAULTS_FILE left in place."
     exit 0
 }
 
 # ---- install ---------------------------------------------------------------
+
+install_unit() {
+    # Copy a unit from deploy/, substituting prefix and user.
+    local name="$1" prefix="$2"
+    sed -e "s|/opt/modbus-sniffer|${prefix}|g" \
+        -e "s|^User=pi$|User=${INSTALL_USER}|" \
+        "$SCRIPT_DIR/$name" > "/etc/systemd/system/$name"
+}
 
 do_install() {
     local prefix="${1:-$DEFAULT_PREFIX}"
@@ -161,13 +176,16 @@ do_install() {
     id "$INSTALL_USER" >/dev/null 2>&1 || die "User '$INSTALL_USER' does not exist"
 
     info "Installing modbus-sniffer to ${prefix}"
-    info "  User: $INSTALL_USER"
-    info "  Data: $DB_DIR"
+    info "  User:  $INSTALL_USER"
+    info "  Cache: $STATE_DIR/cache"
+    info "  NAS:   $MOUNT_POINT (daily ship only)"
 
     # -- copy tools --
     mkdir -p "$prefix"
     cp "$REPO_DIR/tools/modbus_detect.py" "$prefix/"
     cp "$REPO_DIR/tools/modbus_sniffer.py" "$prefix/"
+    cp "$SCRIPT_DIR/modbus-sniffer-ship.sh" "$prefix/"
+    chmod +x "$prefix/modbus-sniffer-ship.sh"
     chown -R "$INSTALL_USER":"$INSTALL_USER" "$prefix"
 
     # -- venv with pyserial --
@@ -176,8 +194,6 @@ do_install() {
     # -- verify --
     "$prefix/.venv/bin/python" -c "import serial; print(f'pyserial {serial.VERSION}')"
     info "Dependencies OK"
-
-    # -- data directory (on NFS, created by mount) --
 
     # -- wrapper scripts --
     info "Installing CLI wrappers to /usr/local/bin..."
@@ -190,15 +206,11 @@ EOF
 
     cat > /usr/local/bin/modbus-sniffer <<EOF
 #!/usr/bin/env bash
-# Default database location for persistent storage
-export MODBUS_DB="${DB_DIR}/modbus_capture.db"
-cmd="\${1:-capture}"
+# capture: interactive capture into ./modbus_cache with decoded frames on screen
+# import/analyze/export: work on a throwaway SQLite database (see docs/HEATPUMP_MODBUS.md)
+cmd="\${1:-}"
 if [[ "\$cmd" == "capture" ]]; then
-    exec ${prefix}/.venv/bin/python ${prefix}/modbus_sniffer.py capture --db "\$MODBUS_DB" "\${@:2}"
-elif [[ "\$cmd" == "analyze" ]]; then
-    exec ${prefix}/.venv/bin/python ${prefix}/modbus_sniffer.py analyze --db "\$MODBUS_DB" "\${@:2}"
-elif [[ "\$cmd" == "export" ]]; then
-    exec ${prefix}/.venv/bin/python ${prefix}/modbus_sniffer.py export --db "\$MODBUS_DB" "\${@:2}"
+    exec ${prefix}/.venv/bin/python ${prefix}/modbus_sniffer.py capture --port /dev/heatpump --baud 9600 --stopbits 2 --parity N -v "\${@:2}"
 else
     exec ${prefix}/.venv/bin/python ${prefix}/modbus_sniffer.py "\$@"
 fi
@@ -210,6 +222,16 @@ EOF
     cp "$SCRIPT_DIR/99-modbus-sniffer.rules" "$UDEV_FILE"
     udevadm control --reload-rules
     udevadm trigger
+
+    # -- defaults file (webhook etc.) --
+    if [[ ! -f "$DEFAULTS_FILE" ]]; then
+        cat > "$DEFAULTS_FILE" <<EOF
+# Environment for modbus-sniffer.service
+# POST alert lines as JSON to this URL (Home Assistant webhook, Uptime Kuma push, ...)
+#MODBUS_SNIFFER_WEBHOOK=http://homeassistant.local:8123/api/webhook/modbus-sniffer
+EOF
+        info "Wrote $DEFAULTS_FILE (webhook disabled)"
+    fi
 
     # -- NFS mount (optional) --
     if [[ -n "$NFS_SHARE" ]]; then
@@ -238,44 +260,27 @@ MOUNT_EOF
         else
             warn "NFS mount failed - check $NFS_SHARE is reachable"
         fi
+    elif [[ -f "/etc/systemd/system/$MOUNT_UNIT" ]]; then
+        info "Keeping existing $MOUNT_UNIT"
     else
-        info "No NFS_SHARE set, using local storage at $MOUNT_POINT"
-        mkdir -p "$MOUNT_POINT"
-        chown "$INSTALL_USER":"$INSTALL_USER" "$MOUNT_POINT"
+        warn "No NFS_SHARE set and no $MOUNT_UNIT: the daily ship will fail until $MOUNT_POINT is mounted"
     fi
 
-    # -- systemd service --
-    info "Installing systemd service..."
-
-    local nfs_deps=""
-    if [[ -n "$NFS_SHARE" ]]; then
-        nfs_deps="After=dev-heatpump.device $MOUNT_UNIT
-BindsTo=dev-heatpump.device
-Requires=$MOUNT_UNIT"
-    else
-        nfs_deps="After=dev-heatpump.device
-BindsTo=dev-heatpump.device"
-    fi
-
-    cat > /etc/systemd/system/modbus-sniffer.service <<SVC_EOF
-[Unit]
-Description=Modbus RTU bus sniffer (passive capture)
-${nfs_deps}
-
-[Service]
-Type=simple
-User=$INSTALL_USER
-ExecStartPre=+/bin/bash -c 'DEV=\$(readlink -f /dev/heatpump); TTYNAME=\$(basename \$DEV); echo 1 > /sys/bus/usb-serial/devices/\$TTYNAME/latency_timer'
-ExecStart=${prefix}/.venv/bin/python ${prefix}/modbus_sniffer.py capture --port /dev/heatpump --baud 9600 --stopbits 2 --parity N --db ${DB_DIR}/modbus_capture.db
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-SVC_EOF
+    # -- systemd units --
+    info "Installing systemd units..."
+    install_unit modbus-sniffer.service "$prefix"
+    install_unit modbus-sniffer-ship.service "$prefix"
+    install_unit modbus-sniffer-ship.timer "$prefix"
     systemctl daemon-reload
     systemctl enable modbus-sniffer
-    info "Service installed (not started). Use: sudo systemctl start modbus-sniffer"
+    systemctl enable --now modbus-sniffer-ship.timer
+
+    if systemctl is-active --quiet modbus-sniffer; then
+        info "Restarting running modbus-sniffer (flushes the open chunk first)..."
+        systemctl restart modbus-sniffer
+    else
+        info "Service installed (not started). Use: sudo systemctl start modbus-sniffer"
+    fi
 
     echo ""
     info "Installation complete."
@@ -283,13 +288,17 @@ SVC_EOF
     echo "  Start service:      sudo systemctl start modbus-sniffer"
     echo "  Service status:     sudo systemctl status modbus-sniffer"
     echo "  Service logs:       journalctl -u modbus-sniffer -f"
+    echo "  Flush open chunk:   sudo systemctl kill -s SIGUSR1 modbus-sniffer"
+    echo "  Ship now (NAS!):    sudo systemctl start modbus-sniffer-ship"
+    echo "  Next ship:          systemctl list-timers modbus-sniffer-ship.timer"
     echo ""
-    echo "  Detect bus params:  modbus-detect --port /dev/modbus_sniff"
-    echo "  Manual capture:     modbus-sniffer capture --auto-detect"
-    echo "  Analyze data:       modbus-sniffer analyze"
-    echo "  Export CSV:          modbus-sniffer export --format csv"
+    echo "  Detect bus params:  modbus-detect --port /dev/heatpump"
+    echo "  Manual capture:     modbus-sniffer capture"
+    echo "  Analyze:            modbus-sniffer import $STATE_DIR/cache --db /var/tmp/recent.db"
+    echo "                      modbus-sniffer analyze --db /var/tmp/recent.db"
     echo ""
-    echo "  Database:  $DB_DIR/modbus_capture.db"
+    echo "  Cache:     $STATE_DIR/cache   Alerts: $STATE_DIR/alerts.log"
+    echo "  NAS:       $MOUNT_POINT/YYYY/MM/YYYY-MM-DD.frames.gz"
     echo "  Install:   $prefix"
 }
 

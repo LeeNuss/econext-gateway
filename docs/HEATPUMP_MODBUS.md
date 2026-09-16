@@ -262,19 +262,78 @@ not yet known.
 
 ## Sniffer Usage
 
+### Interactive
+
 ```bash
 # Set FTDI latency first
 echo 1 | sudo tee /sys/bus/usb-serial/devices/ttyUSB2/latency_timer
 
-# Capture traffic
+# Capture traffic with decoded frames on the console
 python3 tools/modbus_sniffer.py capture \
-    --port /dev/heatpump --baud 9600 --stopbits 2 --parity N
+    --port /dev/heatpump --baud 9600 --stopbits 2 --parity N -v
+```
 
-# Analyze captured data
-python3 tools/modbus_sniffer.py analyze --db modbus_capture.db
+### Continuous capture (systemd)
 
-# Export for correlation with emoncms
-python3 tools/modbus_sniffer.py export --format pivot --db modbus_capture.db
+`deploy/install-sniffer.sh` installs the tool to `/opt/modbus-sniffer` with
+two units:
+
+- `modbus-sniffer.service` captures every frame into hourly gzipped chunks
+  under `/var/lib/modbus-sniffer/cache/YYYY-MM-DD/HH-HHMMSS.gz` (UTC). The
+  bus runs at about 5 frames/s, which is roughly 2 MB a day compressed.
+  Chunks are held in RAM and written once an hour, so the SD card sees a
+  few writes a day. The NAS is never touched by this unit.
+- `modbus-sniffer-ship.timer` runs `modbus-sniffer-ship.sh` once a day at
+  02:05 local time (inside the NAS write window). It appends each finished
+  day's chunks to `/mnt/nas/modbus/YYYY/MM/YYYY-MM-DD.frames.gz`, syncs,
+  then deletes the cached day. If the share is down the cache keeps the
+  days (hard cap 14 days) and the next run catches up.
+
+Signals: `SIGTERM` flushes the open chunk and exits, `SIGUSR1` flushes it
+and keeps going:
+
+```bash
+sudo systemctl kill -s SIGUSR1 modbus-sniffer   # flush now for a look
+```
+
+### Alerts
+
+Anything outside the wiring centre's normal poll cycle is an anomaly and is
+worth looking at (a firmware push to the outdoor unit, for instance, would
+have to travel over this bus):
+
+| Rule               | Trigger                                         |
+|--------------------|-------------------------------------------------|
+| `function_code`    | function code other than 0x03, 0x04, 0x06       |
+| `unexpected_slave` | slave address other than 251 (`--expect-slave`) |
+| `long_frame`       | frame longer than 30 bytes (`--max-frame-len`)  |
+| `bad_crc_burst`    | more than 30 unparsable frames in a minute      |
+
+Each alert goes to `/var/lib/modbus-sniffer/alerts.log` (shipped to the NAS
+with the daily file), to the journal as a warning, and optionally as a JSON
+POST to `MODBUS_SNIFFER_WEBHOOK` (set in `/etc/default/modbus-sniffer`).
+The first five hits per rule are logged in full, after that one summary
+line a minute. The first alert also forces the open chunk to disk, at most
+once every five minutes, so the evidence is persisted immediately.
+
+### Analysis
+
+Chunk and daily files are gzip text, one frame per line
+(`<epoch_ms> <hex>`, or `<epoch_ms> ? <hex>` for bytes that failed the
+CRC). Build a throwaway SQLite database from them and use the existing
+analyze/export commands. A full day is about 200 MB as SQLite, so do this
+on a laptop or the NAS rather than the Pi:
+
+```bash
+# From the NAS daily files
+python3 tools/modbus_sniffer.py import /mnt/nas/modbus/2026/09/*.gz --db /tmp/sept.db
+
+# Or from the Pi's local cache (last two days, no NAS access)
+python3 tools/modbus_sniffer.py import /var/lib/modbus-sniffer/cache --db /tmp/recent.db
+
+python3 tools/modbus_sniffer.py analyze --db /tmp/sept.db
+python3 tools/modbus_sniffer.py analyze --db /tmp/sept.db --register 1201 --slave 251
+python3 tools/modbus_sniffer.py export --db /tmp/sept.db --format pivot
 ```
 
 ## References
