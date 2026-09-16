@@ -31,6 +31,9 @@ Usage:
     # Build a throwaway SQLite database from chunk or daily files
     python tools/modbus_sniffer.py import /mnt/nas/modbus/2026/09/*.gz --db /tmp/sept.db
 
+    # What changed in the last 10 minutes (after a SIGUSR1 flush), and every write
+    python tools/modbus_sniffer.py changes /var/lib/modbus-sniffer/cache --since 10m
+
     # Analyze / export the database
     python tools/modbus_sniffer.py analyze --db /tmp/sept.db
     python tools/modbus_sniffer.py analyze --db /tmp/sept.db --register 100 --slave 251
@@ -453,6 +456,42 @@ def decode_response(frame: dict, req: dict) -> dict:
     return out
 
 
+def looks_like_request(frame: dict) -> bool:
+    """Structural check: could this frame be a master request?"""
+    fc = frame["function_code"] & 0x7F
+    d = frame["data"]
+    if fc in (FC_READ_COILS, FC_READ_DISCRETE_INPUTS, FC_READ_HOLDING_REGISTERS, FC_READ_INPUT_REGISTERS):
+        return len(d) == 4
+    if fc in (FC_WRITE_SINGLE_COIL, FC_WRITE_SINGLE_REGISTER):
+        return len(d) == 4
+    if fc in (FC_WRITE_MULTIPLE_COILS, FC_WRITE_MULTIPLE_REGISTERS):
+        return len(d) >= 5 and d[4] == len(d) - 5
+    return True
+
+
+def is_response_to(frame: dict, req: dict) -> bool:
+    """Structural check: does this frame answer the pending request?"""
+    fc = frame["function_code"] & 0x7F
+    if frame["slave_addr"] != req["slave_addr"] or fc != (req["function_code"] & 0x7F):
+        return False
+    if frame["timestamp"] - req["timestamp"] >= 1.0:
+        return False
+    if frame["is_error"]:
+        return True
+    d = frame["data"]
+    rd = req["data"]
+    if fc in (FC_READ_HOLDING_REGISTERS, FC_READ_INPUT_REGISTERS):
+        count = struct.unpack(">H", rd[2:4])[0] if len(rd) >= 4 else -1
+        return len(d) == 1 + 2 * count and d[0] == 2 * count
+    if fc in (FC_READ_COILS, FC_READ_DISCRETE_INPUTS):
+        return len(d) >= 1 and len(d) == 1 + d[0]
+    if fc in (FC_WRITE_SINGLE_COIL, FC_WRITE_SINGLE_REGISTER):
+        return d == rd
+    if fc in (FC_WRITE_MULTIPLE_COILS, FC_WRITE_MULTIPLE_REGISTERS):
+        return len(d) == 4 and d[:4] == rd[:4]
+    return True
+
+
 class Decoder:
     """Pairs requests with responses and hands decoded events to a sink.
 
@@ -469,7 +508,6 @@ class Decoder:
 
     def feed(self, frame: dict) -> dict:
         self.frame_count += 1
-        fc = frame["function_code"] & 0x7F
         if frame["is_error"]:
             self.error_count += 1
             event = {
@@ -484,13 +522,7 @@ class Decoder:
             return event
 
         req = self.last_request
-        is_response = (
-            req is not None
-            and req["slave_addr"] == frame["slave_addr"]
-            and (req["function_code"] & 0x7F) == fc
-            and (frame["timestamp"] - req["timestamp"]) < 1.0
-        )
-        if is_response:
+        if req is not None and is_response_to(frame, req):
             delta_ms = (frame["timestamp"] - req["timestamp"]) * 1000
             event = {
                 "frame": frame,
@@ -500,7 +532,7 @@ class Decoder:
                 "exception": None,
             }
             self.last_request = None
-        else:
+        elif looks_like_request(frame):
             event = {
                 "frame": frame,
                 "is_request": True,
@@ -509,6 +541,12 @@ class Decoder:
                 "exception": None,
             }
             self.last_request = frame
+        else:
+            # A response whose request we did not see (capture started
+            # mid-exchange, or the request was lost). Keep it, but do not
+            # let it poison the pairing of the next request.
+            event = {"frame": frame, "is_request": False, "response_ms": None, "decoded": {}, "exception": None}
+            self.last_request = None
         self.sink.on_event(event)
         return event
 
@@ -1042,6 +1080,98 @@ def cmd_export(args):
     db.close()
 
 
+# -- Changes (value transitions over time) -----------------------------------
+
+
+class ChangeTracker:
+    """Sink that prints every register value transition and every write."""
+
+    def __init__(self, since: float | None = None, show_initial: bool = False, out=None):
+        self.since = since
+        self.show_initial = show_initial
+        self.out = out or sys.stdout
+        self.last: dict[tuple[int, str, int], int] = {}
+        self.change_counts: dict[tuple[int, str, int], int] = {}
+        self.writes = 0
+
+    def on_event(self, event: dict) -> None:
+        d = event["decoded"]
+        if "values" not in d:
+            return
+        frame = event["frame"]
+        ts = frame["timestamp"]
+        visible = self.since is None or ts >= self.since
+        is_write = d.get("direction") == "write"
+        if is_write and visible:
+            self.writes += 1
+            vals = " ".join(str(v) for v in d["values"])
+            self.out.write(
+                f"{epoch_to_iso(ts)}  s{frame['slave_addr']} {d['reg_type']:>7s} {d['start']:5d}  WRITE {vals}\n"
+            )
+        for i, value in enumerate(d["values"]):
+            key = (frame["slave_addr"], d["reg_type"], d["start"] + i)
+            old = self.last.get(key)
+            self.last[key] = value
+            if old is None:
+                if self.show_initial and visible:
+                    self.out.write(f"{epoch_to_iso(ts)}  s{key[0]} {key[1]:>7s} {key[2]:5d}  first {value}\n")
+                continue
+            if old != value and not is_write:
+                self.change_counts[key] = self.change_counts.get(key, 0) + 1
+                if visible:
+                    self.out.write(f"{epoch_to_iso(ts)}  s{key[0]} {key[1]:>7s} {key[2]:5d}  {old} -> {value}\n")
+
+    def summary(self) -> None:
+        if not self.change_counts and not self.writes:
+            self.out.write("No register changes.\n")
+            return
+        self.out.write(f"\n{len(self.change_counts)} registers changed, {self.writes} writes:\n")
+        for (slave, rtype, addr), n in sorted(self.change_counts.items()):
+            self.out.write(f"  s{slave} {rtype:>7s} {addr:5d}  {n} changes, last {self.last[(slave, rtype, addr)]}\n")
+
+
+def _parse_since(text: str | None, now: float | None = None) -> float | None:
+    """'30m', '2h', '1d' relative to now, or an ISO timestamp."""
+    if not text:
+        return None
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    if text[-1] in units and text[:-1].isdigit():
+        return (now or time.time()) - int(text[:-1]) * units[text[-1]]
+    return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+
+
+def records_from_db(db: sqlite3.Connection) -> Iterator[tuple[float, bytes, bool]]:
+    """Replay frames stored in an imported database in capture order."""
+    for iso, raw_hex in db.execute("SELECT timestamp, raw_hex FROM frames ORDER BY id"):
+        ts = datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+        yield ts, bytes.fromhex(raw_hex), True
+
+
+def cmd_changes(args):
+    tracker = ChangeTracker(since=_parse_since(args.since), show_initial=args.initial)
+    decoder = Decoder(tracker)
+    if args.db:
+        db = sqlite3.connect(args.db)
+        sources: list = [("db", records_from_db(db))]
+    else:
+        files = _expand_inputs(args.inputs)
+        if not files:
+            print("No input files found.")
+            sys.exit(1)
+        sources = [(str(p), iter_chunk_records(p)) for p in files]
+    for _name, records in sources:
+        for ts, raw, ok in records:
+            if not ok:
+                continue
+            frame = parse_frame(raw, ts)
+            if frame is None:
+                continue
+            if args.slave and frame["slave_addr"] != args.slave:
+                continue
+            decoder.feed(frame)
+    tracker.summary()
+
+
 # -- Auto-detect -------------------------------------------------------------
 
 
@@ -1119,6 +1249,13 @@ def main():
     imp.add_argument("inputs", nargs="+", help="Chunk files, daily files, directories or globs")
     imp.add_argument("--db", default="modbus_import.db", help="Database path (default: modbus_import.db)")
 
+    chg = sub.add_parser("changes", help="List register value transitions and writes over time")
+    chg.add_argument("inputs", nargs="*", help="Chunk files, daily files, directories or globs")
+    chg.add_argument("--db", help="Read frames from an imported database instead of files")
+    chg.add_argument("--since", help="Only show changes after this: 30m, 2h, 1d or an ISO timestamp")
+    chg.add_argument("--slave", type=int, help="Filter to specific slave address")
+    chg.add_argument("--initial", action="store_true", help="Also print the first value seen for every register")
+
     ana = sub.add_parser("analyze", help="Analyze an imported database")
     ana.add_argument("--db", default="modbus_import.db", help="Database path")
     ana.add_argument("--session", type=int, help="Filter to specific session ID")
@@ -1145,6 +1282,10 @@ def main():
         cmd_export(args)
     elif args.command == "import":
         cmd_import(args)
+    elif args.command == "changes":
+        if not args.db and not args.inputs:
+            chg.error("Give chunk files/directories or --db")
+        cmd_changes(args)
     elif args.command == "capture":
         _setup_logging(args.verbose)
         if args.auto_detect:

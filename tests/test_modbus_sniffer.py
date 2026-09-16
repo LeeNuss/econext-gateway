@@ -191,6 +191,63 @@ def test_decoder_pairs_requests_with_responses():
     assert err["exception"] == 2 and dec.error_count == 1
 
 
+def test_decoder_recovers_when_capture_starts_mid_exchange():
+    sink = _Collect()
+    dec = sniffer.Decoder(sink)
+    dec.feed(sniffer.parse_frame(read_resp([1, 2]), T0))  # orphan response first
+    dec.feed(sniffer.parse_frame(read_req(10, 2), T0 + 0.3))
+    dec.feed(sniffer.parse_frame(read_resp([3, 4]), T0 + 0.35))
+    dec.feed(sniffer.parse_frame(read_req(20, 1), T0 + 0.7))
+    dec.feed(sniffer.parse_frame(read_resp([5]), T0 + 0.75))
+    flags = [(e["is_request"], e["decoded"].get("start")) for e in sink.events]
+    assert flags == [(False, None), (True, 10), (False, 10), (True, 20), (False, 20)]
+
+
+def test_decoder_does_not_pair_mismatched_lengths():
+    sink = _Collect()
+    dec = sniffer.Decoder(sink)
+    dec.feed(sniffer.parse_frame(read_req(0, 10), T0))
+    dec.feed(sniffer.parse_frame(read_resp([1] * 4), T0 + 0.05))  # wrong length for count=10
+    assert [e["is_request"] for e in sink.events] == [True, False]
+    assert sink.events[1]["decoded"] == {}
+
+
+def test_changes_lists_transitions_and_writes(tmp_path: Path, capsys):
+    writer = sniffer.ChunkWriter(tmp_path / "cache")
+    writer.write(T0, read_req(40, 3), True)
+    writer.write(T0 + 0.05, read_resp([183, 174, 0]), True)
+    writer.write(T0 + 10, read_req(40, 3), True)
+    writer.write(T0 + 10.05, read_resp([183, 175, 0]), True)
+    writer.write(T0 + 20, frame(HP, 0x06, struct.pack(">HH", 2103, 33)), True)
+    writer.write(T0 + 20.05, frame(HP, 0x06, struct.pack(">HH", 2103, 33)), True)
+    writer.write(T0 + 30, read_req(40, 3), True)
+    writer.write(T0 + 30.05, read_resp([184, 175, 0]), True)
+    writer.close()
+
+    args = type(
+        "A", (), {"db": None, "inputs": [str(tmp_path / "cache")], "since": None, "slave": None, "initial": False}
+    )
+    sniffer.cmd_changes(args)
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == "2025-10-09T08:53:30.050Z  s251   input    41  174 -> 175"
+    assert out[1] == "2025-10-09T08:53:40.000Z  s251 holding  2103  WRITE 33"
+    assert out[2] == "2025-10-09T08:53:50.050Z  s251   input    40  183 -> 184"
+    assert "2 registers changed, 1 writes:" in out
+
+    args.since = "2025-10-09T08:53:45Z"
+    sniffer.cmd_changes(args)
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].endswith("183 -> 184") and len([ln for ln in out if "->" in ln]) == 1
+
+
+def test_parse_since_relative_and_absolute():
+    assert sniffer._parse_since("30m", now=T0) == T0 - 1800
+    assert sniffer._parse_since("2h", now=T0) == T0 - 7200
+    assert sniffer._parse_since("1d", now=T0) == T0 - 86400
+    assert sniffer._parse_since("2025-10-09T08:53:20Z") == T0
+    assert sniffer._parse_since(None) is None
+
+
 def test_import_builds_database_from_chunks(tmp_path: Path):
     writer = sniffer.ChunkWriter(tmp_path / "cache", meta={"port": "/dev/heatpump", "baud": 9600, "parity": "N"})
     writer.write(T0, read_req(0, 2), True)
