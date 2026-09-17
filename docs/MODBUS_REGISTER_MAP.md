@@ -34,7 +34,7 @@ Function codes 01 and 02 are rejected: the unit has no coils or discrete inputs.
 
 ## Register table
 
-Value is the reading at 10:43 BST on 2026-09-17, heat pump idle (holding 6053 was 850 then; it holds 800 since 11:02 for the fan test). Signed shows 16-bit two's complement where it differs. Min and Max are the unit's own limits from the input tables at 5000 and 4000, given for the 6000 block only. Controller parameter is the gateway index and name that carries the same register. Confidence: confirmed = controller decode, HA mapping or bus write behaviour; inferred = from dynamics or magnitude; unknown = value only.
+Value is the reading at 10:43 BST on 2026-09-17, heat pump idle (holding 6053 was at its factory 850 then; it was set to 800 for the fan test and to 650 at 14:24 BST, which is where it stays). Signed shows 16-bit two's complement where it differs. Min and Max are the unit's own limits from the input tables at 5000 and 4000, given for the 6000 block only. Controller parameter is the gateway index and name that carries the same register. Confidence: confirmed = controller decode, HA mapping or bus write behaviour; inferred = from dynamics or magnitude; unknown = value only.
 
 | Type | Addr | Value | Signed | Min | Max | Controller parameter | Meaning | Confidence | Source |
 |---|---|---|---|---|---|---|---|---|---|
