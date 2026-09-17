@@ -577,7 +577,8 @@ class ConsolePrinter:
                 data_hex = frame["data"].hex()
                 print(f"{C_REQ}[{ts}] --> slave={frame['slave_addr']} {fc_name(fc)} data={data_hex}{C_RESET}")
         else:
-            ms = f"{C_DIM}({event['response_ms']:.1f}ms){C_RESET}"
+            rt = event["response_ms"]
+            ms = f"{C_DIM}({rt:.1f}ms){C_RESET}" if rt is not None else f"{C_DIM}(no request seen){C_RESET}"
             if "values" in d:
                 end = d["start"] + len(d["values"]) - 1
                 print(

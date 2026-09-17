@@ -203,6 +203,16 @@ def test_decoder_recovers_when_capture_starts_mid_exchange():
     assert flags == [(False, None), (True, 10), (False, 10), (True, 20), (False, 20)]
 
 
+def test_console_printer_handles_orphan_response(capsys):
+    dec = sniffer.Decoder(sniffer.ConsolePrinter())
+    dec.feed(sniffer.parse_frame(read_resp([1, 2]), T0))  # response with no request seen
+    dec.feed(sniffer.parse_frame(read_req(10, 2), T0 + 0.3))
+    dec.feed(sniffer.parse_frame(read_resp([3, 4]), T0 + 0.35))
+    dec.feed(sniffer.parse_frame(frame(HP, 0x83, b"\x02"), T0 + 1))
+    out = capsys.readouterr().out
+    assert "no request seen" in out and "regs 10-11: [3 4]" in out and "ILLEGAL_DATA_ADDRESS" in out
+
+
 def test_decoder_does_not_pair_mismatched_lengths():
     sink = _Collect()
     dec = sniffer.Decoder(sink)
