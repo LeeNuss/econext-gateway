@@ -142,7 +142,7 @@ async def submit_thermostat_temperature(
 ):
     """Submit a room temperature reading from Home Assistant."""
     previous_age = thermostat.update(request.temperature)
-    _logger.info(
+    _logger.debug(
         "Thermostat temp submitted: %.2f C (previous_age=%s s)",
         request.temperature,
         round(previous_age, 1) if previous_age is not None else None,
