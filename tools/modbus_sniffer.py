@@ -907,6 +907,8 @@ class Scanner:
         block: int = 8,
         retries: int = 2,
         limit: int | None = None,
+        sweep_ranges: list[tuple[int, int]] | None = None,
+        stride: int = 16,
     ):
         self.prober = prober
         self.slave = slave
@@ -914,14 +916,22 @@ class Scanner:
         self.block = block
         self.retries = retries
         self.limit = limit
+        self.stride = stride
         self.todo: deque[tuple[int, int, int]] = deque()  # start, count, attempts
+        self._fine_queued: set[int] = set()
         for lo, hi in ranges:
-            a = lo
-            while a <= hi:
-                c = min(block, hi - a + 1)
-                self.todo.append((a, c, 0))
-                a += c
-        self.total = sum(hi - lo + 1 for lo, hi in ranges)
+            self._queue_fine(lo, hi)
+        # A sweep reads one register every `stride` addresses; a hit expands
+        # into a fine scan of its neighbourhood, so any block of at least
+        # `stride` consecutive registers is found without bisecting the
+        # empty space in between.
+        self.sweep_hits = 0
+        for lo, hi in sweep_ranges or []:
+            for a in range(lo, hi + 1, stride):
+                self.todo.append((a, 1, -1))  # attempts -1 marks a sweep probe
+        self.total = sum(hi - lo + 1 for lo, hi in ranges) + sum(
+            len(range(lo, hi + 1, stride)) for lo, hi in sweep_ranges or []
+        )
         self.done = 0
         self.probes = 0
         self.present: dict[int, int] = {}
@@ -930,6 +940,20 @@ class Scanner:
         self.unsupported = False
         self.finished = False
         self._last_progress = 0
+
+    def _queue_fine(self, lo: int, hi: int, front: bool = False) -> None:
+        blocks = []
+        a = lo
+        while a <= hi:
+            c = min(self.block, hi - a + 1)
+            if a not in self._fine_queued:
+                self._fine_queued.add(a)
+                blocks.append((a, c, 0))
+            a += c
+        if front:
+            self.todo.extendleft(reversed(blocks))
+        else:
+            self.todo.extend(blocks)
 
     def start(self) -> None:
         self._next()
@@ -946,10 +970,27 @@ class Scanner:
 
     def _on_result(self, start: int, count: int, attempts: int, res: tuple) -> None:
         kind, payload = res
+        sweep = attempts < 0
+        if sweep and kind == "timeout":
+            self._sweep_timeouts = getattr(self, "_sweep_timeouts", {})
+            n = self._sweep_timeouts.get(start, 0) + 1
+            self._sweep_timeouts[start] = n
+            if n <= self.retries:
+                self.todo.appendleft((start, 1, -1))
+            else:
+                self.failed.append((start, 1))
+                self.done += 1
+            self._next()
+            return
         if kind == "ok":
             for i, v in enumerate(payload):
                 self.present[start + i] = v
             self.done += count
+            if sweep:
+                self.sweep_hits += 1
+                lo, hi = max(0, start - self.stride + 1), min(65535, start + self.stride - 1)
+                self.total += hi - lo + 1
+                self._queue_fine(lo, hi, front=True)
         elif kind == "exception":
             if payload == 1:
                 self.unsupported = True
@@ -1517,9 +1558,11 @@ def main():
     scn.add_argument(
         "--ranges",
         default="0-1023,1200-1299,2000-2299,6000-6499",
-        help="Address ranges, e.g. 0-511,6000-6499 (default: %(default)s)",
+        help="Address ranges scanned in full, e.g. 0-511,6000-6499 (default: %(default)s); empty string for none",
     )
     scn.add_argument("--block", type=int, default=8, help="Registers per read (default: 8)")
+    scn.add_argument("--sweep", help="Ranges to sweep one register every --stride, e.g. 1300-65535")
+    scn.add_argument("--stride", type=int, default=16, help="Sweep step; blocks of at least this size are found")
     scn.add_argument("--limit", type=int, help="Stop after this many probes")
     scn.add_argument("--dry-run", action="store_true", help="Never transmit, only report when a probe would go out")
     scn.add_argument("--send-window", type=float, default=0.08, help="Max seconds after an exchange to transmit")
@@ -1578,7 +1621,16 @@ def main():
             response_timeout=args.response_timeout,
             dry_run=args.dry_run,
         )
-        scanner = Scanner(prober, args.slave, fc, parse_ranges(args.ranges), block=args.block, limit=args.limit)
+        scanner = Scanner(
+            prober,
+            args.slave,
+            fc,
+            parse_ranges(args.ranges) if args.ranges else [],
+            block=args.block,
+            limit=args.limit,
+            sweep_ranges=parse_ranges(args.sweep) if args.sweep else None,
+            stride=args.stride,
+        )
         writer = ChunkWriter(
             Path(args.cache_dir),
             meta={"port": args.port, "baud": args.baud, "parity": args.parity, "stopbits": args.stopbits, "scan": 1},
@@ -1595,9 +1647,10 @@ def main():
             serial_timeout=0.02,
         )
         log.info(
-            "scan %s registers %s on slave %d, block %d, %s",
+            "scan %s registers %s sweep %s on slave %d, block %d, %s",
             args.type,
-            args.ranges,
+            args.ranges or "-",
+            args.sweep or "-",
             args.slave,
             args.block,
             "DRY RUN (never transmits)" if args.dry_run else "transmitting in idle gaps",

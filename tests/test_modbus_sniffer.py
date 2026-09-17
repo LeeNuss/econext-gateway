@@ -494,3 +494,28 @@ def test_dry_run_never_writes_to_the_bus(tmp_path: Path):
 
 def test_parse_ranges():
     assert sniffer.parse_ranges("0-7, 100, 6000-6003") == [(0, 7), (100, 100), (6000, 6003)]
+
+
+def test_sweep_finds_a_block_between_stride_points_and_fine_scans_it(tmp_path: Path):
+    regs = {a: a for a in range(200, 240)}  # 40 present registers in an otherwise empty space
+    bus = FakeBus(regs, rounds=400)
+    prober = sniffer.Prober(HP)
+    scanner = sniffer.Scanner(prober, HP, 0x03, [], block=8, sweep_ranges=[(0, 511)], stride=16)
+    cap = sniffer.Capture(
+        "/dev/fake",
+        9600,
+        "N",
+        2,
+        sniffer.ChunkWriter(tmp_path / "cache"),
+        sniffer.AnomalyDetector(),
+        prober=prober,
+        serial_factory=lambda: bus,
+    )
+    scanner.start()
+    cap.run()
+    assert scanner.finished
+    assert scanner.sweep_hits == 2  # stride points 208 and 224
+    assert sorted(scanner.present) == list(range(200, 240))
+    assert not scanner.failed
+    # sweep probes are single reads; the empty space cost one probe per stride point
+    assert scanner.probes < 32 + 40
