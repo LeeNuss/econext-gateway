@@ -453,6 +453,11 @@ def decode_response(frame: dict, req: dict) -> dict:
         start = struct.unpack(">H", req["data"][0:2])[0] if len(req["data"]) >= 2 else 0
         reg_type = "holding" if fc == FC_READ_HOLDING_REGISTERS else "input"
         out.update(start=start, values=values, reg_type=reg_type, direction="read")
+    elif fc in (FC_READ_COILS, FC_READ_DISCRETE_INPUTS) and len(data) >= 1:
+        start, count = struct.unpack(">HH", req["data"][0:4]) if len(req["data"]) >= 4 else (0, 8 * data[0])
+        bits = [(byte >> i) & 1 for byte in data[1 : 1 + data[0]] for i in range(8)]
+        reg_type = "coil" if fc == FC_READ_COILS else "discrete"
+        out.update(start=start, values=bits[:count], reg_type=reg_type, direction="read")
     return out
 
 
@@ -1554,7 +1559,9 @@ def main():
     scn.add_argument("--parity", choices=["N", "E"], default="N")
     scn.add_argument("--stopbits", type=int, choices=[1, 2], default=2)
     scn.add_argument("--slave", type=int, default=DEFAULT_EXPECTED_SLAVE)
-    scn.add_argument("--type", choices=["holding", "input"], default="holding", help="Register type to scan")
+    scn.add_argument(
+        "--type", choices=["holding", "input", "coil", "discrete"], default="holding", help="Register type to scan"
+    )
     scn.add_argument(
         "--ranges",
         default="0-1023,1200-1299,2000-2299,6000-6499",
@@ -1614,7 +1621,12 @@ def main():
         cmd_changes(args)
     elif args.command == "scan":
         _setup_logging(args.verbose)
-        fc = FC_READ_HOLDING_REGISTERS if args.type == "holding" else FC_READ_INPUT_REGISTERS
+        fc = {
+            "holding": FC_READ_HOLDING_REGISTERS,
+            "input": FC_READ_INPUT_REGISTERS,
+            "coil": FC_READ_COILS,
+            "discrete": FC_READ_DISCRETE_INPUTS,
+        }[args.type]
         prober = Prober(
             args.slave,
             send_window=args.send_window,

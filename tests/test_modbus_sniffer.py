@@ -519,3 +519,11 @@ def test_sweep_finds_a_block_between_stride_points_and_fine_scans_it(tmp_path: P
     assert not scanner.failed
     # sweep probes are single reads; the empty space cost one probe per stride point
     assert scanner.probes < 32 + 40
+
+
+def test_decode_coil_response_unpacks_bits():
+    req = sniffer.parse_frame(read_req(20, 11, fc=0x01), T0)
+    resp = sniffer.parse_frame(frame(HP, 0x01, bytes([2, 0b10100101, 0b00000110])), T0 + 0.05)
+    d = sniffer.decode_response(resp, req)
+    assert d == {"start": 20, "values": [1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1], "reg_type": "coil", "direction": "read"}
+    assert sniffer.is_response_to(resp, req)
