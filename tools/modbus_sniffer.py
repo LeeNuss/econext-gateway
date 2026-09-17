@@ -898,6 +898,74 @@ class Prober:
                 self.stop("heat pump not answering our probes")
 
 
+def build_write_request(slave: int, address: int, value: int) -> bytes:
+    payload = bytes([slave, FC_WRITE_SINGLE_REGISTER]) + struct.pack(">HH", address, value)
+    return payload + struct.pack("<H", modbus_crc16(payload))
+
+
+class WriteOp:
+    """Change one holding register through a Prober: read it, refuse if it
+    does not hold the expected value, write, read back, and append a line
+    to a log so every change can be undone."""
+
+    def __init__(self, prober: Prober, slave: int, address: int, value: int, expect: int | None, log_path: Path | None):
+        self.prober = prober
+        self.slave = slave
+        self.address = address
+        self.value = value
+        self.expect = expect
+        self.log_path = log_path
+        self.before: int | None = None
+        self.after: int | None = None
+        self.outcome: str | None = None
+
+    def start(self) -> None:
+        self.prober.submit(build_read_request(self.slave, FC_READ_HOLDING_REGISTERS, self.address, 1), self._on_read)
+
+    def _finish(self, outcome: str) -> None:
+        self.outcome = outcome
+        line = (
+            f"{utc_now_iso()} slave={self.slave} holding {self.address} before={self.before} "
+            f"wrote={self.value} after={self.after} {outcome}"
+        )
+        log.info("write: %s", line)
+        if self.log_path is not None:
+            with open(self.log_path, "a") as f:
+                f.write(line + "\n")
+        self.prober.finished = True
+
+    def _on_read(self, res: tuple) -> None:
+        kind, payload = res
+        if kind != "ok" or not payload:
+            self._finish(f"aborted, read before failed: {kind} {payload}")
+            return
+        self.before = payload[0]
+        if self.expect is not None and self.before != self.expect:
+            self._finish(f"aborted, register holds {self.before}, expected {self.expect}")
+            return
+        if self.before == self.value:
+            self._finish("nothing to do, already holds the value")
+            return
+        self.prober.submit(build_write_request(self.slave, self.address, self.value), self._on_write)
+
+    def _on_write(self, res: tuple) -> None:
+        kind, payload = res
+        if kind != "ok":
+            self._finish(f"write rejected: {kind} {payload}")
+            return
+        self.prober.submit(
+            build_read_request(self.slave, FC_READ_HOLDING_REGISTERS, self.address, 1), self._on_readback
+        )
+
+    def _on_readback(self, res: tuple) -> None:
+        kind, payload = res
+        if kind == "ok" and payload:
+            self.after = payload[0]
+            self._finish("ok" if self.after == self.value else "written but reads back differently")
+        else:
+            self._finish(f"written, read back failed: {kind} {payload}")
+
+
 class Scanner:
     """Reads a register space in blocks through a Prober and records what
     answers. An illegal-address exception on a block is bisected until
@@ -1578,6 +1646,19 @@ def main():
     scn.add_argument("--cache-dir", default="modbus_cache", help="Chunk cache for the frames seen meanwhile")
     scn.add_argument("-v", "--verbose", action="store_true")
 
+    wr = sub.add_parser("write", help="Write one holding register as a polite second master (read, write, read back)")
+    wr.add_argument("--port", default="/dev/heatpump")
+    wr.add_argument("--baud", type=int, default=9600)
+    wr.add_argument("--parity", choices=["N", "E"], default="N")
+    wr.add_argument("--stopbits", type=int, choices=[1, 2], default=2)
+    wr.add_argument("--slave", type=int, default=DEFAULT_EXPECTED_SLAVE)
+    wr.add_argument("--address", type=int, required=True)
+    wr.add_argument("--value", type=int, required=True)
+    wr.add_argument("--expect", type=int, help="Refuse unless the register currently holds this value")
+    wr.add_argument("--log", help="Append the change to this file (default: <cache-dir>/../writes.log)")
+    wr.add_argument("--cache-dir", default="modbus_cache")
+    wr.add_argument("-v", "--verbose", action="store_true")
+
     imp = sub.add_parser("import", help="Build a SQLite database from chunk or daily files")
     imp.add_argument("inputs", nargs="+", help="Chunk files, daily files, directories or globs")
     imp.add_argument("--db", default="modbus_import.db", help="Database path (default: modbus_import.db)")
@@ -1619,6 +1700,42 @@ def main():
         if not args.db and not args.inputs:
             chg.error("Give chunk files/directories or --db")
         cmd_changes(args)
+    elif args.command == "write":
+        _setup_logging(args.verbose)
+        if not 0 <= args.value <= 65535:
+            wr.error("value must be 0-65535")
+        prober = Prober(args.slave)
+        log_path = Path(args.log) if args.log else Path(args.cache_dir).resolve().parent / "writes.log"
+        op = WriteOp(prober, args.slave, args.address, args.value, args.expect, log_path)
+        writer = ChunkWriter(
+            Path(args.cache_dir),
+            meta={"port": args.port, "baud": args.baud, "parity": args.parity, "stopbits": args.stopbits, "write": 1},
+        )
+        capture = Capture(
+            args.port,
+            args.baud,
+            args.parity,
+            args.stopbits,
+            writer,
+            AnomalyDetector(expected_slave=args.slave),
+            printer=ConsolePrinter() if args.verbose else None,
+            prober=prober,
+            serial_timeout=0.02,
+        )
+        log.info(
+            "write holding %d := %d on slave %d (expect %s), log %s",
+            args.address,
+            args.value,
+            args.slave,
+            args.expect,
+            log_path,
+        )
+        op.start()
+        capture.install_signal_handlers()
+        capture.run()
+        log.info("probe stats: %s%s", prober.stats, f", stopped: {prober.stop_reason}" if prober.stop_reason else "")
+        if op.outcome != "ok":
+            sys.exit(1)
     elif args.command == "scan":
         _setup_logging(args.verbose)
         fc = {

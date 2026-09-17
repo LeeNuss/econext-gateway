@@ -406,6 +406,14 @@ class FakeBus:
         self.written.append(raw)
         slave, fc, start, count = raw[0], raw[1], *struct.unpack(">HH", raw[2:6])
         reply: list[bytes] = [raw, b""]  # adapter echo
+        if fc == 0x06:
+            if start in self.registers and start not in self.silent:
+                self.registers[start] = count  # value field
+                reply += [raw, b""]  # write response echoes the request
+            elif start not in self.silent:
+                reply += [exception_resp(fc, 2, slave), b""]
+            self.queue = reply + self.queue
+            return len(raw)
         addrs = range(start, start + count)
         if not any(a in self.silent for a in addrs):
             if all(a in self.registers for a in addrs):
@@ -527,3 +535,43 @@ def test_decode_coil_response_unpacks_bits():
     d = sniffer.decode_response(resp, req)
     assert d == {"start": 20, "values": [1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1], "reg_type": "coil", "direction": "read"}
     assert sniffer.is_response_to(resp, req)
+
+
+def run_write(bus: FakeBus, tmp_path: Path, address: int, value: int, expect=None):
+    prober = sniffer.Prober(HP)
+    op = sniffer.WriteOp(prober, HP, address, value, expect, tmp_path / "writes.log")
+    cap = sniffer.Capture(
+        "/dev/fake",
+        9600,
+        "N",
+        2,
+        sniffer.ChunkWriter(tmp_path / "cache"),
+        sniffer.AnomalyDetector(),
+        prober=prober,
+        serial_factory=lambda: bus,
+    )
+    op.start()
+    cap.run()
+    return op, prober
+
+
+def test_write_reads_writes_and_reads_back(tmp_path: Path):
+    bus = FakeBus({6053: 850}, rounds=20)
+    op, prober = run_write(bus, tmp_path, 6053, 800, expect=850)
+    assert op.outcome == "ok" and (op.before, op.after) == (850, 800)
+    assert bus.registers[6053] == 800
+    assert [w[1] for w in bus.written] == [0x03, 0x06, 0x03]
+    assert bus.written[1] == sniffer.build_write_request(HP, 6053, 800)
+    line = (tmp_path / "writes.log").read_text().strip()
+    assert line.endswith("slave=251 holding 6053 before=850 wrote=800 after=800 ok")
+
+
+def test_write_refuses_unexpected_current_value_and_rejections(tmp_path: Path):
+    bus = FakeBus({6053: 851}, rounds=10)
+    op, _ = run_write(bus, tmp_path, 6053, 800, expect=850)
+    assert op.outcome.startswith("aborted, register holds 851")
+    assert [w[1] for w in bus.written] == [0x03]
+    bus = FakeBus({6053: 850, 7000: 1}, rounds=10, silent=set())
+    bus.registers.pop(7000)
+    op, _ = run_write(bus, tmp_path, 7000, 5)
+    assert op.outcome.startswith("aborted, read before failed: exception 2")
