@@ -152,38 +152,55 @@ The first five hits per rule are logged in full, after that one summary
 line a minute. The first alert also forces the open chunk to disk, at most
 once every five minutes, so the evidence is persisted immediately.
 
-### Register scan (polite second master)
+### Register scan and writes (polite second master)
 
 The wiring centre polls only 168 registers. To find what else the outdoor
-unit exposes, the sniffer can act as a second master: it transmits one read
-per idle gap, immediately after it has seen the heat pump answer the wiring
-centre, and never while a wiring centre request is unanswered. The gap is a
-steady 330 ms and a single block read completes in about 80 ms, so the two
-masters never overlap. Reads only. It stops itself if wiring centre requests
-start going unanswered, on CRC failures, or if the heat pump ignores it.
+unit exposes, the sniffer acts as a second master: it transmits one read
+per idle gap, right after it has seen the heat pump answer the wiring
+centre, and never while a wiring centre request is unanswered. The gap is
+a steady 330 ms and a single block read completes in about 100 ms, so the
+two masters never overlap. The send window is measured from the wire time
+of the wiring centre's reply, so a stall in the Pi skips a gap instead of
+transmitting late.
 
-The capture service holds the port, so stop it for the duration. The scan
-writes every frame it sees to the same cache, so nothing is lost:
+The bus has its own noise bursts (garbage lead bytes and truncated wiring
+centre frames for minutes at a time, several times a day, with no probe on
+the bus). A corrupted frame or an unanswered wiring centre request is only
+held against the scan when it follows one of our transmissions within half
+a second; three probes in a row followed by one stop the run. Anything else
+pauses probing for 20 s. The heat pump answers a second master normally;
+the full discovery run was 13.8k probes without a disturbance of ours.
+
+The capture service holds the port, so stop it for the duration. Every
+frame seen meanwhile still goes to the same cache:
 
 ```bash
 sudo systemctl stop modbus-sniffer
 
-# 1. dry run: reports when a probe would go out, never transmits
+# dry run: reports when a probe would go out, never transmits
 modbus-sniffer scan --dry-run --limit 20 -v --cache-dir /var/lib/modbus-sniffer/cache
 
-# 2. three real probes on registers the wiring centre reads anyway
-modbus-sniffer scan --type holding --ranges 2100-2114 --limit 3 -v --cache-dir /var/lib/modbus-sniffer/cache
+# fine scan of a range (illegal-address replies are bisected to single addresses)
+modbus-sniffer scan --type holding --ranges 6000-6499 --out scan.tsv --cache-dir /var/lib/modbus-sniffer/cache
 
-# 3. the real scan, a range at a time
-modbus-sniffer scan --type holding --ranges 6000-6499 --out /var/lib/modbus-sniffer/scan_holding_6xxx.tsv \
+# sweep: one read every 16 addresses, a hit expands into a fine scan around it
+modbus-sniffer scan --type input --ranges "" --sweep 1300-65535 --stride 16 --out sweep.tsv \
     --cache-dir /var/lib/modbus-sniffer/cache
+
+# change one holding register: read, refuse unless it holds --expect, write, read back, log it
+modbus-sniffer write --address 6053 --value 800 --expect 850 \
+    --cache-dir /var/lib/modbus-sniffer/cache --log /var/lib/modbus-sniffer/writes.log
 
 sudo systemctl start modbus-sniffer
 ```
 
-An illegal-address exception on a block is bisected, so the result lists
-exactly which addresses answer. About 2.5 probes a second, so a 500 register
-range with block 8 takes under a minute when most of it is absent.
+Rates: about 2.3 probes a second. Bisecting empty space costs two probes
+per address, a sweep one per stride point. `--type coil` and `discrete`
+exist but this unit rejects those function codes. The heat pump applies a
+function 06 write without answering it within 200 ms, so the write command
+decides by the read-back. Every write is appended to the log with the
+value before, so it can be undone. Results of the 2026-09-17 discovery
+run are under `docs/scans/`.
 
 ### Analysis
 
