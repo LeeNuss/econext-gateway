@@ -705,7 +705,7 @@ class Capture:
                 self._last_forced_flush = now
                 self.writer.rotate("alert")
         if self.prober is not None:
-            self.prober.on_frame(frame, raw, time.monotonic())
+            self.prober.on_frame(frame, raw, time.monotonic(), self._last_byte_time)
 
     def run(self) -> None:
         self._running = True
@@ -794,6 +794,8 @@ class Prober:
         max_bad_crc: int = 3,
         max_timeouts: int = 5,
         dry_run: bool = False,
+        backoff: float = 20.0,
+        attribution_window: float = 0.5,
     ):
         self.slave = slave
         self.send_window = send_window
@@ -802,19 +804,40 @@ class Prober:
         self.max_bad_crc = max_bad_crc
         self.max_timeouts = max_timeouts
         self.dry_run = dry_run
+        # The bus has its own noise bursts (garbage bytes and truncated
+        # frames for minutes at a time, seen in passive capture with no
+        # probing). A disturbance is only held against us when it follows
+        # one of our transmissions within `attribution_window`; anything
+        # else just pauses probing for `backoff` seconds.
+        self.backoff = backoff
+        self.attribution_window = attribution_window
         self.queue: deque[tuple[bytes, Callable]] = deque()
         self.pending: dict | None = None
         self.stopped = False
         self.stop_reason: str | None = None
         self.finished = False
-        self.stats = {"sent": 0, "ok": 0, "exception": 0, "timeout": 0, "wc_missed": 0, "bad_crc": 0, "dry": 0}
+        self.stats = {
+            "sent": 0,
+            "ok": 0,
+            "exception": 0,
+            "timeout": 0,
+            "wc_missed": 0,
+            "bad_crc": 0,
+            "dry": 0,
+            "late": 0,
+            "ambient": 0,
+            "suspect": 0,
+        }
+        self.late_warn_ms = 60.0
+        self._last_tx: float | None = None
+        self._hold_until: float = 0.0
+        self._suspect_streak = 0
+        self._probe_disturbed = False
         self.gap_samples: list[float] = []  # ms between exchange end and our send
         self._ser = None
         self._last_exchange_end: float | None = None
         self._wc_unanswered: dict | None = None
-        self._missed_streak = 0
         self._timeout_streak = 0
-        self._bad_window: deque[float] = deque()
 
     def attach(self, ser) -> None:
         self._ser = ser
@@ -829,14 +852,20 @@ class Prober:
             log.error("probe stopped: %s (stats %s)", reason, self.stats)
         self.finished = True
 
-    def on_frame(self, frame: dict | None, raw: bytes, now: float) -> None:
+    def on_frame(self, frame: dict | None, raw: bytes, now: float, last_byte: float | None = None) -> None:
+        """Called for every assembled frame. `now` is when it was processed,
+        `last_byte` when its last byte arrived (monotonic). The gap is
+        measured from the wire, so a stall in this process can only make
+        us skip a gap, never transmit late into the next request."""
+        if last_byte is None:
+            last_byte = now
+        late_ms = (now - last_byte) * 1000
+        if late_ms > self.late_warn_ms:
+            self.stats["late"] += 1
+            log.warning("frame processed %.0f ms after its last byte (process stalled)", late_ms)
         if frame is None:
-            self._bad_window.append(now)
-            while self._bad_window and now - self._bad_window[0] > 60.0:
-                self._bad_window.popleft()
             self.stats["bad_crc"] += 1
-            if len(self._bad_window) >= self.max_bad_crc:
-                self.stop("CRC failures on the bus while probing")
+            self._disturbance("corrupted frame", now)
             return
         pending = self.pending
         if pending is not None:
@@ -856,21 +885,37 @@ class Prober:
         if looks_like_request(frame):
             if self._wc_unanswered is not None:
                 self.stats["wc_missed"] += 1
-                self._missed_streak += 1
-                log.warning("wiring centre request went unanswered (%d in a row)", self._missed_streak)
-                if self._missed_streak >= self.max_missed:
-                    self.stop("wiring centre requests going unanswered")
+                self._disturbance("wiring centre request unanswered", now)
             self._wc_unanswered = frame
         else:
             self._wc_unanswered = None
-            self._missed_streak = 0
-            self._last_exchange_end = now
+            self._last_exchange_end = last_byte
             self._maybe_send(now)
+
+    def _disturbance(self, what: str, now: float) -> None:
+        """Attribute a bad frame or a missed reply: ours if it followed our
+        transmission closely, ambient otherwise."""
+        if self._last_tx is not None and now - self._last_tx <= self.attribution_window:
+            self.stats["suspect"] += 1
+            if not self._probe_disturbed:
+                self._suspect_streak += 1
+            self._probe_disturbed = True
+            log.warning(
+                "%s %.0f ms after our probe (%d in a row)", what, (now - self._last_tx) * 1000, self._suspect_streak
+            )
+            if self._suspect_streak >= self.max_bad_crc:
+                self.stop(f"{what} repeatedly right after our probes")
+        else:
+            self.stats["ambient"] += 1
+            self._hold_until = now + self.backoff
+            log.info("%s (ambient, no probe of ours nearby), pausing probes for %.0f s", what, self.backoff)
 
     def _maybe_send(self, now: float) -> None:
         if self.stopped or self.pending is not None or not self.queue or self._ser is None:
             return
         if self._last_exchange_end is None or now - self._last_exchange_end > self.send_window:
+            return
+        if now < self._hold_until:
             return
         raw, cb = self.queue.popleft()
         delay_ms = (now - self._last_exchange_end) * 1000
@@ -881,6 +926,10 @@ class Prober:
             cb(("dry", None))
             return
         self._ser.write(raw)
+        if not self._probe_disturbed:
+            self._suspect_streak = 0  # the previous probe went through cleanly
+        self._probe_disturbed = False
+        self._last_tx = now
         self.stats["sent"] += 1
         req = {"slave_addr": raw[0], "function_code": raw[1], "data": raw[2:-2], "timestamp": time.time()}
         self.pending = {"raw": raw, "req": req, "cb": cb, "sent": now, "echoed": False}

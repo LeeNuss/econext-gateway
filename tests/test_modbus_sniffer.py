@@ -475,13 +475,35 @@ def test_prober_only_transmits_right_after_a_wiring_centre_response(tmp_path: Pa
     assert seen[idx - 1] == read_resp([1] * 10) and seen[idx + 1] == read_resp([1], fc=0x03)
 
 
-def test_prober_never_transmits_while_wiring_centre_waits_and_stops_on_missed_replies(tmp_path: Path):
+def test_prober_never_transmits_while_wiring_centre_waits(tmp_path: Path):
     bus = FakeBus({0: 1}, rounds=6, answer_wc=False)
     prober, scanner = run_scan(bus, tmp_path, [(0, 7)])
     assert bus.written == []
-    assert prober.stopped and "unanswered" in prober.stop_reason
-    assert prober.stats["wc_missed"] >= 3 and prober.stats["sent"] == 0
+    assert not prober.stopped  # nothing of ours was on the bus, so nothing is held against us
+    assert prober.stats["wc_missed"] >= 3 and prober.stats["ambient"] >= 3 and prober.stats["sent"] == 0
     assert not scanner.present
+
+
+def test_ambient_corruption_pauses_probing_and_our_own_corruption_stops_it(tmp_path: Path):
+    # ambient: garbage on the bus with no transmission of ours nearby -> pause, then carry on
+    bus = FakeBus({0: 1, 1: 2}, rounds=12)
+    bus.queue = [b"\xa7\xfb\x04", b""]  # a corrupted frame before the first exchange
+    prober, scanner = run_scan(bus, tmp_path, [(0, 1)], block=1, backoff=0.15)
+    assert prober.stats["ambient"] == 1 and not prober.stopped
+    assert scanner.present == {0: 1, 1: 2}
+
+    # ours: every exchange of ours is followed by a corrupted frame -> stop after three
+    class NoisyBus(FakeBus):
+        def write(self, raw):
+            n = super().write(raw)
+            self.queue.insert(4, b"\xff")  # garbage right after the reply to us
+            self.queue.insert(5, b"")
+            return n
+
+    bus = NoisyBus({a: a for a in range(0, 16)}, rounds=40)
+    prober, scanner = run_scan(bus, tmp_path / "b", [(0, 15)], block=1)
+    assert prober.stopped and "right after our probes" in prober.stop_reason
+    assert prober.stats["suspect"] == 3 and prober.stats["sent"] == 3
 
 
 def test_prober_times_out_and_scanner_retries_then_gives_up(tmp_path: Path):
@@ -496,7 +518,7 @@ def test_dry_run_never_writes_to_the_bus(tmp_path: Path):
     bus = FakeBus({0: 1, 1: 2}, rounds=6)
     prober, scanner = run_scan(bus, tmp_path, [(0, 15)], block=8, dry_run=True, limit=2)
     assert bus.written == []
-    assert prober.stats == {"sent": 0, "ok": 0, "exception": 0, "timeout": 0, "wc_missed": 0, "bad_crc": 0, "dry": 2}
+    assert prober.stats["dry"] == 2 and prober.stats["sent"] == 0
     assert scanner.probes == 2 and scanner.finished
 
 
@@ -606,3 +628,40 @@ def test_write_without_reply_is_confirmed_by_read_back(tmp_path: Path):
     cap.run()
     assert op.outcome == "ok (no reply to the write, timeout)"
     assert op.after == 800 and prober.response_timeout == 0.05
+
+
+def test_prober_skips_the_gap_when_the_process_stalled(tmp_path: Path):
+    """If the wiring centre's response is only processed long after it was
+    on the wire, transmitting would land in the next request: skip."""
+    bus = FakeBus({0: 1}, rounds=4)
+    real_read = bus.read
+    stalls = {"n": 0}
+
+    after_resp = {"flag": False}
+
+    def slow_read(n):
+        chunk = real_read(n)
+        if after_resp["flag"] and chunk == b"" and stalls["n"] < 2:
+            stalls["n"] += 1
+            time.sleep(0.12)  # the process stalls after the bytes arrived, before the frame is assembled
+        after_resp["flag"] = chunk == read_resp([1] * 10)
+        return chunk
+
+    bus.read = slow_read
+    prober = sniffer.Prober(HP, send_window=0.08)
+    scanner = sniffer.Scanner(prober, HP, 0x03, [(0, 0)], block=1)
+    cap = sniffer.Capture(
+        "/dev/fake",
+        9600,
+        "N",
+        2,
+        sniffer.ChunkWriter(tmp_path / "cache"),
+        sniffer.AnomalyDetector(),
+        prober=prober,
+        serial_factory=lambda: bus,
+    )
+    scanner.start()
+    cap.run()
+    # the first two gaps were skipped because they were seen late; the third was used
+    assert prober.stats["late"] == 2
+    assert len(bus.written) == 1 and scanner.present == {0: 1}
