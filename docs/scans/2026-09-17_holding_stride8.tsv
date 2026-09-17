@@ -1,0 +1,2 @@
+# modbus scan slave=251 fc=0x03 probes=328 present=0
+address	value	signed	hex

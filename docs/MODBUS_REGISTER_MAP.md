@@ -9,10 +9,12 @@ Status 2026-09-17. Everything here was read from the live bus between the Aerona
 - **The controller mirrors every polled register** as a parameter named `AXEN_REGISTER_<n>` (32-bit pairs as `<n>_<n+1>`), next to decoded parameters (`AxenOutgoingTemp`, `HPStatusComprHz`, ...). Verified over 55 samples: 8415 of 8470 readings equal the bus value, the 55 misses are register 61 which the controller stores divided by 10. Register 64 has the same float type and is probably scaled too. So the raw link is also readable through the gateway API, ten seconds late.
 - **Writes:** the wiring centre writes only three registers in normal operation, all with function 06: 2101 (run request), 2107 (target outgoing temperature x10) and occasionally 2103 (bitfield). Every start is `2101=1` followed by `2107=<target>`; every stop is `2101=0`. 91 writes in the February capture, nothing else.
 - **Start-up fan burst:** nothing the wiring centre writes or polls controls it; the polled fan table 6231/6232/6233/6244 tops out at 650 and the burst reaches 836 to 844. Holding **6053 = 850** is the only value in the 275-register service block at that magnitude and is the candidate for the start-up maximum. Unverified.
-- **6000 block:** holding 6000 to 6274 all answer, 6275 to 6499 do not. The wiring centre reads only 10 of them. Recognisable structures: a second three-step fan table at 6234 to 6236 (500/550/600) next to the known one, 6245 = 500 next to 6244 = 400, EEV max 6013 = 480, and two 21-entry curves at 6129 to 6149 and 6156 to 6176 that look like temperature-by-step tables.
+- **6000 block:** holding 6000 to 6274 all answer, 6275 to 6499 do not. The wiring centre reads only 10 of them. The full scan then found the same 275 offsets as input registers at 4000 and 5000, and for every one of the 275 the value at 4000+i is greater than or equal to the current holding value at 6000+i, which is greater than or equal to the value at 5000+i. So **input 4000 to 4274 is the maximum and 5000 to 5274 the minimum for each service parameter at 6000 to 6274**, and input 3000 to 3274 is a third table of the same size that reads all zero. Recognisable structures inside: a second three-step fan table at 6234 to 6236 (500/550/600) next to the known one, 6245 = 500 next to 6244 = 400, EEV max 6013 = 480, and two 21-entry curves at 6129 to 6149 and 6156 to 6176 that look like temperature-by-step tables. The whole fan group 6049 to 6054 and 6231 to 6245 has limits of 200 or 300 to 1000, an rpm range.
 - **R32 sibling:** the controller carries parameters `AXEN_REGISTER_2000..2016_RW_R32`, a write block for the Aerona3 R32 variant that never appears on this bus.
 - **Firmware:** input 121 = 86 is the outdoor unit firmware version the gateway reports.
-- **Second master:** the sniffer's tap can transmit in the idle gap. 2000 probes so far, the heat pump answers a second master normally and the wiring centre kept polling. Open issue: in two of the three long runs, three corrupted wiring-centre frames appeared while probing (none in days of passive capture), which tripped the safety stop. Cause not yet identified; see the open issues section.
+- **Second master:** the sniffer's tap can transmit in the idle gap. The complete discovery run, 13.8k probes over both 16-bit register spaces, showed the heat pump answering a second master normally and the wiring centre polling undisturbed. Function codes 01 and 02 (coils, discrete inputs) are rejected as illegal function, so the unit has only the two register spaces.
+- **Complete discovery result:** holding registers exist at 2100 to 2114, 2150 to 2155 and 6000 to 6274, nothing else in 0 to 65535 at stride 16 (stride 8 over 2300 to 2999 and 6275 to 8191). Input registers exist at 0 to 131, 1200 to 1238, 3000 to 3274, 4000 to 4274 and 5000 to 5274, nothing else. The wiring centre polls 0 to 103, 121 and 1201 to 1238 of those; 104 to 120 read zero, 122 to 130 read 39 to 56, 131 reads 275 (the size of the parameter tables) and 1200 reads 39. The controller's R32 write block 2000 to 2016 does not exist on this unit.
+- **Bus noise:** the wiring centre's own frames get garbage lead bytes and truncated tails in bursts of 5 to 12 minutes several times a day (158 of 183k frames on 2026-09-17), with nothing of ours on the bus and the heat pump idle. The wiring centre retries with the start address shifted by one and carries on. The probe logic now pauses during such bursts instead of stopping.
 
 ## Register table
 
@@ -124,7 +126,35 @@ Value is the reading at 10:43 BST on 2026-09-17, heat pump idle. Signed shows 16
 | input | 101 | 0 |  | 1248 AXEN_REGISTER_101 |  | unknown | bus poll |
 | input | 102 | 8192 |  | 1249 AXEN_REGISTER_102 | bitfield 8192/8194 (bit 13 always set, bit 1 while running) | inferred | bus poll |
 | input | 103 | 0 |  | 1250 AXEN_REGISTER_103 | 0 idle, 2 running: work mode | inferred | bus poll |
+| input | 104 | 0 |  | - | reads 0, not polled | unknown | scan 2026-09-17 |
+| input | 105 | 0 |  | - | reads 0, not polled | unknown | scan 2026-09-17 |
+| input | 106 | 0 |  | - | reads 0, not polled | unknown | scan 2026-09-17 |
+| input | 107 | 0 |  | - | reads 0, not polled | unknown | scan 2026-09-17 |
+| input | 108 | 0 |  | - | reads 0, not polled | unknown | scan 2026-09-17 |
+| input | 109 | 0 |  | - | reads 0, not polled | unknown | scan 2026-09-17 |
+| input | 110 | 0 |  | - | reads 0, not polled | unknown | scan 2026-09-17 |
+| input | 111 | 0 |  | - | reads 0, not polled | unknown | scan 2026-09-17 |
+| input | 112 | 0 |  | - | reads 0, not polled | unknown | scan 2026-09-17 |
+| input | 113 | 0 |  | - | reads 0, not polled | unknown | scan 2026-09-17 |
+| input | 114 | 0 |  | - | reads 0, not polled | unknown | scan 2026-09-17 |
+| input | 115 | 0 |  | - | reads 0, not polled | unknown | scan 2026-09-17 |
+| input | 116 | 0 |  | - | reads 0, not polled | unknown | scan 2026-09-17 |
+| input | 117 | 0 |  | - | reads 0, not polled | unknown | scan 2026-09-17 |
+| input | 118 | 0 |  | - | reads 0, not polled | unknown | scan 2026-09-17 |
+| input | 119 | 0 |  | - | reads 0, not polled | unknown | scan 2026-09-17 |
+| input | 120 | 0 |  | - | reads 0, not polled | unknown | scan 2026-09-17 |
+| input | 122 | 48 |  | - | not polled, value only | unknown | scan 2026-09-17 |
+| input | 123 | 48 |  | - | not polled, value only | unknown | scan 2026-09-17 |
+| input | 124 | 49 |  | - | not polled, value only | unknown | scan 2026-09-17 |
+| input | 125 | 46 |  | - | not polled, value only | unknown | scan 2026-09-17 |
+| input | 126 | 48 |  | - | not polled, value only | unknown | scan 2026-09-17 |
+| input | 127 | 56 |  | - | not polled, value only | unknown | scan 2026-09-17 |
+| input | 128 | 45 |  | - | not polled, value only | unknown | scan 2026-09-17 |
+| input | 129 | 48 |  | - | not polled, value only | unknown | scan 2026-09-17 |
+| input | 130 | 39 |  | - | not polled, value only | unknown | scan 2026-09-17 |
+| input | 131 | 275 |  | - | size of the parameter tables? | unknown | scan 2026-09-17 |
 | input | 121 | 86 |  | 1283 AXEN_REGISTER_121 | outdoor unit firmware version, gateway reports it as HP firmware 86 | confirmed | bus poll |
+| input | 1200 | 39 |  | - | not polled, value only | unknown | scan 2026-09-17 |
 | input | 1201 | 0 |  | 1284 AXEN_REGISTER_1201 | 0 idle, 2 running: work mode | inferred | bus poll |
 | input | 1202 | 91808 |  | 1285 AXEN_REGISTER_1202_1203 | electrical energy total, 32-bit with 1203, /100 kWh (HA energy_consumed_total) | confirmed | bus poll |
 | input | 1203 | 91808 |  | 1285 AXEN_REGISTER_1202_1203 (low word) |  | unknown | bus poll |
@@ -163,6 +193,9 @@ Value is the reading at 10:43 BST on 2026-09-17, heat pump idle. Signed shows 16
 | input | 1236 | 0 |  | 1306 AXEN_REGISTER_1236_1237 | 32-bit with 1237 | unknown | bus poll |
 | input | 1237 | 0 |  | 1306 AXEN_REGISTER_1236_1237 (low word) |  | unknown | bus poll |
 | input | 1238 | 0 |  | 1307 AXEN_REGISTER_1238 | 0 idle, 194-1286 running: electrical power W? | inferred | bus poll |
+| input | 3000-3274 | all 0 |  | - | third table with the same 275 offsets as holding 6000-6274, all zero (defaults not populated?) | inferred | scan 2026-09-17 |
+| input | 4000-4274 | see 6000 rows |  | - | maximum for each holding 6000+i parameter (holds for all 275) | confirmed | scan 2026-09-17 |
+| input | 5000-5274 | see 6000 rows |  | - | minimum for each holding 6000+i parameter (holds for all 275) | confirmed | scan 2026-09-17 |
 | holding | 2100 | 2 |  | 1268 AXEN_REGISTER_2100_RW | mode, panel range 0-2, always 2 | inferred | bus poll |
 | holding | 2101 | 0 |  | 1269 AXEN_REGISTER_2101_RW | run request written by the wiring centre, 0 off / 1 on (range 0-3) | confirmed | bus poll |
 | holding | 2102 | 0 |  | 1270 AXEN_REGISTER_2102_RW | flag 0/1 | unknown | bus poll |
@@ -181,293 +214,293 @@ Value is the reading at 10:43 BST on 2026-09-17, heat pump idle. Signed shows 16
 | holding | 2150 | 0 |  | 1369 AXEN_REGISTER_2150_RW-reboot_unit | reboot outdoor unit (panel AXEN_REGISTER_2150_RW-reboot_unit) | confirmed | bus poll |
 | holding | 2155 | 100 |  | 1370 AXEN_2155-uhsPumpManualPreset | water pump manual preset % (panel AXEN_2155-uhsPumpManualPreset) | confirmed | bus poll |
 | holding | 2200 | 12288 |  | 1308 AXEN_REGISTER_2200_RW | polled every cycle, always rejected with exception 02 | confirmed | bus poll |
-| holding | 6000 | 2 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6001 | 5 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6002 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6003 | 65535 | -1 | - |  | unknown | scan 2026-09-17 |
-| holding | 6004 | 68 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6005 | 68 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6006 | 68 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6007 | 400 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6008 | 400 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6009 | 400 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6010 | 65531 | -5 | - |  | unknown | scan 2026-09-17 |
-| holding | 6011 | 8 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6012 | 40 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6013 | 480 |  | - | 480, equals EEV idle position in input 70: EEV max steps | inferred | scan 2026-09-17 |
-| holding | 6014 | 65 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6015 | 105 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6016 | 1 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6017 | 50 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6018 | 65 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6019 | 30 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6020 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6021 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6022 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6023 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6024 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6025 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6026 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6027 | 5 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6028 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6029 | 5 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6030 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6031 | 24 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6032 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6033 | 3 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6034 | 65511 | -25 | - |  | unknown | scan 2026-09-17 |
-| holding | 6035 | 1 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6036 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6037 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6038 | 75 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6039 | 10 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6040 | 65526 | -10 | - |  | unknown | scan 2026-09-17 |
-| holding | 6041 | 15 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6042 | 10 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6043 | 60 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6044 | 2 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6045 | 65531 | -5 | - |  | unknown | scan 2026-09-17 |
-| holding | 6046 | 15 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6047 | 40 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6048 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6049 | 400 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6050 | 100 |  | 1439 HoldingRegister_6050 | pump speed setting %, panel HoldingRegister_6050 (forum: standby/min/max = 30/50/100 defaults) | confirmed | bus poll |
-| holding | 6051 | 500 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6052 | 250 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6053 | 850 |  | - | 850, only value in the block at the start-up fan peak of 836-844 rpm | inferred | scan 2026-09-17 |
-| holding | 6054 | 450 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6055 | 40 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6056 | 65531 | -5 | - |  | unknown | scan 2026-09-17 |
-| holding | 6057 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6058 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6059 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6060 | 100 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6061 | 65 |  | 1440 HoldingRegister_6061 | pump speed setting %, panel HoldingRegister_6061 | confirmed | bus poll |
-| holding | 6062 | 1 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6063 | 3 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6064 | 6 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6065 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6066 | 150 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6067 | 150 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6068 | 60 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6069 | 400 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6070 | 400 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6071 | 40 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6072 | 400 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6073 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6074 | 6 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6075 | 247 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6076 | 1 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6077 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6078 | 1 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6079 | 4 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6080 | 6 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6081 | 5 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6082 | 6 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6083 | 4 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6084 | 60 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6085 | 20 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6086 | 120 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6087 | 1 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6088 | 3 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6089 | 55 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6090 | 25 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6091 | 45 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6092 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6093 | 60 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6094 | 40 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6095 | 40 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6096 | 65521 | -15 | - |  | unknown | scan 2026-09-17 |
-| holding | 6097 | 90 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6098 | 4 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6099 | 1 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6100 | 10 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6101 | 10 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6102 | 4 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6103 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6104 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6105 | 10 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6106 | 30 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6107 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6108 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6109 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6110 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6111 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6112 | 2 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6113 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6114 | 1 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6115 | 1 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6116 | 5 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6117 | 120 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6118 | 1 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6119 | 15 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6120 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6121 | 17 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6122 | 25 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6123 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6124 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6125 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6126 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6127 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6128 | 1 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6129 | 70 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6130 | 70 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6131 | 60 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6132 | 55 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6133 | 50 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6134 | 45 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6135 | 55 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6136 | 60 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6137 | 65 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6138 | 70 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6139 | 70 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6140 | 20 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6141 | 20 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6142 | 20 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6143 | 15 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6144 | 10 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6145 | 20 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6146 | 25 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6147 | 25 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6148 | 25 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6149 | 25 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6150 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6151 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6152 | 65535 | -1 | - |  | unknown | scan 2026-09-17 |
-| holding | 6153 | 65533 | -3 | - |  | unknown | scan 2026-09-17 |
-| holding | 6154 | 65532 | -4 | - |  | unknown | scan 2026-09-17 |
-| holding | 6155 | 65531 | -5 | - |  | unknown | scan 2026-09-17 |
-| holding | 6156 | 60 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6157 | 50 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6158 | 50 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6159 | 35 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6160 | 30 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6161 | 45 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6162 | 20 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6163 | 20 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6164 | 15 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6165 | 10 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6166 | 10 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6167 | 50 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6168 | 50 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6169 | 55 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6170 | 55 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6171 | 70 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6172 | 50 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6173 | 50 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6174 | 55 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6175 | 55 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6176 | 70 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6177 | 18 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6178 | 12 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6179 | 7 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6180 | 5 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6181 | 4 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6182 | 5 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6183 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6184 | 1 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6185 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6186 | 2 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6187 | 4 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6188 | 4 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6189 | 3 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6190 | 6 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6191 | 4 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6192 | 4 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6193 | 3 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6194 | 6 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6195 | 3 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6196 | 3 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6197 | 25 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6198 | 35 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6199 | 16 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6200 | 10 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6201 | 65531 | -5 | - |  | unknown | scan 2026-09-17 |
-| holding | 6202 | 7 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6203 | 35 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6204 | 28 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6205 | 5 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6206 | 2 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6207 | 5 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6208 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6209 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6210 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6211 | 13 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6212 | 10 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6213 | 30 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6214 | 60 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6215 | 30 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6216 | 95 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6217 | 20 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6218 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6219 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6220 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6221 | 15 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6222 | 17 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6223 | 19 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6224 | 20 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6225 | 22 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6226 | 3 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6227 | 5 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6228 | 10 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6229 | 5 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6230 | 10 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6231 | 450 |  | 1444 H_FAN_SPEED_1_6231 | H_FAN_SPEED_1, rpm (panel) | confirmed | bus poll |
-| holding | 6232 | 570 |  | 1445 H_FAN_SPEED_2_6232 | H_FAN_SPEED_2, rpm (panel) | confirmed | bus poll |
-| holding | 6233 | 650 |  | 1446 H_FAN_SPEED_3_6233 | H_FAN_SPEED_3, rpm (panel) | confirmed | bus poll |
-| holding | 6234 | 500 |  | - | 500, second fan table step 1 (cooling?) | inferred | scan 2026-09-17 |
-| holding | 6235 | 550 |  | - | 550, second fan table step 2 | inferred | scan 2026-09-17 |
-| holding | 6236 | 600 |  | - | 600, second fan table step 3 | inferred | scan 2026-09-17 |
-| holding | 6237 | 1 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6238 | 2 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6239 | 40 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6240 | 25 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6241 | 10 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6242 | 50 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6243 | 7 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6244 | 400 |  | 1443 H_FAN_SPEED_0_6244 | H_FAN_SPEED_0, rpm (panel) | confirmed | bus poll |
-| holding | 6245 | 500 |  | - | 500, counterpart of 6244? | inferred | scan 2026-09-17 |
-| holding | 6246 | 2 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6247 | 1 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6248 | 95 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6249 | 110 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6250 | 105 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6251 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6252 | 60 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6253 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6254 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6255 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6256 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6257 | 30 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6258 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6259 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6260 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6261 | 30 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6262 | 30 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6263 | 30 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6264 | 30 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6265 | 5 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6266 | 60 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6267 | 12 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6268 | 7 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6269 | 330 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6270 | 30 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6271 | 100 |  | 1441 HoldingRegister_6271 | pump speed setting %, panel HoldingRegister_6271 | confirmed | bus poll |
-| holding | 6272 | 0 |  | - |  | unknown | scan 2026-09-17 |
-| holding | 6273 | 0 |  | 1442 HoldingRegister_6273 | pump speed setting %, panel HoldingRegister_6273 | confirmed | bus poll |
-| holding | 6274 | 0 |  | - |  | unknown | scan 2026-09-17 |
+| holding | 6000 | 2 |  | - | min 0 max 5 | unknown | scan 2026-09-17 |
+| holding | 6001 | 5 |  | - | min 2 max 15 | unknown | scan 2026-09-17 |
+| holding | 6002 | 0 |  | - | min -10 max 15 | unknown | scan 2026-09-17 |
+| holding | 6003 | 65535 | -1 | - | min -5 max 10 | unknown | scan 2026-09-17 |
+| holding | 6004 | 68 |  | - | min 10 max 120 | unknown | scan 2026-09-17 |
+| holding | 6005 | 68 |  | - | min 10 max 120 | unknown | scan 2026-09-17 |
+| holding | 6006 | 68 |  | - | min 10 max 120 | unknown | scan 2026-09-17 |
+| holding | 6007 | 400 |  | - | min 0 max 480 | unknown | scan 2026-09-17 |
+| holding | 6008 | 400 |  | - | min 0 max 480 | unknown | scan 2026-09-17 |
+| holding | 6009 | 400 |  | - | min 0 max 480 | unknown | scan 2026-09-17 |
+| holding | 6010 | 65531 | -5 | - | min -15 max 0 | unknown | scan 2026-09-17 |
+| holding | 6011 | 8 |  | - | min 0 max 15 | unknown | scan 2026-09-17 |
+| holding | 6012 | 40 |  | - | min 20 max 90 | unknown | scan 2026-09-17 |
+| holding | 6013 | 480 |  | - | 480, equals EEV idle position in input 70: EEV max steps; min 0 max 480 | inferred | scan 2026-09-17 |
+| holding | 6014 | 65 |  | - | min 30 max 120 | unknown | scan 2026-09-17 |
+| holding | 6015 | 105 |  | - | min 15 max 120 | unknown | scan 2026-09-17 |
+| holding | 6016 | 1 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6017 | 50 |  | - | min 30 max 120 | unknown | scan 2026-09-17 |
+| holding | 6018 | 65 |  | - | min 55 max 75 | unknown | scan 2026-09-17 |
+| holding | 6019 | 30 |  | - | min 20 max 120 | unknown | scan 2026-09-17 |
+| holding | 6020 | 0 |  | - | min 0 max 2 | unknown | scan 2026-09-17 |
+| holding | 6021 | 0 |  | - | min 0 max 120 | unknown | scan 2026-09-17 |
+| holding | 6022 | 0 |  | - | min 0 max 120 | unknown | scan 2026-09-17 |
+| holding | 6023 | 0 |  | - | min 0 max 120 | unknown | scan 2026-09-17 |
+| holding | 6024 | 0 |  | - | min 0 max 120 | unknown | scan 2026-09-17 |
+| holding | 6025 | 0 |  | - | min 0 max 120 | unknown | scan 2026-09-17 |
+| holding | 6026 | 0 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6027 | 5 |  | - | min 0 max 20 | unknown | scan 2026-09-17 |
+| holding | 6028 | 0 |  | - | min -20 max 0 | unknown | scan 2026-09-17 |
+| holding | 6029 | 5 |  | - | min 0 max 10 | unknown | scan 2026-09-17 |
+| holding | 6030 | 0 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6031 | 24 |  | - | min 10 max 30 | unknown | scan 2026-09-17 |
+| holding | 6032 | 0 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6033 | 3 |  | - | min 0 max 3 | unknown | scan 2026-09-17 |
+| holding | 6034 | 65511 | -25 | - | min -40 max -10 | unknown | scan 2026-09-17 |
+| holding | 6035 | 1 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6036 | 0 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6037 | 0 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6038 | 75 |  | - | min 0 max 480 | unknown | scan 2026-09-17 |
+| holding | 6039 | 10 |  | - | min 0 max 40 | unknown | scan 2026-09-17 |
+| holding | 6040 | 65526 | -10 | - | min -20 max 20 | unknown | scan 2026-09-17 |
+| holding | 6041 | 15 |  | - | min 10 max 25 | unknown | scan 2026-09-17 |
+| holding | 6042 | 10 |  | - | min 1 max 20 | unknown | scan 2026-09-17 |
+| holding | 6043 | 60 |  | - | min 30 max 60 | unknown | scan 2026-09-17 |
+| holding | 6044 | 2 |  | - | min 1 max 2 | unknown | scan 2026-09-17 |
+| holding | 6045 | 65531 | -5 | - | min -15 max 5 | unknown | scan 2026-09-17 |
+| holding | 6046 | 15 |  | - | min 10 max 100 | unknown | scan 2026-09-17 |
+| holding | 6047 | 40 |  | - | min 30 max 120 | unknown | scan 2026-09-17 |
+| holding | 6048 | 0 |  | - | min -10 max 15 | unknown | scan 2026-09-17 |
+| holding | 6049 | 400 |  | - | min 300 max 1000 | unknown | scan 2026-09-17 |
+| holding | 6050 | 100 |  | 1439 HoldingRegister_6050 | pump speed setting %, panel HoldingRegister_6050 (forum: standby/min/max = 30/50/100 defaults); min 10 max 100 | confirmed | bus poll |
+| holding | 6051 | 500 |  | - | min 200 max 1000 | unknown | scan 2026-09-17 |
+| holding | 6052 | 250 |  | - | min 200 max 500 | unknown | scan 2026-09-17 |
+| holding | 6053 | 850 |  | - | 850, only value in the block at the start-up fan peak of 836-844 rpm; min 300 max 1000 | inferred | scan 2026-09-17 |
+| holding | 6054 | 450 |  | - | min 300 max 1000 | unknown | scan 2026-09-17 |
+| holding | 6055 | 40 |  | - | min 20 max 60 | unknown | scan 2026-09-17 |
+| holding | 6056 | 65531 | -5 | - | min -10 max 20 | unknown | scan 2026-09-17 |
+| holding | 6057 | 0 |  | - | min 0 max 1000 | unknown | scan 2026-09-17 |
+| holding | 6058 | 0 |  | - | min 0 max 1000 | unknown | scan 2026-09-17 |
+| holding | 6059 | 0 |  | - | min 0 max 1000 | unknown | scan 2026-09-17 |
+| holding | 6060 | 100 |  | - | min 15 max 100 | unknown | scan 2026-09-17 |
+| holding | 6061 | 65 |  | 1440 HoldingRegister_6061 | pump speed setting %, panel HoldingRegister_6061; min 30 max 100 | confirmed | bus poll |
+| holding | 6062 | 1 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6063 | 3 |  | - | min 0 max 10 | unknown | scan 2026-09-17 |
+| holding | 6064 | 6 |  | - | min -5 max 25 | unknown | scan 2026-09-17 |
+| holding | 6065 | 0 |  | - | min 0 max 480 | unknown | scan 2026-09-17 |
+| holding | 6066 | 150 |  | - | min 0 max 480 | unknown | scan 2026-09-17 |
+| holding | 6067 | 150 |  | - | min 0 max 480 | unknown | scan 2026-09-17 |
+| holding | 6068 | 60 |  | - | min 20 max 100 | unknown | scan 2026-09-17 |
+| holding | 6069 | 400 |  | - | min 0 max 480 | unknown | scan 2026-09-17 |
+| holding | 6070 | 400 |  | - | min 0 max 480 | unknown | scan 2026-09-17 |
+| holding | 6071 | 40 |  | - | min 20 max 100 | unknown | scan 2026-09-17 |
+| holding | 6072 | 400 |  | - | min 0 max 480 | unknown | scan 2026-09-17 |
+| holding | 6073 | 0 |  | - | min 0 max 480 | unknown | scan 2026-09-17 |
+| holding | 6074 | 6 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6075 | 247 |  | - | min 1 max 255 | unknown | scan 2026-09-17 |
+| holding | 6076 | 1 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6077 | 0 |  | - | min 0 max 3 | unknown | scan 2026-09-17 |
+| holding | 6078 | 1 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6079 | 4 |  | - | min 0 max 15 | unknown | scan 2026-09-17 |
+| holding | 6080 | 6 |  | - | min 0 max 15 | unknown | scan 2026-09-17 |
+| holding | 6081 | 5 |  | - | min 0 max 15 | unknown | scan 2026-09-17 |
+| holding | 6082 | 6 |  | - | min 0 max 15 | unknown | scan 2026-09-17 |
+| holding | 6083 | 4 |  | - | min 0 max 15 | unknown | scan 2026-09-17 |
+| holding | 6084 | 60 |  | - | min 30 max 100 | unknown | scan 2026-09-17 |
+| holding | 6085 | 20 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6086 | 120 |  | - | min 0 max 120 | unknown | scan 2026-09-17 |
+| holding | 6087 | 1 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6088 | 3 |  | - | min 1 max 10 | unknown | scan 2026-09-17 |
+| holding | 6089 | 55 |  | - | min 40 max 90 | unknown | scan 2026-09-17 |
+| holding | 6090 | 25 |  | - | min 20 max 90 | unknown | scan 2026-09-17 |
+| holding | 6091 | 45 |  | - | min 20 max 90 | unknown | scan 2026-09-17 |
+| holding | 6092 | 0 |  | - | min 0 max 60 | unknown | scan 2026-09-17 |
+| holding | 6093 | 60 |  | - | min 0 max 120 | unknown | scan 2026-09-17 |
+| holding | 6094 | 40 |  | - | min 30 max 50 | unknown | scan 2026-09-17 |
+| holding | 6095 | 40 |  | - | min 10 max 100 | unknown | scan 2026-09-17 |
+| holding | 6096 | 65521 | -15 | - | min -30 max 0 | unknown | scan 2026-09-17 |
+| holding | 6097 | 90 |  | - | min 50 max 100 | unknown | scan 2026-09-17 |
+| holding | 6098 | 4 |  | - | min -10 max 40 | unknown | scan 2026-09-17 |
+| holding | 6099 | 1 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6100 | 10 |  | - | min 1 max 20 | unknown | scan 2026-09-17 |
+| holding | 6101 | 10 |  | - | min 10 max 100 | unknown | scan 2026-09-17 |
+| holding | 6102 | 4 |  | - | min 1 max 10 | unknown | scan 2026-09-17 |
+| holding | 6103 | 0 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6104 | 0 |  | - | min 0 max 3 | unknown | scan 2026-09-17 |
+| holding | 6105 | 10 |  | - | min 2 max 20 | unknown | scan 2026-09-17 |
+| holding | 6106 | 30 |  | - | min 0 max 90 | unknown | scan 2026-09-17 |
+| holding | 6107 | 0 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6108 | 0 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6109 | 0 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6110 | 0 |  | - | min 0 max 2 | unknown | scan 2026-09-17 |
+| holding | 6111 | 0 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6112 | 2 |  | - | min 0 max 24 | unknown | scan 2026-09-17 |
+| holding | 6113 | 0 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6114 | 1 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6115 | 1 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6116 | 5 |  | - | min 5 max 120 | unknown | scan 2026-09-17 |
+| holding | 6117 | 120 |  | - | min 5 max 180 | unknown | scan 2026-09-17 |
+| holding | 6118 | 1 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6119 | 15 |  | - | min 0 max 50 | unknown | scan 2026-09-17 |
+| holding | 6120 | 0 |  | - | min 0 max 2 | unknown | scan 2026-09-17 |
+| holding | 6121 | 17 |  | - | min 10 max 17 | unknown | scan 2026-09-17 |
+| holding | 6122 | 25 |  | - | min 20 max 29 | unknown | scan 2026-09-17 |
+| holding | 6123 | 0 |  | - | min 0 max 3 | unknown | scan 2026-09-17 |
+| holding | 6124 | 0 |  | - | min 0 max 7 | unknown | scan 2026-09-17 |
+| holding | 6125 | 0 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6126 | 0 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6127 | 0 |  | - | min 0 max 2 | unknown | scan 2026-09-17 |
+| holding | 6128 | 1 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6129 | 70 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6130 | 70 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6131 | 60 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6132 | 55 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6133 | 50 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6134 | 45 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6135 | 55 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6136 | 60 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6137 | 65 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6138 | 70 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6139 | 70 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6140 | 20 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6141 | 20 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6142 | 20 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6143 | 15 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6144 | 10 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6145 | 20 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6146 | 25 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6147 | 25 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6148 | 25 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6149 | 25 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6150 | 0 |  | - | min -10 max 20 | unknown | scan 2026-09-17 |
+| holding | 6151 | 0 |  | - | min -10 max 20 | unknown | scan 2026-09-17 |
+| holding | 6152 | 65535 | -1 | - | min -10 max 20 | unknown | scan 2026-09-17 |
+| holding | 6153 | 65533 | -3 | - | min -10 max 20 | unknown | scan 2026-09-17 |
+| holding | 6154 | 65532 | -4 | - | min -10 max 20 | unknown | scan 2026-09-17 |
+| holding | 6155 | 65531 | -5 | - | min -10 max 20 | unknown | scan 2026-09-17 |
+| holding | 6156 | 60 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6157 | 50 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6158 | 50 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6159 | 35 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6160 | 30 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6161 | 45 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6162 | 20 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6163 | 20 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6164 | 15 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6165 | 10 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6166 | 10 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6167 | 50 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6168 | 50 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6169 | 55 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6170 | 55 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6171 | 70 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6172 | 50 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6173 | 50 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6174 | 55 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6175 | 55 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6176 | 70 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6177 | 18 |  | - | min -10 max 20 | unknown | scan 2026-09-17 |
+| holding | 6178 | 12 |  | - | min -10 max 20 | unknown | scan 2026-09-17 |
+| holding | 6179 | 7 |  | - | min -10 max 20 | unknown | scan 2026-09-17 |
+| holding | 6180 | 5 |  | - | min -10 max 20 | unknown | scan 2026-09-17 |
+| holding | 6181 | 4 |  | - | min -10 max 20 | unknown | scan 2026-09-17 |
+| holding | 6182 | 5 |  | - | min -10 max 20 | unknown | scan 2026-09-17 |
+| holding | 6183 | 0 |  | - | min 0 max 2 | unknown | scan 2026-09-17 |
+| holding | 6184 | 1 |  | - | min 0 max 2 | unknown | scan 2026-09-17 |
+| holding | 6185 | 0 |  | - | min 0 max 2 | unknown | scan 2026-09-17 |
+| holding | 6186 | 2 |  | - | min 0 max 2 | unknown | scan 2026-09-17 |
+| holding | 6187 | 4 |  | - | min 1 max 9 | unknown | scan 2026-09-17 |
+| holding | 6188 | 4 |  | - | min 1 max 9 | unknown | scan 2026-09-17 |
+| holding | 6189 | 3 |  | - | min 1 max 9 | unknown | scan 2026-09-17 |
+| holding | 6190 | 6 |  | - | min 1 max 9 | unknown | scan 2026-09-17 |
+| holding | 6191 | 4 |  | - | min 1 max 9 | unknown | scan 2026-09-17 |
+| holding | 6192 | 4 |  | - | min 1 max 9 | unknown | scan 2026-09-17 |
+| holding | 6193 | 3 |  | - | min 1 max 9 | unknown | scan 2026-09-17 |
+| holding | 6194 | 6 |  | - | min 1 max 9 | unknown | scan 2026-09-17 |
+| holding | 6195 | 3 |  | - | min 0 max 36 | unknown | scan 2026-09-17 |
+| holding | 6196 | 3 |  | - | min 0 max 36 | unknown | scan 2026-09-17 |
+| holding | 6197 | 25 |  | - | min -5 max 46 | unknown | scan 2026-09-17 |
+| holding | 6198 | 35 |  | - | min -5 max 46 | unknown | scan 2026-09-17 |
+| holding | 6199 | 16 |  | - | min 5 max 25 | unknown | scan 2026-09-17 |
+| holding | 6200 | 10 |  | - | min 5 max 25 | unknown | scan 2026-09-17 |
+| holding | 6201 | 65531 | -5 | - | min -25 max 35 | unknown | scan 2026-09-17 |
+| holding | 6202 | 7 |  | - | min -25 max 35 | unknown | scan 2026-09-17 |
+| holding | 6203 | 35 |  | - | min 18 max 75 | unknown | scan 2026-09-17 |
+| holding | 6204 | 28 |  | - | min 18 max 75 | unknown | scan 2026-09-17 |
+| holding | 6205 | 5 |  | - | min 0 max 120 | unknown | scan 2026-09-17 |
+| holding | 6206 | 2 |  | - | min 0 max 120 | unknown | scan 2026-09-17 |
+| holding | 6207 | 5 |  | - | min 2 max 10 | unknown | scan 2026-09-17 |
+| holding | 6208 | 0 |  | - | min -10 max 0 | unknown | scan 2026-09-17 |
+| holding | 6209 | 0 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6210 | 0 |  | - | min 0 max 3 | unknown | scan 2026-09-17 |
+| holding | 6211 | 13 |  | - | min 5 max 50 | unknown | scan 2026-09-17 |
+| holding | 6212 | 10 |  | - | min 5 max 30 | unknown | scan 2026-09-17 |
+| holding | 6213 | 30 |  | - | min 5 max 100 | unknown | scan 2026-09-17 |
+| holding | 6214 | 60 |  | - | min 5 max 100 | unknown | scan 2026-09-17 |
+| holding | 6215 | 30 |  | - | min 5 max 100 | unknown | scan 2026-09-17 |
+| holding | 6216 | 95 |  | - | min 50 max 100 | unknown | scan 2026-09-17 |
+| holding | 6217 | 20 |  | - | min 5 max 50 | unknown | scan 2026-09-17 |
+| holding | 6218 | 0 |  | - | min -50 max 50 | unknown | scan 2026-09-17 |
+| holding | 6219 | 0 |  | - | min -50 max 50 | unknown | scan 2026-09-17 |
+| holding | 6220 | 0 |  | - | min -50 max 50 | unknown | scan 2026-09-17 |
+| holding | 6221 | 15 |  | - | min 10 max 100 | unknown | scan 2026-09-17 |
+| holding | 6222 | 17 |  | - | min 10 max 100 | unknown | scan 2026-09-17 |
+| holding | 6223 | 19 |  | - | min 10 max 100 | unknown | scan 2026-09-17 |
+| holding | 6224 | 20 |  | - | min 10 max 100 | unknown | scan 2026-09-17 |
+| holding | 6225 | 22 |  | - | min 10 max 100 | unknown | scan 2026-09-17 |
+| holding | 6226 | 3 |  | - | min 1 max 60 | unknown | scan 2026-09-17 |
+| holding | 6227 | 5 |  | - | min 1 max 60 | unknown | scan 2026-09-17 |
+| holding | 6228 | 10 |  | - | min 1 max 60 | unknown | scan 2026-09-17 |
+| holding | 6229 | 5 |  | - | min 1 max 60 | unknown | scan 2026-09-17 |
+| holding | 6230 | 10 |  | - | min 10 max 600 | unknown | scan 2026-09-17 |
+| holding | 6231 | 450 |  | 1444 H_FAN_SPEED_1_6231 | H_FAN_SPEED_1, rpm (panel); min 200 max 1000 | confirmed | bus poll |
+| holding | 6232 | 570 |  | 1445 H_FAN_SPEED_2_6232 | H_FAN_SPEED_2, rpm (panel); min 200 max 1000 | confirmed | bus poll |
+| holding | 6233 | 650 |  | 1446 H_FAN_SPEED_3_6233 | H_FAN_SPEED_3, rpm (panel); min 200 max 1000 | confirmed | bus poll |
+| holding | 6234 | 500 |  | - | 500, second fan table step 1 (cooling?); min 200 max 1000 | inferred | scan 2026-09-17 |
+| holding | 6235 | 550 |  | - | 550, second fan table step 2; min 200 max 1000 | inferred | scan 2026-09-17 |
+| holding | 6236 | 600 |  | - | 600, second fan table step 3; min 200 max 1000 | inferred | scan 2026-09-17 |
+| holding | 6237 | 1 |  | - | min 1 max 2 | unknown | scan 2026-09-17 |
+| holding | 6238 | 2 |  | - | min 0 max 6 | unknown | scan 2026-09-17 |
+| holding | 6239 | 40 |  | - | min 30 max 80 | unknown | scan 2026-09-17 |
+| holding | 6240 | 25 |  | - | min 10 max 50 | unknown | scan 2026-09-17 |
+| holding | 6241 | 10 |  | - | min 5 max 20 | unknown | scan 2026-09-17 |
+| holding | 6242 | 50 |  | - | min 0 max 100 | unknown | scan 2026-09-17 |
+| holding | 6243 | 7 |  | - | min -10 max 20 | unknown | scan 2026-09-17 |
+| holding | 6244 | 400 |  | 1443 H_FAN_SPEED_0_6244 | H_FAN_SPEED_0, rpm (panel); min 200 max 1000 | confirmed | bus poll |
+| holding | 6245 | 500 |  | - | 500, counterpart of 6244?; min 200 max 1000 | inferred | scan 2026-09-17 |
+| holding | 6246 | 2 |  | - | min 0 max 2 | unknown | scan 2026-09-17 |
+| holding | 6247 | 1 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6248 | 95 |  | - | min 80 max 120 | unknown | scan 2026-09-17 |
+| holding | 6249 | 110 |  | - | min 100 max 150 | unknown | scan 2026-09-17 |
+| holding | 6250 | 105 |  | - | min 100 max 150 | unknown | scan 2026-09-17 |
+| holding | 6251 | 0 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6252 | 60 |  | - | min 25 max 75 | unknown | scan 2026-09-17 |
+| holding | 6253 | 0 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6254 | 0 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6255 | 0 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6256 | 0 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6257 | 30 |  | - | min 5 max 60 | unknown | scan 2026-09-17 |
+| holding | 6258 | 0 |  | - | min 0 max 10 | unknown | scan 2026-09-17 |
+| holding | 6259 | 0 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6260 | 0 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
+| holding | 6261 | 30 |  | - | min 0 max 240 | unknown | scan 2026-09-17 |
+| holding | 6262 | 30 |  | - | min 0 max 240 | unknown | scan 2026-09-17 |
+| holding | 6263 | 30 |  | - | min 0 max 240 | unknown | scan 2026-09-17 |
+| holding | 6264 | 30 |  | - | min 0 max 240 | unknown | scan 2026-09-17 |
+| holding | 6265 | 5 |  | - | min 1 max 30 | unknown | scan 2026-09-17 |
+| holding | 6266 | 60 |  | - | min 0 max 60 | unknown | scan 2026-09-17 |
+| holding | 6267 | 12 |  | - | min 1 max 15 | unknown | scan 2026-09-17 |
+| holding | 6268 | 7 |  | - | min 1 max 15 | unknown | scan 2026-09-17 |
+| holding | 6269 | 330 |  | - | min 300 max 700 | unknown | scan 2026-09-17 |
+| holding | 6270 | 30 |  | - | min 20 max 60 | unknown | scan 2026-09-17 |
+| holding | 6271 | 100 |  | 1441 HoldingRegister_6271 | pump speed setting %, panel HoldingRegister_6271; min 50 max 100 | confirmed | bus poll |
+| holding | 6272 | 0 |  | - | min 0 max 4 | unknown | scan 2026-09-17 |
+| holding | 6273 | 0 |  | 1442 HoldingRegister_6273 | pump speed setting %, panel HoldingRegister_6273; min 0 max 100 | confirmed | bus poll |
+| holding | 6274 | 0 |  | - | min 0 max 1 | unknown | scan 2026-09-17 |
 
 ## Open issues
 
-1. **Corrupted wiring-centre frames while probing.** In the 6000 block scan (459 probes) there were none. In the full holding scan (1539 probes, all exception replies) and the input scan (51 probes) the safety stop fired on three bad-CRC frames within a minute. Pattern each time: our probe is answered normally, then the wiring centre's next request 250 ms later arrives truncated (CRC bytes missing) and gets no reply; the wiring centre retries with the start address incremented by one, twice, then carries on. The heat pump was idle, so it is not compressor noise. Suspects: the adapter's driver enable timing after our transmission, or the heat pump's UART after answering a second master. Needs a diagnostic run with the probe timing logged against each corrupted frame before any further scanning.
-2. **Not yet scanned:** holding 800 to 1299 and 2000 to 2299 in full, input 104 to 1299, 2000 to 2299 and 6000 to 6499, the stride sweep of the rest of both spaces, and coils / discrete inputs.
+1. **Bus noise bursts** (see summary) are not caused by probing; source unknown, heat pump and pumps idle during them. Worth a look at what else switches in the house on that rhythm, and at whether the RS-485 pair has failsafe biasing.
+2. **Discovery is complete** for both register spaces at stride 16 (stride 8 in the two likely areas). Blocks shorter than 8 registers outside the fine-scanned ranges are the only thing that could still hide.
 3. **Unverified meanings** are marked inferred or unknown above. The 10 to 29 block, the 30 to 40 constants and most of the 6000 block need either the controller's decode (none exists for them) or a controlled change on the panel while watching the bus.
 4. **Register 64 scaling** by the controller is assumed from its float type; it has read 0 throughout.
 
 ## Data
 
 - `docs/scans/2026-09-17_holding_6000-6499.tsv`: the 6000 block scan.
-- `docs/scans/2026-09-17_input_0-103_partial.tsv`: input 0 to 103 read by the second master (identical to the poll).
+- `docs/scans/2026-09-17_holding_full.tsv`, `..._input_full.tsv`: the complete discovery run (fine ranges plus stride-16 sweeps), `..._holding_stride8.tsv`, `..._input_stride8.tsv`: stride-8 passes over 2300 to 2999 and 6275/6500 to 8191, `..._coil.tsv`, `..._discrete.tsv`: function codes 01 and 02 rejected.
 - February and March 2026 capture (5 h heating, 91 writes): `emonhp:/home/pi/modbus_capture_feb_mar.db`, old SQLite schema, replay with `modbus-sniffer changes --db`.
 - Continuous capture since 2026-09-16: hourly chunks on the Pi, daily files on the NAS under `/mnt/nas/modbus/YYYY/MM/`.
 - Controller parameter samples every 10 s since 2026-09-17 09:05: `emonhp:/var/tmp/params.jsonl`, matcher `tools/axen_param_match.py`.
