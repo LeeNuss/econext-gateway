@@ -316,6 +316,39 @@ The first five hits per rule are logged in full, after that one summary
 line a minute. The first alert also forces the open chunk to disk, at most
 once every five minutes, so the evidence is persisted immediately.
 
+### Register scan (polite second master)
+
+The wiring centre polls only 168 registers. To find what else the outdoor
+unit exposes, the sniffer can act as a second master: it transmits one read
+per idle gap, immediately after it has seen the heat pump answer the wiring
+centre, and never while a wiring centre request is unanswered. The gap is a
+steady 330 ms and a single block read completes in about 80 ms, so the two
+masters never overlap. Reads only. It stops itself if wiring centre requests
+start going unanswered, on CRC failures, or if the heat pump ignores it.
+
+The capture service holds the port, so stop it for the duration. The scan
+writes every frame it sees to the same cache, so nothing is lost:
+
+```bash
+sudo systemctl stop modbus-sniffer
+
+# 1. dry run: reports when a probe would go out, never transmits
+modbus-sniffer scan --dry-run --limit 20 -v --cache-dir /var/lib/modbus-sniffer/cache
+
+# 2. three real probes on registers the wiring centre reads anyway
+modbus-sniffer scan --type holding --ranges 2100-2114 --limit 3 -v --cache-dir /var/lib/modbus-sniffer/cache
+
+# 3. the real scan, a range at a time
+modbus-sniffer scan --type holding --ranges 6000-6499 --out /var/lib/modbus-sniffer/scan_holding_6xxx.tsv \
+    --cache-dir /var/lib/modbus-sniffer/cache
+
+sudo systemctl start modbus-sniffer
+```
+
+An illegal-address exception on a block is bisected, so the result lists
+exactly which addresses answer. About 2.5 probes a second, so a 500 register
+range with block 8 takes under a minute when most of it is absent.
+
 ### Analysis
 
 Chunk and daily files are gzip text, one frame per line

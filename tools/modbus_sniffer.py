@@ -638,6 +638,8 @@ class Capture:
         printer: ConsolePrinter | None = None,
         flush_interval: float = 300.0,
         serial_factory: Callable[..., serial.Serial] | None = None,
+        prober: "Prober | None" = None,
+        serial_timeout: float = 0.05,
     ):
         self.port = port
         self.baud = baud
@@ -647,6 +649,8 @@ class Capture:
         self.detector = detector
         self.decoder = Decoder(printer) if printer else None
         self.flush_interval = flush_interval
+        self.prober = prober
+        self.serial_timeout = serial_timeout
         self._serial_factory = serial_factory or self._open_serial
         self._gap = inter_frame_gap(baud)
         self._buf = bytearray()
@@ -665,7 +669,7 @@ class Capture:
             parity=parity_map.get(self.parity, serial.PARITY_NONE),
             stopbits=stop_map.get(self.stopbits, serial.STOPBITS_ONE),
             bytesize=serial.EIGHTBITS,
-            timeout=0.05,
+            timeout=self.serial_timeout,
         )
 
     def request_stop(self, *_args) -> None:
@@ -694,10 +698,14 @@ class Capture:
             if self._last_forced_flush is None or now - self._last_forced_flush >= self.flush_interval:
                 self._last_forced_flush = now
                 self.writer.rotate("alert")
+        if self.prober is not None:
+            self.prober.on_frame(frame, raw, time.monotonic())
 
     def run(self) -> None:
         self._running = True
         ser = self._serial_factory()
+        if self.prober is not None:
+            self.prober.attach(ser)
         log.info(
             "capturing %s at %d 8%s%d, cache %s, gap %.1fms",
             self.port,
@@ -715,6 +723,10 @@ class Capture:
                     if self._buf:
                         self._process_buffer()
                     self.writer.rotate("signal")
+                if self.prober is not None:
+                    self.prober.tick(time.monotonic())
+                    if self.prober.finished:
+                        break
                 try:
                     chunk = ser.read(ser.in_waiting or 1)
                 except KeyboardInterrupt:
@@ -742,6 +754,255 @@ class Capture:
                 self.writer.total_bad,
                 self.detector.alert_count,
             )
+
+
+# -- Polite second master (probe / scan) --------------------------------------
+
+
+def build_read_request(slave: int, fc: int, start: int, count: int) -> bytes:
+    payload = bytes([slave, fc]) + struct.pack(">HH", start, count)
+    return payload + struct.pack("<H", modbus_crc16(payload))
+
+
+class Prober:
+    """Transmits one request per idle gap on a bus that already has a master.
+
+    The wiring centre polls the heat pump in a rigid cycle: request, reply
+    after ~47 ms, then at least 330 ms of silence before its next request.
+    This class only ever transmits inside that silence, right after it has
+    seen the heat pump answer the wiring centre, and never while a wiring
+    centre request is still unanswered. One probe per gap, reads only by
+    default. It stops itself when the bus looks disturbed: wiring centre
+    requests going unanswered, CRC failures, or our own probes timing out.
+
+    Results reach the submitter's callback as ("ok", values),
+    ("exception", code), ("timeout", None) or ("dry", None).
+    """
+
+    def __init__(
+        self,
+        slave: int,
+        send_window: float = 0.08,
+        response_timeout: float = 0.2,
+        max_missed: int = 3,
+        max_bad_crc: int = 3,
+        max_timeouts: int = 5,
+        dry_run: bool = False,
+    ):
+        self.slave = slave
+        self.send_window = send_window
+        self.response_timeout = response_timeout
+        self.max_missed = max_missed
+        self.max_bad_crc = max_bad_crc
+        self.max_timeouts = max_timeouts
+        self.dry_run = dry_run
+        self.queue: deque[tuple[bytes, Callable]] = deque()
+        self.pending: dict | None = None
+        self.stopped = False
+        self.stop_reason: str | None = None
+        self.finished = False
+        self.stats = {"sent": 0, "ok": 0, "exception": 0, "timeout": 0, "wc_missed": 0, "bad_crc": 0, "dry": 0}
+        self.gap_samples: list[float] = []  # ms between exchange end and our send
+        self._ser = None
+        self._last_exchange_end: float | None = None
+        self._wc_unanswered: dict | None = None
+        self._missed_streak = 0
+        self._timeout_streak = 0
+        self._bad_window: deque[float] = deque()
+
+    def attach(self, ser) -> None:
+        self._ser = ser
+
+    def submit(self, raw_request: bytes, callback: Callable) -> None:
+        self.queue.append((raw_request, callback))
+
+    def stop(self, reason: str) -> None:
+        if not self.stopped:
+            self.stopped = True
+            self.stop_reason = reason
+            log.error("probe stopped: %s (stats %s)", reason, self.stats)
+        self.finished = True
+
+    def on_frame(self, frame: dict | None, raw: bytes, now: float) -> None:
+        if frame is None:
+            self._bad_window.append(now)
+            while self._bad_window and now - self._bad_window[0] > 60.0:
+                self._bad_window.popleft()
+            self.stats["bad_crc"] += 1
+            if len(self._bad_window) >= self.max_bad_crc:
+                self.stop("CRC failures on the bus while probing")
+            return
+        pending = self.pending
+        if pending is not None:
+            if raw == pending["raw"] and not pending["echoed"]:
+                pending["echoed"] = True  # our own transmission read back by the adapter
+                return
+            if self._wc_unanswered is None and is_response_to(frame, pending["req"]):
+                self.pending = None
+                self._timeout_streak = 0
+                if frame["is_error"]:
+                    self.stats["exception"] += 1
+                    pending["cb"](("exception", frame["data"][0] if frame["data"] else 0))
+                else:
+                    self.stats["ok"] += 1
+                    pending["cb"](("ok", decode_response(frame, {"data": pending["raw"][2:-2]}).get("values", [])))
+                return
+        if looks_like_request(frame):
+            if self._wc_unanswered is not None:
+                self.stats["wc_missed"] += 1
+                self._missed_streak += 1
+                log.warning("wiring centre request went unanswered (%d in a row)", self._missed_streak)
+                if self._missed_streak >= self.max_missed:
+                    self.stop("wiring centre requests going unanswered")
+            self._wc_unanswered = frame
+        else:
+            self._wc_unanswered = None
+            self._missed_streak = 0
+            self._last_exchange_end = now
+            self._maybe_send(now)
+
+    def _maybe_send(self, now: float) -> None:
+        if self.stopped or self.pending is not None or not self.queue or self._ser is None:
+            return
+        if self._last_exchange_end is None or now - self._last_exchange_end > self.send_window:
+            return
+        raw, cb = self.queue.popleft()
+        delay_ms = (now - self._last_exchange_end) * 1000
+        self.gap_samples.append(delay_ms)
+        if self.dry_run:
+            self.stats["dry"] += 1
+            log.info("dry run: would send %s %.0f ms after the exchange", raw.hex(), delay_ms)
+            cb(("dry", None))
+            return
+        self._ser.write(raw)
+        self.stats["sent"] += 1
+        req = {"slave_addr": raw[0], "function_code": raw[1], "data": raw[2:-2], "timestamp": time.time()}
+        self.pending = {"raw": raw, "req": req, "cb": cb, "sent": now, "echoed": False}
+        log.debug("probe sent %s %.0f ms after the exchange", raw.hex(), delay_ms)
+
+    def tick(self, now: float) -> None:
+        pending = self.pending
+        if pending is not None and now - pending["sent"] > self.response_timeout:
+            self.pending = None
+            self.stats["timeout"] += 1
+            self._timeout_streak += 1
+            log.warning("probe %s timed out", pending["raw"].hex())
+            pending["cb"](("timeout", None))
+            if self._timeout_streak >= self.max_timeouts:
+                self.stop("heat pump not answering our probes")
+
+
+class Scanner:
+    """Reads a register space in blocks through a Prober and records what
+    answers. An illegal-address exception on a block is bisected until
+    the present and absent registers are told apart."""
+
+    def __init__(
+        self,
+        prober: Prober,
+        slave: int,
+        fc: int,
+        ranges: list[tuple[int, int]],
+        block: int = 8,
+        retries: int = 2,
+        limit: int | None = None,
+    ):
+        self.prober = prober
+        self.slave = slave
+        self.fc = fc
+        self.block = block
+        self.retries = retries
+        self.limit = limit
+        self.todo: deque[tuple[int, int, int]] = deque()  # start, count, attempts
+        for lo, hi in ranges:
+            a = lo
+            while a <= hi:
+                c = min(block, hi - a + 1)
+                self.todo.append((a, c, 0))
+                a += c
+        self.total = sum(hi - lo + 1 for lo, hi in ranges)
+        self.done = 0
+        self.probes = 0
+        self.present: dict[int, int] = {}
+        self.absent: set[int] = set()
+        self.failed: list[tuple[int, int]] = []
+        self.unsupported = False
+        self.finished = False
+        self._last_progress = 0
+
+    def start(self) -> None:
+        self._next()
+
+    def _next(self) -> None:
+        if not self.todo or (self.limit is not None and self.probes >= self.limit):
+            self.finished = True
+            self.prober.finished = True
+            return
+        start, count, attempts = self.todo.popleft()
+        self.probes += 1
+        raw = build_read_request(self.slave, self.fc, start, count)
+        self.prober.submit(raw, lambda res, s=start, c=count, a=attempts: self._on_result(s, c, a, res))
+
+    def _on_result(self, start: int, count: int, attempts: int, res: tuple) -> None:
+        kind, payload = res
+        if kind == "ok":
+            for i, v in enumerate(payload):
+                self.present[start + i] = v
+            self.done += count
+        elif kind == "exception":
+            if payload == 1:
+                self.unsupported = True
+                log.error("function 0x%02X rejected as illegal function, stopping", self.fc)
+                self.todo.clear()
+            elif count > 1:
+                half = count // 2
+                self.todo.appendleft((start + half, count - half, 0))
+                self.todo.appendleft((start, half, 0))
+            else:
+                self.absent.add(start)
+                self.done += 1
+        elif kind == "timeout":
+            if attempts < self.retries:
+                self.todo.appendleft((start, count, attempts + 1))
+            else:
+                self.failed.append((start, count))
+                self.done += count
+        else:  # dry run
+            self.done += count
+        if self.done - self._last_progress >= 200 or not self.todo:
+            self._last_progress = self.done
+            log.info(
+                "scan fc=0x%02X: %d/%d registers, %d present, %d probes",
+                self.fc,
+                self.done,
+                self.total,
+                len(self.present),
+                self.probes,
+            )
+        self._next()
+
+    def write_results(self, path: Path) -> None:
+        with open(path, "w") as f:
+            head = f"slave={self.slave} fc=0x{self.fc:02X} probes={self.probes} present={len(self.present)}"
+            f.write(f"# modbus scan {head}\n")
+            f.write("address\tvalue\tsigned\thex\n")
+            for addr in sorted(self.present):
+                v = self.present[addr]
+                f.write(f"{addr}\t{v}\t{v - 65536 if v > 32767 else v}\t0x{v:04X}\n")
+            if self.failed:
+                f.write("# timed out blocks: " + ", ".join(f"{s}+{c}" for s, c in self.failed) + "\n")
+        log.info("wrote %s", path)
+
+
+def parse_ranges(text: str) -> list[tuple[int, int]]:
+    out = []
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        lo, _, hi = part.partition("-")
+        out.append((int(lo), int(hi) if hi else int(lo)))
+    return out
 
 
 # -- Database (import / analyze / export) ------------------------------------
@@ -1245,6 +1506,27 @@ def main():
     cap.add_argument("--flush-interval", type=float, default=300, help="Min seconds between alert-forced flushes")
     cap.add_argument("-v", "--verbose", action="store_true", help="Print decoded frames to the console")
 
+    scn = sub.add_parser("scan", help="Read-scan the heat pump's register space as a polite second master")
+    scn.add_argument("--port", default="/dev/heatpump", help="Serial port (stop the capture service first)")
+    scn.add_argument("--baud", type=int, default=9600)
+    scn.add_argument("--parity", choices=["N", "E"], default="N")
+    scn.add_argument("--stopbits", type=int, choices=[1, 2], default=2)
+    scn.add_argument("--slave", type=int, default=DEFAULT_EXPECTED_SLAVE)
+    scn.add_argument("--type", choices=["holding", "input"], default="holding", help="Register type to scan")
+    scn.add_argument(
+        "--ranges",
+        default="0-1023,1200-1299,2000-2299,6000-6499",
+        help="Address ranges, e.g. 0-511,6000-6499 (default: %(default)s)",
+    )
+    scn.add_argument("--block", type=int, default=8, help="Registers per read (default: 8)")
+    scn.add_argument("--limit", type=int, help="Stop after this many probes")
+    scn.add_argument("--dry-run", action="store_true", help="Never transmit, only report when a probe would go out")
+    scn.add_argument("--send-window", type=float, default=0.08, help="Max seconds after an exchange to transmit")
+    scn.add_argument("--response-timeout", type=float, default=0.2, help="Seconds to wait for the heat pump")
+    scn.add_argument("--out", help="Results TSV (default: scan_<type>_<time>.tsv)")
+    scn.add_argument("--cache-dir", default="modbus_cache", help="Chunk cache for the frames seen meanwhile")
+    scn.add_argument("-v", "--verbose", action="store_true")
+
     imp = sub.add_parser("import", help="Build a SQLite database from chunk or daily files")
     imp.add_argument("inputs", nargs="+", help="Chunk files, daily files, directories or globs")
     imp.add_argument("--db", default="modbus_import.db", help="Database path (default: modbus_import.db)")
@@ -1286,6 +1568,48 @@ def main():
         if not args.db and not args.inputs:
             chg.error("Give chunk files/directories or --db")
         cmd_changes(args)
+    elif args.command == "scan":
+        _setup_logging(args.verbose)
+        fc = FC_READ_HOLDING_REGISTERS if args.type == "holding" else FC_READ_INPUT_REGISTERS
+        prober = Prober(
+            args.slave,
+            send_window=args.send_window,
+            response_timeout=args.response_timeout,
+            dry_run=args.dry_run,
+        )
+        scanner = Scanner(prober, args.slave, fc, parse_ranges(args.ranges), block=args.block, limit=args.limit)
+        writer = ChunkWriter(
+            Path(args.cache_dir),
+            meta={"port": args.port, "baud": args.baud, "parity": args.parity, "stopbits": args.stopbits, "scan": 1},
+        )
+        capture = Capture(
+            args.port,
+            args.baud,
+            args.parity,
+            args.stopbits,
+            writer,
+            AnomalyDetector(expected_slave=args.slave),
+            printer=ConsolePrinter() if args.verbose else None,
+            prober=prober,
+            serial_timeout=0.02,
+        )
+        log.info(
+            "scan %s registers %s on slave %d, block %d, %s",
+            args.type,
+            args.ranges,
+            args.slave,
+            args.block,
+            "DRY RUN (never transmits)" if args.dry_run else "transmitting in idle gaps",
+        )
+        scanner.start()
+        capture.install_signal_handlers()
+        capture.run()
+        out = Path(args.out or f"scan_{args.type}_{time.strftime('%Y%m%d-%H%M%S')}.tsv")
+        scanner.write_results(out)
+        if prober.gap_samples:
+            gs = sorted(prober.gap_samples)
+            log.info("sent %.0f-%.0f ms after the exchange (median %.0f)", gs[0], gs[-1], gs[len(gs) // 2])
+        log.info("probe stats: %s%s", prober.stats, f", stopped: {prober.stop_reason}" if prober.stop_reason else "")
     elif args.command == "capture":
         _setup_logging(args.verbose)
         if args.auto_detect:

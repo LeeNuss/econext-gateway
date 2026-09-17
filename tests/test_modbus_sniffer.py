@@ -351,3 +351,136 @@ def test_capture_sigusr1_flush_and_stop(tmp_path: Path):
     files = sorted((tmp_path / "cache").rglob("*.gz"))
     assert len(files) == 2
     assert [len(list(sniffer.iter_chunk_records(f))) for f in files] == [1, 1]
+
+
+# -- polite second master ----------------------------------------------------
+
+
+def exception_resp(fc: int, code: int, slave: int = HP) -> bytes:
+    return frame(slave, fc | 0x80, bytes([code]))
+
+
+class FakeBus:
+    """A wiring centre polling input 0-9 every round, and a heat pump that
+    answers holding-register reads from `registers`, replies with exception
+    02 for blocks touching an absent address, and stays silent for `silent`
+    addresses. Our own transmissions are echoed back like an RS-485 adapter
+    does. Raises KeyboardInterrupt once `rounds` wiring-centre exchanges are
+    done."""
+
+    def __init__(self, registers: dict[int, int], rounds: int = 20, silent: set[int] | None = None, answer_wc=True):
+        self.registers = registers
+        self.rounds = rounds
+        self.silent = silent or set()
+        self.answer_wc = answer_wc
+        self.queue: list[bytes] = []
+        self.written: list[bytes] = []
+        self.closed = False
+
+    @property
+    def in_waiting(self) -> int:
+        return len(self.queue[0]) if self.queue and self.queue[0] else 0
+
+    def read(self, _n: int) -> bytes:
+        if not self.queue:
+            if self.rounds <= 0:
+                raise KeyboardInterrupt
+            self.rounds -= 1
+            self.queue = [read_req(0, 10), b""] + ([read_resp([1] * 10), b""] if self.answer_wc else [])
+        chunk = self.queue.pop(0)
+        if not chunk:
+            time.sleep(0.04)
+        return chunk
+
+    def write(self, raw: bytes) -> int:
+        self.written.append(raw)
+        slave, fc, start, count = raw[0], raw[1], *struct.unpack(">HH", raw[2:6])
+        reply: list[bytes] = [raw, b""]  # adapter echo
+        addrs = range(start, start + count)
+        if not any(a in self.silent for a in addrs):
+            if all(a in self.registers for a in addrs):
+                reply += [read_resp([self.registers[a] for a in addrs], fc=fc, slave=slave), b""]
+            else:
+                reply += [exception_resp(fc, 2, slave), b""]
+        self.queue = reply + self.queue
+        return len(raw)
+
+    def reset_input_buffer(self):
+        pass
+
+    def close(self):
+        self.closed = True
+
+
+def run_scan(bus: FakeBus, tmp_path: Path, ranges, block=8, dry_run=False, limit=None, **prober_kw):
+    prober = sniffer.Prober(HP, dry_run=dry_run, **prober_kw)
+    scanner = sniffer.Scanner(prober, HP, 0x03, ranges, block=block, limit=limit)
+    cap = sniffer.Capture(
+        "/dev/fake",
+        9600,
+        "N",
+        2,
+        sniffer.ChunkWriter(tmp_path / "cache"),
+        sniffer.AnomalyDetector(),
+        prober=prober,
+        serial_factory=lambda: bus,
+    )
+    scanner.start()
+    cap.run()
+    return prober, scanner
+
+
+def test_scan_reads_present_registers_and_bisects_absent_ones(tmp_path: Path):
+    bus = FakeBus({0: 10, 1: 11, 2: 12, 3: 13, 6: 16, 7: 17, 8: 18}, rounds=30)
+    prober, scanner = run_scan(bus, tmp_path, [(0, 8)])
+    assert scanner.finished and prober.finished
+    assert scanner.present == {0: 10, 1: 11, 2: 12, 3: 13, 6: 16, 7: 17, 8: 18}
+    assert scanner.absent == {4, 5}
+    # 0-7 (exc), 0-3, 4-7 (exc), 4-5 (exc), 4, 5, 6-7, 8
+    assert scanner.probes == 8 and prober.stats["sent"] == 8
+    assert prober.stats["ok"] == 3 and prober.stats["exception"] == 5 and prober.stats["timeout"] == 0
+    assert all(w[0] == HP and w[1] == 0x03 for w in bus.written)
+    out = tmp_path / "scan.tsv"
+    scanner.write_results(out)
+    lines = out.read_text().splitlines()
+    assert lines[2] == "0\t10\t10\t0x000A" and lines[-1] == "8\t18\t18\t0x0012"
+
+
+def test_prober_only_transmits_right_after_a_wiring_centre_response(tmp_path: Path):
+    bus = FakeBus({0: 1}, rounds=3)
+    prober, scanner = run_scan(bus, tmp_path, [(0, 0)], block=1)
+    assert len(bus.written) == 1
+    assert prober.gap_samples and max(prober.gap_samples) < 80  # ms after the exchange end
+    # our request went out between the wiring centre's response and its next request
+    seen = [r[1] for r in sniffer.iter_chunk_records(next((tmp_path / "cache").rglob("*.gz")))]
+    idx = seen.index(bus.written[0])
+    assert seen[idx - 1] == read_resp([1] * 10) and seen[idx + 1] == read_resp([1], fc=0x03)
+
+
+def test_prober_never_transmits_while_wiring_centre_waits_and_stops_on_missed_replies(tmp_path: Path):
+    bus = FakeBus({0: 1}, rounds=6, answer_wc=False)
+    prober, scanner = run_scan(bus, tmp_path, [(0, 7)])
+    assert bus.written == []
+    assert prober.stopped and "unanswered" in prober.stop_reason
+    assert prober.stats["wc_missed"] >= 3 and prober.stats["sent"] == 0
+    assert not scanner.present
+
+
+def test_prober_times_out_and_scanner_retries_then_gives_up(tmp_path: Path):
+    bus = FakeBus({0: 1, 1: 2}, rounds=40, silent={1})
+    prober, scanner = run_scan(bus, tmp_path, [(0, 1)], block=2, response_timeout=0.05)
+    assert prober.stats["timeout"] == 3  # first try plus two retries
+    assert scanner.failed == [(0, 2)] and not scanner.present
+    assert not prober.stopped
+
+
+def test_dry_run_never_writes_to_the_bus(tmp_path: Path):
+    bus = FakeBus({0: 1, 1: 2}, rounds=6)
+    prober, scanner = run_scan(bus, tmp_path, [(0, 15)], block=8, dry_run=True, limit=2)
+    assert bus.written == []
+    assert prober.stats == {"sent": 0, "ok": 0, "exception": 0, "timeout": 0, "wc_missed": 0, "bad_crc": 0, "dry": 2}
+    assert scanner.probes == 2 and scanner.finished
+
+
+def test_parse_ranges():
+    assert sniffer.parse_ranges("0-7, 100, 6000-6003") == [(0, 7), (100, 100), (6000, 6003)]
