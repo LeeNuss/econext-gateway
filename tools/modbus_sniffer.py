@@ -918,6 +918,8 @@ class WriteOp:
         self.before: int | None = None
         self.after: int | None = None
         self.outcome: str | None = None
+        self.write_reply: str | None = None
+        self._read_timeout = prober.response_timeout
 
     def start(self) -> None:
         self.prober.submit(build_read_request(self.slave, FC_READ_HOLDING_REGISTERS, self.address, 1), self._on_read)
@@ -946,12 +948,17 @@ class WriteOp:
         if self.before == self.value:
             self._finish("nothing to do, already holds the value")
             return
+        # The outdoor unit applies function 06 but was seen not to answer it
+        # within 200 ms, so wait longer and let the read-back decide.
+        self.prober.response_timeout = max(self._read_timeout, 1.0)
         self.prober.submit(build_write_request(self.slave, self.address, self.value), self._on_write)
 
     def _on_write(self, res: tuple) -> None:
         kind, payload = res
-        if kind != "ok":
-            self._finish(f"write rejected: {kind} {payload}")
+        self.prober.response_timeout = self._read_timeout
+        self.write_reply = kind
+        if kind == "exception":
+            self._finish(f"write rejected: exception {payload}")
             return
         self.prober.submit(
             build_read_request(self.slave, FC_READ_HOLDING_REGISTERS, self.address, 1), self._on_readback
@@ -961,7 +968,8 @@ class WriteOp:
         kind, payload = res
         if kind == "ok" and payload:
             self.after = payload[0]
-            self._finish("ok" if self.after == self.value else "written but reads back differently")
+            reply = "" if self.write_reply == "ok" else f" (no reply to the write, {self.write_reply})"
+            self._finish(("ok" if self.after == self.value else "written but reads back differently") + reply)
         else:
             self._finish(f"written, read back failed: {kind} {payload}")
 
@@ -1734,7 +1742,7 @@ def main():
         capture.install_signal_handlers()
         capture.run()
         log.info("probe stats: %s%s", prober.stats, f", stopped: {prober.stop_reason}" if prober.stop_reason else "")
-        if op.outcome != "ok":
+        if not (op.outcome or "").startswith("ok"):
             sys.exit(1)
     elif args.command == "scan":
         _setup_logging(args.verbose)

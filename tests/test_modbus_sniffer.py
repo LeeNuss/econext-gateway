@@ -575,3 +575,34 @@ def test_write_refuses_unexpected_current_value_and_rejections(tmp_path: Path):
     bus.registers.pop(7000)
     op, _ = run_write(bus, tmp_path, 7000, 5)
     assert op.outcome.startswith("aborted, read before failed: exception 2")
+
+
+def test_write_without_reply_is_confirmed_by_read_back(tmp_path: Path):
+    bus = FakeBus({6053: 850}, rounds=60)
+    real_write = bus.write
+
+    def quiet_write(raw):  # the unit applies the write but never answers it
+        if raw[1] == 0x06:
+            bus.written.append(raw)
+            bus.registers[6053] = struct.unpack(">H", raw[4:6])[0]
+            bus.queue = [raw, b""] + bus.queue
+            return len(raw)
+        return real_write(raw)
+
+    bus.write = quiet_write
+    prober = sniffer.Prober(HP, response_timeout=0.05)
+    op = sniffer.WriteOp(prober, HP, 6053, 800, 850, tmp_path / "writes.log")
+    cap = sniffer.Capture(
+        "/dev/fake",
+        9600,
+        "N",
+        2,
+        sniffer.ChunkWriter(tmp_path / "cache"),
+        sniffer.AnomalyDetector(),
+        prober=prober,
+        serial_factory=lambda: bus,
+    )
+    op.start()
+    cap.run()
+    assert op.outcome == "ok (no reply to the write, timeout)"
+    assert op.after == 800 and prober.response_timeout == 0.05
