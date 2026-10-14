@@ -3,7 +3,27 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.3.0b1] - 2026-10-14
+
+### Fixed
+
+- Re-pairing the virtual thermostat at runtime no longer needs a gateway
+  restart. The serial RX whitelist kept the old address, so every panel poll
+  to the new one was dropped and the circuit's thermostat temperature read
+  0.0 until the next restart.
+- The gateway can re-register at a new address while a virtual thermostat is
+  paired. The RX whitelist used to drop every scanning IDENTIFY probe in that
+  case, so registration never happened.
+
+### Changed
+
+- The gateway and the virtual thermostat identify as "ecoNEXT gateway" on the
+  bus instead of using the controller vendor's name. The thermostat keeps the
+  `ecoSTER_40` model and class `03`, which the panel requires. Existing
+  pairings keep working.
+- Steady-state operation is quiet in the journal at INFO: lock hold times,
+  the periodic alarm read, thermostat submissions from Home Assistant and
+  uvicorn access lines moved to DEBUG.
 
 ### Added
 
