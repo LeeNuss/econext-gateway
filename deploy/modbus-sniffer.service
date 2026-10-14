@@ -1,0 +1,23 @@
+[Unit]
+Description=Modbus RTU bus sniffer (passive capture to local cache)
+After=dev-heatpump.device
+BindsTo=dev-heatpump.device
+
+[Service]
+Type=simple
+User=pi
+# /var/lib/modbus-sniffer, created and owned for the service user by systemd.
+# Holds the hourly chunk cache and alerts.log. The NAS is never touched here;
+# modbus-sniffer-ship.timer moves finished days over once a day.
+StateDirectory=modbus-sniffer
+EnvironmentFile=-/etc/default/modbus-sniffer
+ExecStartPre=+/bin/bash -c 'DEV=$(readlink -f /dev/heatpump); TTYNAME=$(basename $DEV); echo 1 > /sys/bus/usb-serial/devices/$TTYNAME/latency_timer'
+ExecStart=/opt/modbus-sniffer/.venv/bin/python /opt/modbus-sniffer/modbus_sniffer.py capture --port /dev/heatpump --baud 9600 --stopbits 2 --parity N --cache-dir /var/lib/modbus-sniffer/cache --alerts /var/lib/modbus-sniffer/alerts.log
+# SIGTERM flushes the open chunk before exit; SIGUSR1 flushes and continues.
+KillSignal=SIGTERM
+TimeoutStopSec=20
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

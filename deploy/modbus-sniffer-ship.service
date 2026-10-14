@@ -1,0 +1,12 @@
+[Unit]
+Description=Ship Modbus sniffer chunks to the NAS
+# The only unit that touches the NAS share. Pulls the mount in if needed.
+RequiresMountsFor=/mnt/nas/modbus
+
+[Service]
+Type=oneshot
+User=pi
+Environment=SNIFFER_STATE=/var/lib/modbus-sniffer
+Environment=SNIFFER_DEST=/mnt/nas/modbus
+ExecStart=/opt/modbus-sniffer/modbus-sniffer-ship.sh
+TimeoutStartSec=10min

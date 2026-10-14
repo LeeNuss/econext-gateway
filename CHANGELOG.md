@@ -3,6 +3,22 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- Modbus RTU bus sniffer for the wiring centre to outdoor unit link
+  (`tools/modbus_sniffer.py`, `deploy/install-sniffer.sh`): continuous
+  capture into hourly gzipped chunks with a once-a-day ship to the NAS,
+  anomaly alerts, a polite second master that reads and writes outdoor
+  unit registers in the bus's idle gaps, register discovery scans, and an
+  import/analyze/changes toolchain. See `docs/HEATPUMP_MODBUS.md`.
+- Register map of the Grant Aerona R290 (Axen) outdoor unit with the
+  controller's own limits (`docs/MODBUS_REGISTER_MAP.md`, `docs/scans/`).
+  Holding 6053 is the fan speed maximum.
+- `tools/axen_param_match.py`: matches the controller's decoded heat pump
+  parameters to its raw `AXEN_REGISTER_*` copies.
+
 ## [0.2.0] - 2026-08-16
 
 First stable release since 0.1.0-beta.2. Everything below shipped through the

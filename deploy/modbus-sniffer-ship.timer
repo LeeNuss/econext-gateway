@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily NAS ship of Modbus sniffer chunks (02:05 local, inside the NAS write window)
+
+[Timer]
+OnCalendar=*-*-* 02:05:00
+# Never run a missed ship outside the window; the cache keeps the days.
+Persistent=false
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
