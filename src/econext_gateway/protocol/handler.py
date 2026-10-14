@@ -164,7 +164,7 @@ UNIT_STRING_MAP = {
     "kWh": 8,
 }
 
-SENSOR_DISCONNECTED = 999.0  # Plum sentinel for a missing temperature sensor
+SENSOR_DISCONNECTED = 999.0  # controller sentinel for a missing temperature sensor
 
 
 def _is_temp_param(name: str) -> bool:
@@ -721,10 +721,9 @@ class ProtocolHandler:
         """Acquire self._lock and record contention as an operational signal.
 
         Emits LOCK_WAIT at INFO only when a caller is blocked more than
-        200 ms (meaningful contention) and LOCK_HELD at INFO only when a
-        critical section takes more than 1 s (unusual — anything shorter
-        is routine bus turnaround). Below those thresholds the events go
-        to DEBUG so steady-state operation is quiet.
+        200 ms (meaningful contention). LOCK_HELD is always DEBUG: the
+        full parameter poll legitimately holds the lock for several
+        seconds every cycle, so hold time is not a signal on its own.
         """
         wait_start = _time.monotonic()
         prior_holder = self._lock_holder
@@ -750,10 +749,7 @@ class ProtocolHandler:
             yield
         finally:
             held_ms = (_time.monotonic() - held_start) * 1000
-            if held_ms > 1000.0:
-                logger.info("LOCK_HELD name=%s held=%.0fms", name, held_ms)
-            else:
-                logger.debug("LOCK_HELD name=%s held=%.0fms", name, held_ms)
+            logger.debug("LOCK_HELD name=%s held=%.0fms", name, held_ms)
             self._lock_holder = None
             self._lock.release()
 
@@ -1996,7 +1992,7 @@ class ProtocolHandler:
 
         alarms.sort(key=lambda a: a.from_date, reverse=True)
         self._alarms = alarms
-        logger.info("Read %d alarms from controller", len(alarms))
+        logger.debug("Read %d alarms from controller", len(alarms))
         return alarms
 
     @staticmethod

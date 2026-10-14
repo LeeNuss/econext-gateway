@@ -14,6 +14,10 @@ from econext_gateway.core.cache import ParameterCache
 from econext_gateway.core.config import Settings, setup_logging
 from econext_gateway.core.models import HealthResponse
 from econext_gateway.core.virtual_thermostat import VirtualThermostat
+from econext_gateway.protocol.constants import (
+    CLAIMABLE_ADDRESS_RANGE,
+    THERMOSTAT_CLAIMABLE_ADDRESS_RANGE,
+)
 from econext_gateway.protocol.handler import ProtocolHandler
 from econext_gateway.serial.connection import GM3SerialTransport
 from econext_gateway.thermostat.emulator import ThermostatEmulator
@@ -27,6 +31,31 @@ def _load_address(path: Path) -> int | None:
         return int(path.read_text().strip())
     except (FileNotFoundError, ValueError):
         return None
+
+
+def rx_whitelist(
+    gateway_addr: int | None,
+    thermostat_addr: int | None,
+    thermostat_enabled: bool,
+) -> set[int] | None:
+    """Destinations the serial layer keeps; None means no filtering.
+
+    Only frames addressed to our devices are queued so the frame queue stays
+    shallow for fast thermostat responses (panel broadcasts are always kept by
+    the protocol). A device without a persisted address must still see the
+    panel's scanning IDENTIFY probes to claim one, so its whole claimable
+    range is let through until the next restart persists the address.
+    """
+    keep: set[int] = set()
+    if gateway_addr:
+        keep.add(gateway_addr)
+    else:
+        keep.update(CLAIMABLE_ADDRESS_RANGE)
+    if thermostat_addr:
+        keep.add(thermostat_addr)
+    elif thermostat_enabled:
+        keep.update(THERMOSTAT_CLAIMABLE_ADDRESS_RANGE)
+    return keep or None
 
 
 @asynccontextmanager
@@ -63,20 +92,15 @@ async def lifespan(app: FastAPI):
             logger.info("Thermostat emulator active at address %d", thermostat_addr)
         else:
             logger.info("Thermostat emulator created, will auto-register during pairing")
-    # Whitelist: only queue frames addressed to our devices. All other bus
-    # traffic (ecoNET300, controller↔panel, broadcast polls) is dropped at
-    # the protocol level to keep the frame queue shallow for fast thermostat
-    # response. Panel broadcasts (dst=65535) are always kept for device table.
     gateway_addr = _load_address(settings.paired_address_file)
-    our_addresses: set[int] = set()
-    if gateway_addr:
-        our_addresses.add(gateway_addr)  # gateway (e.g. 114)
-    if thermostat_emulator and thermostat_emulator.address:
-        our_addresses.add(thermostat_emulator.address)  # virtual thermostat (e.g. 164)
     app_state.connection = GM3SerialTransport(
         port=settings.serial_port,
         baudrate=settings.serial_baud,
-        keep_destinations=our_addresses or None,  # None = no filtering
+        keep_destinations=rx_whitelist(
+            gateway_addr,
+            thermostat_emulator.address if thermostat_emulator else None,
+            thermostat_emulator is not None,
+        ),
     )
     app_state.handler = ProtocolHandler(
         connection=app_state.connection,

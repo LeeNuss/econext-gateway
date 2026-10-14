@@ -66,3 +66,7 @@ def setup_logging(level: str = "INFO") -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
         stream=sys.stderr,
     )
+    # Home Assistant polls several endpoints every few seconds; one access
+    # line per request is noise in the journal unless debugging.
+    if numeric_level > logging.DEBUG:
+        logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
