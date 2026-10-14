@@ -47,6 +47,16 @@ class GM3SerialTransport:
     def connected(self) -> bool:
         return self._protocol is not None and self._protocol.connected
 
+    def keep_destination(self, address: int) -> None:
+        """Also queue frames addressed to an address claimed at runtime.
+
+        The whitelist set is shared by reference with the current protocol
+        and handed to every protocol created on reconnect, so adding to it
+        takes effect immediately and survives reconnects.
+        """
+        if self._keep_destinations is not None:
+            self._keep_destinations.add(address)
+
     # -- connect / disconnect -------------------------------------------------
 
     async def connect(self) -> bool:

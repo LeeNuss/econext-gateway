@@ -183,6 +183,10 @@ class FakeTransport:
 
     def __init__(self, protocol: FakeProtocol | None = None):
         self._protocol = protocol or FakeProtocol()
+        self.kept_destinations: list[int] = []
+
+    def keep_destination(self, address: int) -> None:
+        self.kept_destinations.append(address)
 
     @property
     def protocol(self) -> FakeProtocol:
@@ -928,6 +932,8 @@ class TestThermostatRegistration:
         assert emulator.address == 165
         assert thermo_file.exists()
         assert thermo_file.read_text().strip() == "165"
+        # Panel polls to the new address must get past the RX whitelist
+        assert fake_conn.kept_destinations == [165]
 
         # Should have written SERVICE_ANS twice: once for beacon, once for ACK
         service_ans = [w for w in fake_proto._writes if w.command == Command.SERVICE_RESPONSE]
