@@ -283,3 +283,17 @@ class TestGM3SerialTransport:
                 assert transport.connected is True
 
             mock_transport.close.assert_called_once()
+
+    def test_keep_destination_reaches_live_protocol(self):
+        """Runtime re-pair: regression for 164 -> 166 where the startup
+        whitelist {114, 164} dropped every panel poll to 166."""
+        transport = GM3SerialTransport("/dev/ttyUSB0", keep_destinations={114, 164})
+        live = GM3Protocol(keep_destinations=transport._keep_destinations)
+        transport.keep_destination(166)
+        assert 166 in live._keep_destinations
+        assert 166 in transport._keep_destinations
+
+    def test_keep_destination_without_whitelist_stays_unfiltered(self):
+        transport = GM3SerialTransport("/dev/ttyUSB0", keep_destinations=None)
+        transport.keep_destination(166)
+        assert transport._keep_destinations is None

@@ -1385,6 +1385,10 @@ class ProtocolHandler:
             self._thermostat.address = assigned_addr
             self._thermostat_reg_state = "paired"
             self._save_thermostat_address(assigned_addr)
+            # The RX whitelist was built at startup from the old address;
+            # without this the panel's polls to the new one are dropped
+            # until the next restart.
+            self._connection.keep_destination(assigned_addr)
             await asyncio.sleep(0.02)
             ack = Frame(
                 destination=PANEL_ADDRESS,
