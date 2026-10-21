@@ -698,6 +698,49 @@ class TestProtocolHandler:
         assert cached.value == 65
 
     @pytest.mark.asyncio
+    async def test_write_panel_param_uses_wire_index_and_panel_destination(self):
+        """Panel cache offsets must not be sent as physical parameter indices."""
+        handler, conn, cache = self._make_handler()
+
+        handler._param_structs = {
+            10023: ParamStructEntry(
+                index=10023,
+                name="currentWebPage",
+                unit=0,
+                type_code=DataType.UINT16,
+                writable=True,
+            ),
+        }
+        await cache.set(
+            Parameter(
+                index=10023,
+                name="currentWebPage",
+                value=729,
+                type=DataType.UINT16,
+                unit=0,
+                writable=True,
+            )
+        )
+
+        handler._wait_for_token = AsyncMock()
+        handler.send_and_receive = AsyncMock(
+            return_value=self._response_frame(Command.MODIFY_PARAM_RESPONSE)
+        )
+
+        result = await handler.write_param("currentWebPage", 696)
+
+        assert result is True
+        handler.send_and_receive.assert_awaited_once_with(
+            Command.MODIFY_PARAM,
+            build_modify_param_request(23, 696, DataType.UINT16),
+            expected_response=Command.MODIFY_PARAM_RESPONSE,
+            destination=PANEL_ADDRESS,
+        )
+        cached = await cache.get(10023)
+        assert cached is not None
+        assert cached.value == 696
+
+    @pytest.mark.asyncio
     async def test_write_param_not_found(self):
         """Test writing nonexistent parameter raises error."""
         handler, conn, cache = self._make_handler()
