@@ -147,6 +147,37 @@ class ParameterSetRequest(BaseModel):
     model_config = ConfigDict(json_schema_extra={"example": {"value": 50}})
 
 
+class ParametersSetRequest(BaseModel):
+    """Request model for POST /api/parameters (batch write)."""
+
+    values: dict[str, Any] = Field(
+        ...,
+        min_length=1,
+        max_length=64,
+        description="Parameter name to new value, written in order under one bus token",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={"example": {"values": {"HDWTSetPoint": 50, "HDWusermode": 1}}}
+    )
+
+
+class ParameterWriteResult(BaseModel):
+    """Outcome of one write within a batch."""
+
+    success: bool = Field(..., description="Controller acknowledged the write")
+    old_value: Any = Field(..., description="Value before the write")
+    new_value: Any = Field(..., description="Requested value")
+
+
+class ParametersSetResponse(BaseModel):
+    """Response model for POST /api/parameters (batch write)."""
+
+    success: bool = Field(..., description="True if every write was acknowledged")
+    results: dict[str, ParameterWriteResult] = Field(..., description="Per-parameter outcome")
+    timestamp: datetime = Field(default_factory=datetime.now, description="Operation timestamp")
+
+
 class ParameterSetResponse(BaseModel):
     """Response model for successful parameter set operation."""
 

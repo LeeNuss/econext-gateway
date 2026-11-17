@@ -2,6 +2,7 @@
 
 import logging
 from datetime import datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -15,6 +16,9 @@ from econext_gateway.core.models import (
     ParameterSetRequest,
     ParameterSetResponse,
     ParametersResponse,
+    ParametersSetRequest,
+    ParametersSetResponse,
+    ParameterWriteResult,
     ThermostatStatusResponse,
     ThermostatSubmitRequest,
     ThermostatSubmitResponse,
@@ -54,6 +58,56 @@ async def get_parameters(
     return ParametersResponse(
         timestamp=cache.last_update or datetime.now(),
         parameters=parameters_dict,
+    )
+
+
+@router.post(
+    "/parameters",
+    response_model=ParametersSetResponse,
+    responses={
+        400: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+)
+async def set_parameters(
+    request: ParametersSetRequest,
+    cache: ParameterCache = Depends(get_cache),
+    handler: ProtocolHandler = Depends(get_handler),
+):
+    """Set several parameter values in one bus token hold.
+
+    All values are validated first; any unknown name (404) or invalid
+    value (400) rejects the batch with nothing written. Once sent, each
+    write is reported individually, so a partial failure still returns
+    200 with ``success: false`` and the per-parameter results.
+    """
+    if not handler.connected:
+        raise HTTPException(status_code=503, detail="Controller not connected")
+
+    old_values: dict[str, Any] = {}
+    for name in request.values:
+        param = await cache.get_by_name(name)
+        if param is None:
+            raise HTTPException(status_code=404, detail=f"Parameter not found: {name}")
+        old_values[name] = param.value
+
+    try:
+        acked = await handler.write_params(request.values)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+
+    results = {
+        name: ParameterWriteResult(
+            success=acked.get(name, False),
+            old_value=old_values[name],
+            new_value=value,
+        )
+        for name, value in request.values.items()
+    }
+    return ParametersSetResponse(
+        success=all(r.success for r in results.values()),
+        results=results,
     )
 
 

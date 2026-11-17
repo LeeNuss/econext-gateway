@@ -972,6 +972,112 @@ class TestProtocolHandler:
         assert return_token_called is True
         assert handler._has_token is False
 
+    async def _seed_writable(self, handler, cache, names: list[str]) -> None:
+        """Register writable INT16 params 0..n-1 with range 0-1000."""
+        handler._param_structs = {
+            i: ParamStructEntry(
+                index=i,
+                name=name,
+                unit=0,
+                type_code=DataType.INT16,
+                writable=True,
+                min_value=0.0,
+                max_value=1000.0,
+            )
+            for i, name in enumerate(names)
+        }
+        for i, name in enumerate(names):
+            await cache.set(
+                Parameter(index=i, name=name, value=1, type=2, unit=0, writable=True)
+            )
+
+    async def _ack_writes(self, handler, count: int, skip: set[int] = frozenset()) -> None:
+        """Ack each MODIFY_PARAM as it goes pending, leaving `skip` unanswered."""
+        for i in range(count):
+            while handler._pending_request is None:
+                await asyncio.sleep(0.001)
+            pending = handler._pending_request
+            if i not in skip:
+                await handler._route_inbound(
+                    self._response_frame(Command.MODIFY_PARAM_RESPONSE)
+                )
+            while handler._pending_request is pending:
+                await asyncio.sleep(0.001)
+
+    @pytest.mark.asyncio
+    async def test_write_params_single_token_hold(self):
+        """A batch waits for the token once and writes every value under it."""
+        handler, conn, cache = self._make_handler()
+        await self._seed_writable(handler, cache, ["A", "B", "C"])
+
+        token_waits = 0
+        token_returns = 0
+
+        async def mock_wait_for_token():
+            nonlocal token_waits
+            token_waits += 1
+            handler._has_token = True
+
+        async def mock_return_token():
+            nonlocal token_returns
+            token_returns += 1
+            handler._has_token = False
+
+        handler._wait_for_token = mock_wait_for_token
+        handler._return_token = mock_return_token
+
+        results, _ = await asyncio.gather(
+            handler.write_params({"A": 10, "B": 20, "C": 30}),
+            self._ack_writes(handler, 3),
+        )
+
+        assert results == {"A": True, "B": True, "C": True}
+        assert token_waits == 1
+        assert token_returns == 1
+        assert conn.protocol.write_frame.await_count == 3
+        sent_indices = [
+            struct.unpack("<H", call.args[0].data[15:17])[0]
+            for call in conn.protocol.write_frame.await_args_list
+        ]
+        assert sent_indices == [0, 1, 2]
+        assert [(await cache.get(i)).value for i in range(3)] == [10, 20, 30]
+
+    @pytest.mark.asyncio
+    async def test_write_params_partial_failure(self):
+        """An unacked write is reported and does not stop the rest."""
+        handler, conn, cache = self._make_handler()
+        await self._seed_writable(handler, cache, ["A", "B", "C"])
+
+        results, _ = await asyncio.gather(
+            handler.write_params({"A": 10, "B": 20, "C": 30}),
+            self._ack_writes(handler, 3, skip={1}),
+        )
+
+        assert results == {"A": True, "B": False, "C": True}
+        assert (await cache.get(0)).value == 10
+        assert (await cache.get(1)).value == 1
+        assert (await cache.get(2)).value == 30
+
+    @pytest.mark.asyncio
+    async def test_write_params_validates_before_sending(self):
+        """One invalid value rejects the whole batch with nothing sent."""
+        handler, conn, cache = self._make_handler()
+        await self._seed_writable(handler, cache, ["A", "B"])
+
+        with pytest.raises(ValueError, match="above maximum"):
+            await handler.write_params({"A": 10, "B": 5000})
+
+        conn.protocol.write_frame.assert_not_awaited()
+        assert (await cache.get(0)).value == 1
+
+    @pytest.mark.asyncio
+    async def test_write_params_empty(self):
+        """An empty batch is a no-op."""
+        handler, conn, cache = self._make_handler()
+
+        assert await handler.write_params({}) == {}
+        conn.protocol.write_frame.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_build_modify_param_auth_header(self):
         """Test that auth header matches original webserver format."""

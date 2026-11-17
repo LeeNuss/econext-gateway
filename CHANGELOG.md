@@ -3,6 +3,16 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- `POST /api/parameters` writes several parameters in one bus token hold.
+  Values are validated up front, so a bad entry rejects the batch with
+  nothing written, and each write is reported individually. Copying a
+  schedule day to the rest of the week drops from about 12 token waits to
+  one.
+
 ## [0.3.0b1] - 2026-10-14
 
 ### Fixed
