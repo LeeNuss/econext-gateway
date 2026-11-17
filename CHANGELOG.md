@@ -12,6 +12,15 @@ All notable changes to this project are documented here. The format follows
   nothing written, and each write is reported individually. Copying a
   schedule day to the rest of the week drops from about 12 token waits to
   one.
+- `/health` reports `parameters_ready`.
+
+### Fixed
+
+- `GET /api/parameters` returns 503 until the first full poll after startup
+  has finished, instead of a partly filled cache. Home Assistant starting
+  during that window created only the entities whose parameters had loaded
+  so far (schedules went missing) until the integration was reloaded; it now
+  retries setup until the full set is there.
 
 ## [0.3.0b1] - 2026-10-14
 

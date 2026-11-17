@@ -205,16 +205,19 @@ async def health():
         return HealthResponse(
             status="unhealthy",
             controller_connected=False,
+            parameters_ready=False,
             parameters_count=0,
             last_update=None,
         )
 
     connected = handler.connected
-    status = "healthy" if connected and cache.count > 0 else ("degraded" if connected else "unhealthy")
+    ready = handler.params_ready
+    status = "healthy" if connected and ready else ("degraded" if connected else "unhealthy")
 
     return HealthResponse(
         status=status,
         controller_connected=connected,
+        parameters_ready=ready,
         parameters_count=cache.count,
         last_update=cache.last_update,
     )

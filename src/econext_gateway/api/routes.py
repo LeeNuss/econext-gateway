@@ -36,9 +36,15 @@ async def get_parameters(
     cache: ParameterCache = Depends(get_cache),
     handler: ProtocolHandler = Depends(get_handler),
 ):
-    """Get all cached parameter values."""
+    """Get all cached parameter values.
+
+    Returns 503 until the first full poll after startup has finished, so
+    clients never mistake a half-filled cache for the full parameter set.
+    """
     if not handler.connected:
         raise HTTPException(status_code=503, detail="Controller not connected")
+    if not handler.params_ready:
+        raise HTTPException(status_code=503, detail="Parameters still loading")
 
     params = await cache.get_all()
 

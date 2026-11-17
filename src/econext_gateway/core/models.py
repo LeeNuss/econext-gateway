@@ -281,6 +281,7 @@ class HealthResponse(BaseModel):
 
     status: str = Field(..., description="Health status (healthy/degraded/unhealthy)")
     controller_connected: bool = Field(..., description="Whether controller is connected")
+    parameters_ready: bool = Field(False, description="Whether the first full poll has filled the cache")
     parameters_count: int = Field(..., ge=0, description="Number of cached parameters")
     last_update: datetime | None = Field(None, description="Last successful update timestamp")
 
@@ -289,6 +290,7 @@ class HealthResponse(BaseModel):
             "example": {
                 "status": "healthy",
                 "controller_connected": True,
+                "parameters_ready": True,
                 "parameters_count": 1786,
                 "last_update": "2026-01-13T10:30:00",
             }

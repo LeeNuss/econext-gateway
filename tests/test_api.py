@@ -28,6 +28,7 @@ def mock_app_state():
 
     handler = MagicMock(spec=ProtocolHandler)
     handler.connected = True
+    handler.params_ready = True
 
     app_state.connection = conn
     app_state.cache = cache
@@ -94,12 +95,15 @@ class TestHealthEndpoint:
         assert data["parameters_count"] == 1
 
     def test_health_connected_no_params(self, client, mock_app_state):
-        """Test health when connected but no params yet."""
+        """Test health when connected but the first poll has not finished."""
+        mock_app_state["handler"].params_ready = False
+
         response = client.get("/health")
 
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "degraded"
+        assert data["parameters_ready"] is False
 
     def test_health_disconnected(self, client, mock_app_state):
         """Test health when disconnected."""
@@ -115,6 +119,15 @@ class TestHealthEndpoint:
 
 class TestGetParameters:
     """Tests for GET /api/parameters endpoint."""
+
+    def test_get_parameters_while_loading(self, client, mock_app_state):
+        """A half-filled cache is never served as the parameter set."""
+        mock_app_state["handler"].params_ready = False
+
+        response = client.get("/api/parameters")
+
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Parameters still loading"
 
     def test_get_parameters_empty(self, client, mock_app_state):
         """Test getting parameters when cache is empty."""

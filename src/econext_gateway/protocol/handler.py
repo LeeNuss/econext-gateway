@@ -656,6 +656,10 @@ class ProtocolHandler:
         self._tentative_since: float | None = None
 
         self._param_structs: dict[int, ParamStructEntry] = {}
+        # Set once a full poll has filled the cache. Until then the cache
+        # holds only part of the parameter set, and clients that build their
+        # entities from it (Home Assistant) would silently miss the rest.
+        self._params_ready = False
         self._total_params: int = 0
         self._alarms: list[Alarm] = []
         self._device_table: list[DeviceTableEntry] = []
@@ -939,6 +943,11 @@ class ProtocolHandler:
     def connected(self) -> bool:
         """Whether the serial connection is active."""
         return self._connection.connected
+
+    @property
+    def params_ready(self) -> bool:
+        """True once the first full poll has populated the parameter cache."""
+        return self._params_ready
 
     @property
     def param_count(self) -> int:
@@ -2423,6 +2432,9 @@ class ProtocolHandler:
 
                     current_pos = max(new_pos, current_pos + 1)
 
+                if total_read and not self._params_ready:
+                    self._params_ready = True
+                    logger.info("Parameter cache ready (%d parameters)", total_read)
                 return total_read
             finally:
                 if self._has_token:

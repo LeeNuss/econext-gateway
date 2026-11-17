@@ -22,6 +22,11 @@ All requests and responses use `application/json`.
 
 Get all parameters from the heat pump controller.
 
+Returns `503 Service Unavailable` with `"detail": "Parameters still loading"`
+until the first full poll after startup has finished (about 15s), and while
+the controller is not connected. Clients should retry rather than treat a
+partial parameter set as complete.
+
 **Response:**
 
 ```json
@@ -218,10 +223,15 @@ Check if the API server is running.
 ```json
 {
   "status": "healthy",
-  "uptime": 12345,
-  "controller_connected": true
+  "controller_connected": true,
+  "parameters_ready": true,
+  "parameters_count": 1766,
+  "last_update": "2026-11-17T14:00:00"
 }
 ```
+
+`status` is `healthy` when connected and the first full poll has finished,
+`degraded` when connected but still loading, `unhealthy` when disconnected.
 
 **Status Codes:**
 

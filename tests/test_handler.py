@@ -1247,6 +1247,8 @@ class TestProtocolHandler:
             await asyncio.sleep(0.01)
             await handler._route_inbound(response_frame)
 
+        assert handler.params_ready is False
+
         total, _ = await asyncio.gather(
             handler.poll_all_params(),
             deliver(),
@@ -1254,6 +1256,7 @@ class TestProtocolHandler:
 
         assert total == 2
         assert cache.count == 2
+        assert handler.params_ready is True
 
     @pytest.mark.asyncio
     async def test_poll_all_params_partial_response(self):
