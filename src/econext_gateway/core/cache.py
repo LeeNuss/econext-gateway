@@ -26,12 +26,22 @@ class ParameterCache:
             return self._parameters.get(str(index))
 
     async def get_by_name(self, name: str) -> Parameter | None:
-        """Get parameter by name (returns first match)."""
+        """Get parameter by name.
+
+        Some names exist more than once (PS and HV in both the regulator and
+        the panel space, Circuit2BaseTemp at 311 and 785). The lowest index
+        wins, so the regulator copy is picked regardless of cache order.
+        Use ``resolve`` with the index to reach any other copy.
+        """
         async with self._lock:
-            for param in self._parameters.values():
-                if param.name == name:
-                    return param
-            return None
+            matches = [p for p in self._parameters.values() if p.name == name]
+            return min(matches, key=lambda p: p.index) if matches else None
+
+    async def resolve(self, key: str) -> Parameter | None:
+        """Get parameter by index (all digits, e.g. "10013") or by name."""
+        if key.isdigit():
+            return await self.get(int(key))
+        return await self.get_by_name(key)
 
     async def get_all(self) -> dict[str, Parameter]:
         """Get all cached parameters keyed by index (as string)."""

@@ -3,6 +3,25 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- Writes accept a parameter index (a digit string such as `10013`) wherever
+  they take a name, in `POST /api/parameters/{name}` and as keys of
+  `POST /api/parameters`. This is the only way to reach the second copy of a
+  name that exists twice, such as the panel's `FN` or `Circuit2BaseTemp` at 785.
+
+### Fixed
+
+- Writes to panel parameters (index 10000 and up) go to the panel with the
+  wire index, instead of to the controller with the cache index, which never
+  acknowledged them. Thanks to wsjoanna222 (#10).
+- A name that exists at several indices now always resolves to the lowest
+  one. Before, it depended on cache order.
+- The Docker image builds again: `README.md` is copied in for the package
+  metadata (#10).
+
 ## [0.3.0b2] - 2026-11-17
 
 ### Added

@@ -106,8 +106,9 @@ a batch waits once and sends the MODIFY_PARAM frames back to back.
 
 **Request Fields:**
 
-- `values` (object): Parameter name to new value, 1 to 64 entries, written in
-  the given order
+- `values` (object): Parameter name or index to new value, 1 to 64 entries,
+  written in the given order. See the note on duplicate names under
+  `POST /api/parameters/{name}`.
 
 **Response:**
 
@@ -144,7 +145,14 @@ Set a parameter value.
 
 **Path Parameters:**
 
-- `name` (string): Parameter name (e.g., `HDWTSetPoint`, `OutsideTemp`)
+- `name` (string): Parameter name (e.g., `HDWTSetPoint`, `OutsideTemp`), or
+  its index as a digit string (e.g., `10013`)
+
+Some names exist at more than one index: `PS`, `HV` and `FN` in both the
+regulator and the panel (10000+) space, and a few regulator ones such as
+`Circuit2BaseTemp` (311 and 785). A name always resolves to its lowest index.
+Use the index from `GET /api/parameters` to write any other copy. Panel
+parameters are sent to the panel (address 100) with the 10000 offset removed.
 
 **Request Body:**
 

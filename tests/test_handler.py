@@ -741,6 +741,34 @@ class TestProtocolHandler:
         assert cached.value == 696
 
     @pytest.mark.asyncio
+    async def test_write_duplicate_name_by_index_reaches_panel_copy(self):
+        """A digit key writes the exact index, so the panel copy of a shared name is reachable."""
+        handler, conn, cache = self._make_handler()
+
+        handler._param_structs = {
+            9: ParamStructEntry(index=9, name="FN", unit=0, type_code=DataType.UINT16, writable=True),
+            10013: ParamStructEntry(index=10013, name="FN", unit=0, type_code=DataType.UINT16, writable=True),
+        }
+        for index in (9, 10013):
+            await cache.set(
+                Parameter(index=index, name="FN", value=1, type=DataType.UINT16, unit=0, writable=True)
+            )
+
+        handler._wait_for_token = AsyncMock()
+        handler.send_and_receive = AsyncMock(return_value=self._response_frame(Command.MODIFY_PARAM_RESPONSE))
+
+        results = await handler.write_params({"10013": 2, "FN": 3})
+
+        assert results == {"10013": True, "FN": True}
+        calls = handler.send_and_receive.await_args_list
+        assert calls[0].args[1] == build_modify_param_request(13, 2, DataType.UINT16)
+        assert calls[0].kwargs["destination"] == PANEL_ADDRESS
+        assert calls[1].args[1] == build_modify_param_request(9, 3, DataType.UINT16)
+        assert calls[1].kwargs["destination"] is None
+        assert (await cache.get(10013)).value == 2
+        assert (await cache.get(9)).value == 3
+
+    @pytest.mark.asyncio
     async def test_write_param_not_found(self):
         """Test writing nonexistent parameter raises error."""
         handler, conn, cache = self._make_handler()

@@ -352,6 +352,17 @@ class TestSetParameters:
         assert data["results"]["B"] == {"success": True, "old_value": 1, "new_value": 20}
         mock_app_state["handler"].write_params.assert_awaited_once_with({"A": 10, "B": 20})
 
+    def test_set_parameters_by_index(self, client, mock_app_state):
+        """A digit key addresses the parameter by index."""
+        self._seed(mock_app_state["cache"], ["A", "B"])
+        mock_app_state["handler"].write_params = AsyncMock(return_value={"1": True})
+
+        response = client.post("/api/parameters", json={"values": {"1": 20}})
+
+        assert response.status_code == 200
+        assert response.json()["results"]["1"] == {"success": True, "old_value": 1, "new_value": 20}
+        mock_app_state["handler"].write_params.assert_awaited_once_with({"1": 20})
+
     def test_set_parameters_partial_failure(self, client, mock_app_state):
         self._seed(mock_app_state["cache"], ["A", "B"])
         mock_app_state["handler"].write_params = AsyncMock(return_value={"A": True, "B": False})

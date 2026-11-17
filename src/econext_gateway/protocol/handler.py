@@ -1866,7 +1866,7 @@ class ProtocolHandler:
         """Write a parameter value to the controller.
 
         Args:
-            name: Parameter name to modify.
+            name: Parameter name, or its index as a digit string.
             value: New value to set.
 
         Returns:
@@ -1888,7 +1888,8 @@ class ProtocolHandler:
         writes from N token waits (~1-3s each) into one.
 
         Args:
-            values: Parameter name to new value, written in insertion order.
+            values: Parameter name (or index as a digit string) to new value,
+                written in insertion order.
 
         Returns:
             Parameter name to True if the controller acknowledged the write.
@@ -1927,9 +1928,9 @@ class ProtocolHandler:
                     results[name] = response is not None
                     if response is not None:
                         acked.append(param.model_copy(update={"value": value}))
-                        logger.info("Parameter %s set to %s", name, value)
+                        logger.info("Parameter %s (%d) set to %s", param.name, param.index, value)
                     else:
-                        logger.warning("Failed to write parameter %s", name)
+                        logger.warning("Failed to write parameter %s (%d)", param.name, param.index)
             finally:
                 if self._has_token:
                     await self._return_token()
@@ -1941,7 +1942,7 @@ class ProtocolHandler:
 
     async def _prepare_write(self, name: str, value: Any) -> tuple[Parameter, bytes, int | None]:
         """Validate a write and build its MODIFY_PARAM payload and destination."""
-        param = await self._cache.get_by_name(name)
+        param = await self._cache.resolve(name)
         if param is None:
             raise ValueError(f"Parameter not found: {name}")
 

@@ -154,7 +154,10 @@ class ParametersSetRequest(BaseModel):
         ...,
         min_length=1,
         max_length=64,
-        description="Parameter name to new value, written in order under one bus token",
+        description=(
+            "Parameter name, or index as a digit string, to new value,"
+            " written in order under one bus token"
+        ),
     )
 
     model_config = ConfigDict(
