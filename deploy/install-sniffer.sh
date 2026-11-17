@@ -40,7 +40,7 @@ DEFAULTS_FILE="/etc/default/modbus-sniffer"
 # NFS share the daily ship writes to (optional). If unset, an existing
 # mount unit is left alone and the ship step simply fails until the share
 # is mounted at $MOUNT_POINT by other means.
-#   NFS_SHARE=mynas:/volume1/modbus sudo ./deploy/install-sniffer.sh
+#   NFS_SHARE=mynas:/export/modbus sudo ./deploy/install-sniffer.sh
 NFS_SHARE="${NFS_SHARE:-}"
 
 INSTALL_USER="${INSTALL_USER:-$(logname 2>/dev/null || echo "$SUDO_USER")}"

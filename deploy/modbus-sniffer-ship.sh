@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Ship the Modbus sniffer's finished days from the local cache to the NAS.
 #
-# Runs once a day from modbus-sniffer-ship.timer, inside the NAS write
-# window, so the disks see the sniffer exactly once a day. Every completed
+# Runs once a day from modbus-sniffer-ship.timer, so the NAS is written
+# once a day and its disks can sleep in between. Every completed
 # UTC day under the cache is appended to one daily file on the NAS
 # (concatenated gzip members are a valid gzip file), fsynced, and only then
 # deleted locally. If the share is unreachable the cache simply keeps the

@@ -120,9 +120,10 @@ two units:
   Chunks are held in RAM and written once an hour, so the SD card sees a
   few writes a day. The NAS is never touched by this unit.
 - `modbus-sniffer-ship.timer` runs `modbus-sniffer-ship.sh` once a day at
-  02:05 local time (inside the NAS write window). It appends each finished
-  day's chunks to `/mnt/nas/modbus/YYYY/MM/YYYY-MM-DD.frames.gz`, syncs,
-  then deletes the cached day. If the share is down the cache keeps the
+  02:05 local time (change `OnCalendar` in the timer to suit the NAS). It
+  appends each finished day's chunks to
+  `/mnt/nas/modbus/YYYY/MM/YYYY-MM-DD.frames.gz`, syncs, then deletes the
+  cached day. If the share is down the cache keeps the
   days (hard cap 14 days) and the next run catches up.
 
 Signals: `SIGTERM` flushes the open chunk and exits, `SIGUSR1` flushes it
