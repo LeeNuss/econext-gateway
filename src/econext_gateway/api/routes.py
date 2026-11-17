@@ -93,7 +93,7 @@ async def set_parameters(
 
     old_values: dict[str, Any] = {}
     for name in request.values:
-        param = await cache.get_by_name(name)
+        param = await cache.resolve(name)
         if param is None:
             raise HTTPException(status_code=404, detail=f"Parameter not found: {name}")
         old_values[name] = param.value
@@ -136,7 +136,7 @@ async def set_parameter(
     if not handler.connected:
         raise HTTPException(status_code=503, detail="Controller not connected")
 
-    param = await cache.get_by_name(name)
+    param = await cache.resolve(name)
     if param is None:
         raise HTTPException(status_code=404, detail=f"Parameter not found: {name}")
 

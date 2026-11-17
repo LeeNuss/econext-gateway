@@ -1866,7 +1866,7 @@ class ProtocolHandler:
         """Write a parameter value to the controller.
 
         Args:
-            name: Parameter name to modify.
+            name: Parameter name, or its index as a digit string.
             value: New value to set.
 
         Returns:
@@ -1888,7 +1888,8 @@ class ProtocolHandler:
         writes from N token waits (~1-3s each) into one.
 
         Args:
-            values: Parameter name to new value, written in insertion order.
+            values: Parameter name (or index as a digit string) to new value,
+                written in insertion order.
 
         Returns:
             Parameter name to True if the controller acknowledged the write.
@@ -1897,10 +1898,10 @@ class ProtocolHandler:
             ValueError: If any parameter is not found, not writable, or the
                 value is out of range.
         """
-        prepared: list[tuple[str, Any, Parameter, bytes]] = []
+        prepared: list[tuple[str, Any, Parameter, bytes, int | None]] = []
         for name, value in values.items():
-            param, data = await self._prepare_write(name, value)
-            prepared.append((name, value, param, data))
+            param, data, destination = await self._prepare_write(name, value)
+            prepared.append((name, value, param, data, destination))
 
         if not prepared:
             return {}
@@ -1917,18 +1918,19 @@ class ProtocolHandler:
             try:
                 # Must hold the bus token to transmit on the RS-485 bus
                 await self._wait_for_token()
-                for name, value, param, data in prepared:
+                for name, value, param, data, destination in prepared:
                     response = await self.send_and_receive(
                         Command.MODIFY_PARAM,
                         data,
                         expected_response=Command.MODIFY_PARAM_RESPONSE,
+                        destination=destination,
                     )
                     results[name] = response is not None
                     if response is not None:
                         acked.append(param.model_copy(update={"value": value}))
-                        logger.info("Parameter %s set to %s", name, value)
+                        logger.info("Parameter %s (%d) set to %s", param.name, param.index, value)
                     else:
-                        logger.warning("Failed to write parameter %s", name)
+                        logger.warning("Failed to write parameter %s (%d)", param.name, param.index)
             finally:
                 if self._has_token:
                     await self._return_token()
@@ -1938,9 +1940,9 @@ class ProtocolHandler:
 
         return results
 
-    async def _prepare_write(self, name: str, value: Any) -> tuple[Parameter, bytes]:
-        """Validate a write and build its MODIFY_PARAM payload."""
-        param = await self._cache.get_by_name(name)
+    async def _prepare_write(self, name: str, value: Any) -> tuple[Parameter, bytes, int | None]:
+        """Validate a write and build its MODIFY_PARAM payload and destination."""
+        param = await self._cache.resolve(name)
         if param is None:
             raise ValueError(f"Parameter not found: {name}")
 
@@ -1959,7 +1961,14 @@ class ProtocolHandler:
         if max_val is not None and float(value) > max_val:
             raise ValueError(f"Value {value} above maximum {max_val} for {name}")
 
-        return param, build_modify_param_request(param.index, value, entry.type_code)
+        # Panel parameters are stored with a 10000 offset so they cannot
+        # collide with regulator parameters in the shared cache.  The offset
+        # is local to the gateway: on the wire the panel expects its original
+        # index and the request must be addressed to the panel itself.
+        is_panel = param.index >= 10000
+        wire_index = param.index - 10000 if is_panel else param.index
+        destination = PANEL_ADDRESS if is_panel else None
+        return param, build_modify_param_request(wire_index, value, entry.type_code), destination
 
     @staticmethod
     def _decode_alarm_date(data: bytes) -> datetime | None:
