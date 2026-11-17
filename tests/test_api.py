@@ -28,6 +28,7 @@ def mock_app_state():
 
     handler = MagicMock(spec=ProtocolHandler)
     handler.connected = True
+    handler.params_ready = True
 
     app_state.connection = conn
     app_state.cache = cache
@@ -94,12 +95,15 @@ class TestHealthEndpoint:
         assert data["parameters_count"] == 1
 
     def test_health_connected_no_params(self, client, mock_app_state):
-        """Test health when connected but no params yet."""
+        """Test health when connected but the first poll has not finished."""
+        mock_app_state["handler"].params_ready = False
+
         response = client.get("/health")
 
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "degraded"
+        assert data["parameters_ready"] is False
 
     def test_health_disconnected(self, client, mock_app_state):
         """Test health when disconnected."""
@@ -115,6 +119,15 @@ class TestHealthEndpoint:
 
 class TestGetParameters:
     """Tests for GET /api/parameters endpoint."""
+
+    def test_get_parameters_while_loading(self, client, mock_app_state):
+        """A half-filled cache is never served as the parameter set."""
+        mock_app_state["handler"].params_ready = False
+
+        response = client.get("/api/parameters")
+
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Parameters still loading"
 
     def test_get_parameters_empty(self, client, mock_app_state):
         """Test getting parameters when cache is empty."""
@@ -310,3 +323,80 @@ class TestSetParameter:
         )
 
         assert response.status_code == 422
+
+
+class TestSetParameters:
+    """Tests for POST /api/parameters (batch write)."""
+
+    @staticmethod
+    def _seed(cache, names):
+        import asyncio
+
+        for i, name in enumerate(names):
+            asyncio.run(
+                cache.set(
+                    Parameter(index=i, name=name, value=i, type=2, unit=0, writable=True)
+                )
+            )
+
+    def test_set_parameters_success(self, client, mock_app_state):
+        self._seed(mock_app_state["cache"], ["A", "B"])
+        mock_app_state["handler"].write_params = AsyncMock(return_value={"A": True, "B": True})
+
+        response = client.post("/api/parameters", json={"values": {"A": 10, "B": 20}})
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert data["results"]["A"] == {"success": True, "old_value": 0, "new_value": 10}
+        assert data["results"]["B"] == {"success": True, "old_value": 1, "new_value": 20}
+        mock_app_state["handler"].write_params.assert_awaited_once_with({"A": 10, "B": 20})
+
+    def test_set_parameters_partial_failure(self, client, mock_app_state):
+        self._seed(mock_app_state["cache"], ["A", "B"])
+        mock_app_state["handler"].write_params = AsyncMock(return_value={"A": True, "B": False})
+
+        response = client.post("/api/parameters", json={"values": {"A": 10, "B": 20}})
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is False
+        assert data["results"]["B"]["success"] is False
+
+    def test_set_parameters_unknown_name_writes_nothing(self, client, mock_app_state):
+        self._seed(mock_app_state["cache"], ["A"])
+        mock_app_state["handler"].write_params = AsyncMock()
+
+        response = client.post("/api/parameters", json={"values": {"A": 10, "Nope": 1}})
+
+        assert response.status_code == 404
+        mock_app_state["handler"].write_params.assert_not_awaited()
+
+    def test_set_parameters_validation_error(self, client, mock_app_state):
+        self._seed(mock_app_state["cache"], ["A"])
+        mock_app_state["handler"].write_params = AsyncMock(
+            side_effect=ValueError("Value 5000 above maximum 1000.0 for A")
+        )
+
+        response = client.post("/api/parameters", json={"values": {"A": 5000}})
+
+        assert response.status_code == 400
+
+    def test_set_parameters_empty(self, client, mock_app_state):
+        response = client.post("/api/parameters", json={"values": {}})
+
+        assert response.status_code == 422
+
+    def test_set_parameters_too_many(self, client, mock_app_state):
+        response = client.post(
+            "/api/parameters", json={"values": {f"P{i}": i for i in range(65)}}
+        )
+
+        assert response.status_code == 422
+
+    def test_set_parameters_disconnected(self, client, mock_app_state):
+        mock_app_state["handler"].connected = False
+
+        response = client.post("/api/parameters", json={"values": {"A": 1}})
+
+        assert response.status_code == 503

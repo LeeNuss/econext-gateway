@@ -147,6 +147,37 @@ class ParameterSetRequest(BaseModel):
     model_config = ConfigDict(json_schema_extra={"example": {"value": 50}})
 
 
+class ParametersSetRequest(BaseModel):
+    """Request model for POST /api/parameters (batch write)."""
+
+    values: dict[str, Any] = Field(
+        ...,
+        min_length=1,
+        max_length=64,
+        description="Parameter name to new value, written in order under one bus token",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={"example": {"values": {"HDWTSetPoint": 50, "HDWusermode": 1}}}
+    )
+
+
+class ParameterWriteResult(BaseModel):
+    """Outcome of one write within a batch."""
+
+    success: bool = Field(..., description="Controller acknowledged the write")
+    old_value: Any = Field(..., description="Value before the write")
+    new_value: Any = Field(..., description="Requested value")
+
+
+class ParametersSetResponse(BaseModel):
+    """Response model for POST /api/parameters (batch write)."""
+
+    success: bool = Field(..., description="True if every write was acknowledged")
+    results: dict[str, ParameterWriteResult] = Field(..., description="Per-parameter outcome")
+    timestamp: datetime = Field(default_factory=datetime.now, description="Operation timestamp")
+
+
 class ParameterSetResponse(BaseModel):
     """Response model for successful parameter set operation."""
 
@@ -250,6 +281,7 @@ class HealthResponse(BaseModel):
 
     status: str = Field(..., description="Health status (healthy/degraded/unhealthy)")
     controller_connected: bool = Field(..., description="Whether controller is connected")
+    parameters_ready: bool = Field(False, description="Whether the first full poll has filled the cache")
     parameters_count: int = Field(..., ge=0, description="Number of cached parameters")
     last_update: datetime | None = Field(None, description="Last successful update timestamp")
 
@@ -258,6 +290,7 @@ class HealthResponse(BaseModel):
             "example": {
                 "status": "healthy",
                 "controller_connected": True,
+                "parameters_ready": True,
                 "parameters_count": 1786,
                 "last_update": "2026-01-13T10:30:00",
             }

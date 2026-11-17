@@ -568,6 +568,7 @@ class TestApiIntegration:
         handler._param_structs = {
             0: ParamStructEntry(0, "Temperature", 1, DataType.INT16, True, 20.0, 80.0),
         }
+        handler._params_ready = True
         asyncio.run(
             cache.set(
                 Parameter(
@@ -616,7 +617,8 @@ class TestApiIntegration:
                 assert resp.json()["status"] == "degraded"
                 assert resp.json()["controller_connected"] is True
 
-                # Add a param -> healthy
+                # First full poll done -> healthy
+                handler._params_ready = True
                 asyncio.run(
                     c.set(
                         Parameter(

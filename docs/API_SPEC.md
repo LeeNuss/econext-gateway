@@ -22,6 +22,11 @@ All requests and responses use `application/json`.
 
 Get all parameters from the heat pump controller.
 
+Returns `503 Service Unavailable` with `"detail": "Parameters still loading"`
+until the first full poll after startup has finished (about 15s), and while
+the controller is not connected. Clients should retry rather than treat a
+partial parameter set as complete.
+
 **Response:**
 
 ```json
@@ -78,6 +83,58 @@ Get all parameters from the heat pump controller.
 ```bash
 curl http://localhost:8000/api/parameters
 ```
+
+---
+
+### POST /api/parameters
+
+Set several parameter values in one bus token hold. Use this instead of
+repeated single writes when changing more than one value (for example copying
+a schedule day): each single write waits for its own token grant (about 1-3s),
+a batch waits once and sends the MODIFY_PARAM frames back to back.
+
+**Request Body:**
+
+```json
+{
+  "values": {
+    "HDWTuesdayAM": 16777215,
+    "HDWTuesdayPM": 0
+  }
+}
+```
+
+**Request Fields:**
+
+- `values` (object): Parameter name to new value, 1 to 64 entries, written in
+  the given order
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "results": {
+    "HDWTuesdayAM": {"success": true, "old_value": 0, "new_value": 16777215},
+    "HDWTuesdayPM": {"success": true, "old_value": 0, "new_value": 0}
+  },
+  "timestamp": "2026-11-17T12:00:05"
+}
+```
+
+**Response Fields:**
+
+- `success` (boolean): True if every write was acknowledged
+- `results` (object): Per-parameter `success`, `old_value` and `new_value`
+
+**Status Codes:**
+
+- `200 OK`: Batch was sent. Check `success` and the per-parameter results, a
+  write the controller did not acknowledge is reported there.
+- `400 Bad Request`: A value is invalid (out of range, read-only). Nothing was written.
+- `404 Not Found`: A parameter does not exist. Nothing was written.
+- `422 Unprocessable Entity`: `values` is empty or has more than 64 entries
+- `503 Service Unavailable`: Controller not connected
 
 ---
 
@@ -166,10 +223,15 @@ Check if the API server is running.
 ```json
 {
   "status": "healthy",
-  "uptime": 12345,
-  "controller_connected": true
+  "controller_connected": true,
+  "parameters_ready": true,
+  "parameters_count": 1766,
+  "last_update": "2026-11-17T14:00:00"
 }
 ```
+
+`status` is `healthy` when connected and the first full poll has finished,
+`degraded` when connected but still loading, `unhealthy` when disconnected.
 
 **Status Codes:**
 
@@ -306,6 +368,7 @@ The API automatically generates OpenAPI (Swagger) documentation:
 
 - `GET /api/parameters` - Read all parameters
 - `POST /api/parameters/{name}` - Write parameter value
+- `POST /api/parameters` - Write several parameter values in one token hold
 - `GET /health` - Health check
 - `GET /` - API information
 

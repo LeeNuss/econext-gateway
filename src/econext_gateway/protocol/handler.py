@@ -656,6 +656,10 @@ class ProtocolHandler:
         self._tentative_since: float | None = None
 
         self._param_structs: dict[int, ParamStructEntry] = {}
+        # Set once a full poll has filled the cache. Until then the cache
+        # holds only part of the parameter set, and clients that build their
+        # entities from it (Home Assistant) would silently miss the rest.
+        self._params_ready = False
         self._total_params: int = 0
         self._alarms: list[Alarm] = []
         self._device_table: list[DeviceTableEntry] = []
@@ -939,6 +943,11 @@ class ProtocolHandler:
     def connected(self) -> bool:
         """Whether the serial connection is active."""
         return self._connection.connected
+
+    @property
+    def params_ready(self) -> bool:
+        """True once the first full poll has populated the parameter cache."""
+        return self._params_ready
 
     @property
     def param_count(self) -> int:
@@ -1866,6 +1875,71 @@ class ProtocolHandler:
         Raises:
             ValueError: If parameter not found or not writable.
         """
+        results = await self.write_params({name: value})
+        return results[name]
+
+    async def write_params(self, values: dict[str, Any]) -> dict[str, bool]:
+        """Write several parameter values in one bus token hold.
+
+        Every value is validated before anything is sent, so a bad entry
+        rejects the whole batch with nothing written. The writes then go out
+        back to back as individual MODIFY_PARAM frames under a single token
+        grant, the same way the panel batches its own writes. This turns N
+        writes from N token waits (~1-3s each) into one.
+
+        Args:
+            values: Parameter name to new value, written in insertion order.
+
+        Returns:
+            Parameter name to True if the controller acknowledged the write.
+
+        Raises:
+            ValueError: If any parameter is not found, not writable, or the
+                value is out of range.
+        """
+        prepared: list[tuple[str, Any, Parameter, bytes]] = []
+        for name, value in values.items():
+            param, data = await self._prepare_write(name, value)
+            prepared.append((name, value, param, data))
+
+        if not prepared:
+            return {}
+
+        lock_name = (
+            f"api:write_param:{prepared[0][0]}"
+            if len(prepared) == 1
+            else f"api:write_params:{len(prepared)}"
+        )
+        results: dict[str, bool] = {}
+        acked: list[Parameter] = []
+
+        async with self._traced_lock(lock_name):
+            try:
+                # Must hold the bus token to transmit on the RS-485 bus
+                await self._wait_for_token()
+                for name, value, param, data in prepared:
+                    response = await self.send_and_receive(
+                        Command.MODIFY_PARAM,
+                        data,
+                        expected_response=Command.MODIFY_PARAM_RESPONSE,
+                    )
+                    results[name] = response is not None
+                    if response is not None:
+                        acked.append(param.model_copy(update={"value": value}))
+                        logger.info("Parameter %s set to %s", name, value)
+                    else:
+                        logger.warning("Failed to write parameter %s", name)
+            finally:
+                if self._has_token:
+                    await self._return_token()
+
+        if acked:
+            await self._cache.set_many(acked)
+
+        return results
+
+    async def _prepare_write(self, name: str, value: Any) -> tuple[Parameter, bytes]:
+        """Validate a write and build its MODIFY_PARAM payload."""
         param = await self._cache.get_by_name(name)
         if param is None:
             raise ValueError(f"Parameter not found: {name}")
@@ -1885,29 +1959,7 @@ class ProtocolHandler:
         if max_val is not None and float(value) > max_val:
             raise ValueError(f"Value {value} above maximum {max_val} for {name}")
 
-        data = build_modify_param_request(param.index, value, entry.type_code)
-
-        async with self._traced_lock(f"api:write_param:{name}"):
-            try:
-                # Must hold the bus token to transmit on the RS-485 bus
-                await self._wait_for_token()
-                response = await self.send_and_receive(
-                    Command.MODIFY_PARAM,
-                    data,
-                    expected_response=Command.MODIFY_PARAM_RESPONSE,
-                )
-            finally:
-                if self._has_token:
-                    await self._return_token()
-
-        if response is not None:
-            updated_param = param.model_copy(update={"value": value})
-            await self._cache.set(updated_param)
-            logger.info("Parameter %s set to %s", name, value)
-            return True
-
-        logger.warning("Failed to write parameter %s", name)
-        return False
+        return param, build_modify_param_request(param.index, value, entry.type_code)
 
     @staticmethod
     def _decode_alarm_date(data: bytes) -> datetime | None:
@@ -2380,6 +2432,9 @@ class ProtocolHandler:
 
                     current_pos = max(new_pos, current_pos + 1)
 
+                if total_read and not self._params_ready:
+                    self._params_ready = True
+                    logger.info("Parameter cache ready (%d parameters)", total_read)
                 return total_read
             finally:
                 if self._has_token:
