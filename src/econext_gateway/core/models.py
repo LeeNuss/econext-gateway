@@ -117,12 +117,19 @@ class ParametersResponse(BaseModel):
     """Response model for GET /api/parameters."""
 
     timestamp: datetime = Field(..., description="Timestamp of parameter snapshot")
+    ready: bool = Field(
+        True,
+        description="False while the values are the last valid ones from before a controller reset or silence",
+    )
+    ready_reason: str = Field("ok", description='Why the data is not ready, or "ok"')
     parameters: dict[str, dict[str, Any]] = Field(..., description="Parameters keyed by name")
 
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
                 "timestamp": "2026-01-13T10:30:00",
+                "ready": True,
+                "ready_reason": "ok",
                 "parameters": {
                     "HDWTSetPoint": {
                         "index": 103,
@@ -287,6 +294,15 @@ class HealthResponse(BaseModel):
     parameters_ready: bool = Field(False, description="Whether the first full poll has filled the cache")
     parameters_count: int = Field(..., ge=0, description="Number of cached parameters")
     last_update: datetime | None = Field(None, description="Last successful update timestamp")
+    data_ready: bool = Field(
+        False, description="Whether the cached values are current: connected, last poll valid and recent"
+    )
+    ready_reason: str = Field("starting", description='Why the data is not ready, or "ok"')
+    reset_counter: int | None = Field(None, description="Controller reset counter of the last valid poll")
+    last_valid_poll: datetime | None = Field(None, description="When the last valid poll was committed")
+    polls_complete: int = Field(0, ge=0, description="Valid polls since start in which every batch was read")
+    polls_incomplete: int = Field(0, ge=0, description="Valid polls since start in which a batch failed")
+    polls_discarded: int = Field(0, ge=0, description="Polls since start that were not committed, failed ones included")
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -296,6 +312,13 @@ class HealthResponse(BaseModel):
                 "parameters_ready": True,
                 "parameters_count": 1786,
                 "last_update": "2026-01-13T10:30:00",
+                "data_ready": True,
+                "ready_reason": "ok",
+                "reset_counter": 28,
+                "last_valid_poll": "2026-01-13T10:30:00",
+                "polls_complete": 4210,
+                "polls_incomplete": 1,
+                "polls_discarded": 0,
             }
         }
     )

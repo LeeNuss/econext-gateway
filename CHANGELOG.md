@@ -7,13 +7,43 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Data readiness. `GET /api/parameters` carries `ready` and `ready_reason`;
+  `/health` carries `data_ready`, `ready_reason`, `reset_counter`,
+  `last_valid_poll` and the poll counts `polls_complete`, `polls_incomplete`
+  and `polls_discarded`, and reports `degraded` while the data is not ready. The data is not ready from a discarded poll until the
+  next valid one, when no valid poll has landed for `ECONEXT_STALE_AFTER`
+  seconds (default three poll intervals plus 15), and while the controller is
+  not connected. Writes are accepted in either state.
+- Settings `ECONEXT_RESET_COUNTER_PARAM`, `ECONEXT_VALIDITY_SENTINELS` and
+  `ECONEXT_STALE_AFTER`.
+- One log line per hour with the polls that were complete, incomplete (a
+  batch failed) and discarded.
 - Writes accept a parameter index (a digit string such as `10013`) wherever
   they take a name, in `POST /api/parameters/{name}` and as keys of
   `POST /api/parameters`. This is the only way to reach the second copy of a
   name that exists twice, such as the panel's `FN` or `Circuit2BaseTemp` at 785.
 
+### Changed
+
+- A poll is collected whole and written to the cache in one step, and only
+  if it is valid. Before, each batch went to the cache as it arrived. A poll
+  that ends in an error is discarded as a whole and counted.
+- A poll reads the reset counter once more after its last batch.
+- `GET /api/parameters` answers 503 until the first poll in which every batch
+  was read, not until the first poll that read anything. When a batch keeps
+  failing, the third valid poll opens it.
+
 ### Fixed
 
+- A controller restart no longer serves zeros as measurements. The first
+  poll after a reset came back with 0 in the cylinder temperature, the flow
+  temperature and the pump speed limits, and every client read them as real
+  values for as long as the controller then stayed silent. The poll in which
+  the reset counter changes is now discarded, and so is a poll in which a
+  parameter that never reads 0 in operation reads 0, or in which the
+  controller did not answer at all; the cache keeps the last valid values
+  and the reply says `ready: false`. A zero that lasts longer than 5 minutes
+  is taken as a value again.
 - Writes to panel parameters (index 10000 and up) go to the panel with the
   wire index, instead of to the controller with the cache index, which never
   acknowledged them. Thanks to wsjoanna222 (#10).

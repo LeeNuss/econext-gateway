@@ -117,6 +117,9 @@ Then `sudo systemctl restart econext-gateway`. Do not edit `/etc/systemd/system/
 | `ECONEXT_CLOCK_SYNC_ENABLED`  | `true`                     | Sync the panel clock from the host once a day   |
 | `ECONEXT_CLOCK_SYNC_HOUR`     | `3`                        | Hour (local time) of the daily clock sync       |
 | `ECONEXT_CLOCK_SYNC_MINUTE`   | `30`                       | Minute of the daily clock sync                  |
+| `ECONEXT_RESET_COUNTER_PARAM` | `resetCounter`             | Controller reset counter; a poll in which it changes is discarded. Empty disables the rule |
+| `ECONEXT_VALIDITY_SENTINELS`  | `TempCWU,HoldingRegister_6061,HoldingRegister_6271` | Comma separated parameters that never read 0 in operation; a poll in which one reads 0 is discarded. Empty disables the rule |
+| `ECONEXT_STALE_AFTER`         | three poll intervals + 15  | Seconds without a valid poll before the data is reported as not ready. Must be positive; empty means the default |
 
 ## API
 
@@ -131,6 +134,8 @@ Returns JSON with all discovered parameters keyed by index, including name, curr
 ```json
 {
   "timestamp": "2025-01-15T12:00:00",
+  "ready": true,
+  "ready_reason": "ok",
   "parameters": {
     "42": {
       "index": 42,
@@ -146,6 +151,24 @@ Returns JSON with all discovered parameters keyed by index, including name, curr
 }
 ```
 
+#### Data readiness
+
+A controller that restarts answers the first poll after its reset with zeros in values that are never zero in operation (a cylinder temperature of 0.0, pump speed limits of 0). The gateway therefore collects every poll whole and writes it to the cache only if it is valid:
+
+- A poll in which the controller answered nothing is discarded, also when the panel did answer.
+- The poll in which the controller's reset counter changes is discarded. The counter is read once more after the last batch of a poll, so a reset in the middle of a poll is caught in that poll. A poll in which that second reading fails is discarded too; a counter that cannot be read for longer than 5 minutes is no longer asked for.
+- A poll in which a sentinel reads 0 is discarded. The sentinels are parameters that never read 0 in operation (`ECONEXT_VALIDITY_SENTINELS`). A sentinel only counts once it has read non-zero since the gateway started, so a system where one of them is always 0 is not affected. A zero that lasts longer than 5 minutes is taken as a value (a limit set to 0, a unit that is switched off) and no longer discards polls.
+- A poll that ends in an error, such as a lost serial port, is discarded as a whole.
+
+A discarded poll changes nothing: the reply keeps the values of the last valid poll, so no client reads the zeros. The reply says so in two fields:
+
+| Field           | Meaning |
+| --------------- | ------- |
+| `ready`         | `false` from a discarded poll until the next valid one, and when no valid poll has landed for `ECONEXT_STALE_AFTER` seconds (the controller does not answer). The values are then the last valid ones, not current measurements |
+| `ready_reason`  | `ok`, or why not: `controller reset (counter 28 to 29)`, `TempCWU reads 0`, `controller did not answer`, `reset counter not read`, `poll failed (ConnectionError)`, `no valid poll for 48 s` |
+
+A client that only displays values can ignore the fields. A client that acts on them (an automation, a controller) should wait for `ready`. Writes are accepted in either state.
+
 ### Set a parameter
 
 ```bash
@@ -159,6 +182,8 @@ curl -X POST http://<gateway-ip>:8000/api/parameters/HDWTSetPoint \
 ```bash
 curl http://<gateway-ip>:8000/health
 ```
+
+`status` is `healthy`, `degraded` (connected, but the first poll has not finished or the data is not ready) or `unhealthy` (not connected; `data_ready` is then `false` with the reason `not connected`). Besides `controller_connected`, `parameters_ready`, `parameters_count` and `last_update` the reply carries `data_ready` and `ready_reason` as above, `reset_counter` (the controller's reset counter in the last valid poll), `last_valid_poll` (time of the last valid poll) and the poll counts since start: `polls_complete`, `polls_incomplete` (a batch of the poll failed; the rest was stored) and `polls_discarded`. The same counts are logged once an hour.
 
 ## Home Assistant Integration
 

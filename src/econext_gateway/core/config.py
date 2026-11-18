@@ -4,7 +4,10 @@ import logging
 import sys
 from pathlib import Path
 
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from econext_gateway.core.validity import DEFAULT_RESET_COUNTER_PARAM, DEFAULT_SENTINELS, parse_names
 
 
 class Settings(BaseSettings):
@@ -40,7 +43,33 @@ class Settings(BaseSettings):
     clock_sync_hour: int = 3
     clock_sync_minute: int = 30
 
+    # Poll validity (core/validity.py). A poll taken while the controller
+    # restarts is not written to the cache.
+    # Name of the controller's reset counter; a poll in which it changes is
+    # discarded. Empty disables the rule.
+    reset_counter_param: str = DEFAULT_RESET_COUNTER_PARAM
+    # Comma separated names of parameters that never read 0 in operation; a
+    # poll in which one of them reads 0, after it has read non-zero, is
+    # discarded. Empty disables the rule.
+    validity_sentinels: str = ",".join(DEFAULT_SENTINELS)
+    # Seconds without a valid poll after which the data is reported as not
+    # ready. Unset or empty: three poll intervals plus 15 seconds.
+    stale_after: float | None = Field(default=None, gt=0)
+
     model_config = SettingsConfigDict(env_prefix="ECONEXT_")
+
+    @field_validator("stale_after", mode="before")
+    @classmethod
+    def _empty_stale_after_is_unset(cls, value: object) -> object:
+        """An empty ECONEXT_STALE_AFTER means the default, it is not an error."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @property
+    def validity_sentinel_names(self) -> tuple[str, ...]:
+        """The sentinel parameter names as a tuple."""
+        return parse_names(self.validity_sentinels)
 
     @property
     def paired_address_file(self) -> Path:

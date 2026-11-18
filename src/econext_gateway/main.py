@@ -115,6 +115,9 @@ async def lifespan(app: FastAPI):
         thermostat_address_file=settings.thermostat_address_file if settings.thermostat_enabled else None,
         clock_sync_hour=settings.clock_sync_hour if settings.clock_sync_enabled else None,
         clock_sync_minute=settings.clock_sync_minute,
+        reset_counter_param=settings.reset_counter_param,
+        validity_sentinels=settings.validity_sentinel_names,
+        stale_after=settings.stale_after,
     )
 
     # Always wire backup-source — handler auto-discovers wired thermostats from
@@ -211,15 +214,22 @@ async def health():
         )
 
     connected = handler.connected
-    ready = handler.params_ready
-    status = "healthy" if connected and ready else ("degraded" if connected else "unhealthy")
+    state = handler.readiness()
+    status = "healthy" if state.ready else ("degraded" if connected else "unhealthy")
 
     return HealthResponse(
         status=status,
         controller_connected=connected,
-        parameters_ready=ready,
+        parameters_ready=handler.params_ready,
         parameters_count=cache.count,
         last_update=cache.last_update,
+        data_ready=state.ready,
+        ready_reason=state.reason,
+        reset_counter=state.reset_counter,
+        last_valid_poll=state.last_valid_poll,
+        polls_complete=state.polls_complete,
+        polls_incomplete=state.polls_incomplete,
+        polls_discarded=state.polls_discarded,
     )
 
 

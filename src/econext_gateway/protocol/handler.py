@@ -10,18 +10,25 @@ import asyncio
 import logging
 import struct
 import time as _time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
     from econext_gateway.thermostat.emulator import ThermostatEmulator
 
 from econext_gateway.core.cache import ParameterCache
 from econext_gateway.core.models import Alarm, Parameter
+from econext_gateway.core.validity import (
+    DEFAULT_RESET_COUNTER_PARAM,
+    DEFAULT_SENTINELS,
+    PollValidity,
+    Readiness,
+    default_stale_after,
+)
 from econext_gateway.protocol.codec import decode_value, encode_value
 from econext_gateway.protocol.constants import (
     ALARM_REQUEST_PREFIX,
@@ -50,6 +57,10 @@ from econext_gateway.protocol.frames import Frame
 from econext_gateway.serial.connection import GM3SerialTransport
 
 logger = logging.getLogger(__name__)
+
+# Valid polls after which the startup gate opens although none of them was
+# complete: a batch that keeps failing must not keep the API closed for good.
+STARTUP_POLLS = 3
 
 # Human-readable command names for bus sniff logging
 _CMD_NAMES: dict[int, str] = {
@@ -202,6 +213,15 @@ class BusDevice:
     temperature: float | None = None
     source: str = ""
     last_seen: float = 0.0
+
+
+class _BatchRequest(NamedTuple):
+    """A GET_PARAMS request of a poll, kept so that it can be sent once more."""
+
+    wire_index: int
+    count: int
+    destination: int | None
+    store_offset: int
 
 
 @dataclass
@@ -600,6 +620,9 @@ class ProtocolHandler:
         thermostat_address_file: Path | None = None,
         clock_sync_hour: int | None = 3,
         clock_sync_minute: int = 30,
+        reset_counter_param: str = DEFAULT_RESET_COUNTER_PARAM,
+        validity_sentinels: Iterable[str] = DEFAULT_SENTINELS,
+        stale_after: float | None = None,
     ):
         """Initialize protocol handler.
 
@@ -626,6 +649,13 @@ class ProtocolHandler:
             clock_sync_hour: Hour of day (local time) for the daily panel
                 RTC sync broadcast. Set to None to disable.
             clock_sync_minute: Minute of the hour for the daily sync.
+            reset_counter_param: Name of the controller's reset counter. A
+                poll in which it changes is discarded. Empty disables.
+            validity_sentinels: Names of parameters that never read 0 in
+                operation. A poll in which one of them reads 0 is discarded.
+            stale_after: Seconds without a valid poll after which the data
+                is reported as not ready. Defaults to three poll intervals
+                plus the fixed part of a poll cycle (``default_stale_after``).
         """
         self._connection = connection
         self._cache = cache
@@ -660,6 +690,15 @@ class ProtocolHandler:
         # holds only part of the parameter set, and clients that build their
         # entities from it (Home Assistant) would silently miss the rest.
         self._params_ready = False
+        # Valid polls committed while the gate above is still closed.
+        self._startup_polls = 0
+        # Judges each completed poll before it is committed to the cache
+        # (see core/validity.py) and tracks whether the data can be trusted.
+        self._validity = PollValidity(
+            reset_counter_param=reset_counter_param,
+            sentinels=validity_sentinels,
+            stale_after=stale_after if stale_after is not None else default_stale_after(poll_interval),
+        )
         self._total_params: int = 0
         self._alarms: list[Alarm] = []
         self._device_table: list[DeviceTableEntry] = []
@@ -914,30 +953,41 @@ class ProtocolHandler:
             return _KNOWN_THERMOSTAT_ADDRS | {self._thermostat.address}
         return _KNOWN_THERMOSTAT_ADDRS
 
-    async def _resolve_min_max(self, entry: ParamStructEntry) -> tuple[float | None, float | None]:
+    async def _resolve_min_max(
+        self,
+        entry: ParamStructEntry,
+        fresh: dict[int, Parameter] | None = None,
+    ) -> tuple[float | None, float | None]:
         """Resolve min/max values, following parameter index references.
 
         When a parameter's min/max is a reference to another parameter's index,
-        look up that parameter's current value in the cache to get the actual limit.
+        look up that parameter's current value to get the actual limit: first
+        in ``fresh`` (the poll being collected, not yet in the cache), then in
+        the cache.
         """
         min_val = entry.min_value
         max_val = entry.max_value
 
         if entry.min_param_ref is not None:
-            ref = self._param_structs.get(entry.min_param_ref)
+            ref = await self._referenced_param(entry.min_param_ref, fresh)
             if ref is not None:
-                cached = await self._cache.get(ref.index)
-                if cached is not None:
-                    min_val = float(cached.value)
+                min_val = float(ref.value)
 
         if entry.max_param_ref is not None:
-            ref = self._param_structs.get(entry.max_param_ref)
+            ref = await self._referenced_param(entry.max_param_ref, fresh)
             if ref is not None:
-                cached = await self._cache.get(ref.index)
-                if cached is not None:
-                    max_val = float(cached.value)
+                max_val = float(ref.value)
 
         return min_val, max_val
+
+    async def _referenced_param(self, ref_index: int, fresh: dict[int, Parameter] | None) -> Parameter | None:
+        """The parameter a min/max reference points at, from ``fresh`` or else the cache."""
+        ref = self._param_structs.get(ref_index)
+        if ref is None:
+            return None
+        if fresh is not None and ref.index in fresh:
+            return fresh[ref.index]
+        return await self._cache.get(ref.index)
 
     @property
     def connected(self) -> bool:
@@ -946,8 +996,46 @@ class ProtocolHandler:
 
     @property
     def params_ready(self) -> bool:
-        """True once the first full poll has populated the parameter cache."""
+        """True once the cache holds the full parameter set after startup.
+
+        That is after the first valid poll in which every batch was read, or
+        after ``STARTUP_POLLS`` valid polls when a batch keeps failing.
+        """
         return self._params_ready
+
+    def readiness(self) -> Readiness:
+        """Whether the cached values can be trusted, with the reset counter,
+        the poll number and the poll counts, in one reading.
+
+        Ready means: connected, the startup gate is open, the last poll was
+        valid and the last valid poll is recent. Not ready after a
+        controller reset or while the controller does not answer, until a
+        later poll is valid again. The cache keeps the last valid values in
+        the meantime.
+        """
+        state = self._validity.snapshot()
+        if not self.connected:
+            return replace(state, ready=False, reason="not connected")
+        if state.ready and not self._params_ready:
+            return replace(state, ready=False, reason="waiting for a complete poll")
+        return state
+
+    def _report_readiness(self) -> None:
+        """Log a change of the data readiness once, and the poll counts once an hour.
+
+        Called after every poll and from the bus watchdog, so a controller
+        that goes silent is reported although no poll completes.
+        """
+        change = self._validity.transition()
+        if change is not None:
+            ready, reason = change
+            if ready:
+                logger.info("Data ready again")
+            else:
+                logger.warning("Data not ready: %s (the cache keeps the last valid values)", reason)
+        summary = self._validity.hourly_summary()
+        if summary is not None:
+            logger.info(summary)
 
     @property
     def param_count(self) -> int:
@@ -1583,6 +1671,7 @@ class ProtocolHandler:
         check_interval = 5.0
         while self._running:
             await asyncio.sleep(check_interval)
+            self._report_readiness()
             if self._last_frame_time == 0.0:
                 continue
             now = asyncio.get_running_loop().time()
@@ -2352,12 +2441,18 @@ class ProtocolHandler:
             return len(self._param_structs)
 
     async def poll_all_params(self) -> int:
-        """Poll all known parameters and update cache.
+        """Poll all known parameters and update the cache.
 
-        Waits for token from panel before sending requests.
+        Waits for token from panel before sending requests. The poll is
+        collected whole and committed to the cache in one write, and only
+        if it is valid (see ``core/validity.py``): a poll taken while the
+        controller restarts would otherwise serve zeros as measurements. A
+        discarded poll changes nothing; the cache keeps the last valid values.
+        The same goes for a poll that ends in an exception: it is recorded
+        as failed and the exception is raised on.
 
         Returns:
-            Number of parameters successfully read.
+            Number of parameters committed to the cache (0 for a discarded poll).
         """
         if not self._param_structs:
             return 0
@@ -2367,7 +2462,11 @@ class ProtocolHandler:
                 await self._wait_for_token()
 
                 indices = sorted(self._param_structs.keys())
-                total_read = 0
+                collected: dict[int, Parameter] = {}
+                complete = True
+                watched = self._watched_indices()
+                counter_index = watched.get(self._validity.counter_param)
+                counter_batch: _BatchRequest | None = None
 
                 current_pos = 0
                 while current_pos < len(indices):
@@ -2389,6 +2488,8 @@ class ProtocolHandler:
                     dest = PANEL_ADDRESS if is_panel else None
                     wire_index = start_index - 10000 if is_panel else start_index
                     offset = 10000 if is_panel else 0
+                    if counter_index is not None and start_index <= counter_index < start_index + count:
+                        counter_batch = _BatchRequest(wire_index, count, dest, offset)
 
                     values = None
                     for _ in range(RETRY_ATTEMPTS):
@@ -2402,15 +2503,15 @@ class ProtocolHandler:
                             break
 
                     if not values:
+                        complete = False
                         current_pos = batch_end
                         continue
 
-                    parameters = []
                     for index, value in values:
                         entry = self._param_structs.get(index)
                         if entry is None or not entry.name:
                             continue
-                        min_val, max_val = await self._resolve_min_max(entry)
+                        min_val, max_val = await self._resolve_min_max(entry, collected)
                         existing = await self._cache.get(index)
                         filtered = _filter_sentinel(
                             value, entry.name, existing.value if existing else None
@@ -2418,7 +2519,7 @@ class ProtocolHandler:
                         if filtered is None:
                             # First-ever read is the sentinel; skip until a real value arrives.
                             continue
-                        param = Parameter(
+                        collected[index] = Parameter(
                             index=index,
                             name=entry.name,
                             value=filtered,
@@ -2428,11 +2529,6 @@ class ProtocolHandler:
                             min_value=min_val,
                             max_value=max_val,
                         )
-                        parameters.append(param)
-
-                    if parameters:
-                        await self._cache.set_many(parameters)
-                        total_read += len(parameters)
 
                     last_returned_index = values[-1][0]
                     new_pos = current_pos
@@ -2441,13 +2537,116 @@ class ProtocolHandler:
 
                     current_pos = max(new_pos, current_pos + 1)
 
-                if total_read and not self._params_ready:
-                    self._params_ready = True
-                    logger.info("Parameter cache ready (%d parameters)", total_read)
-                return total_read
+                return await self._commit_poll(collected, complete, watched, counter_batch)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # What was collected cannot be judged, so none of it is
+                # committed and the data is not ready until a poll is valid.
+                self._validity.fail(f"poll failed ({type(exc).__name__})")
+                self._report_readiness()
+                raise
             finally:
                 if self._has_token:
                     await self._return_token()
+
+    async def _commit_poll(
+        self,
+        collected: dict[int, Parameter],
+        complete: bool,
+        watched: dict[str, int] | None = None,
+        counter_batch: _BatchRequest | None = None,
+    ) -> int:
+        """Judge a collected poll and write it to the cache if it is valid.
+
+        Args:
+            collected: Parameters read in this poll, keyed by index.
+            complete: False when a batch of the poll failed.
+            watched: Index of the reset counter and of the sentinels
+                (``_watched_indices``); looked up when not given.
+            counter_batch: The request of this poll that covers the reset
+                counter. It is sent once more and the counter is judged from
+                that reading, so a reset that fell in the middle of the poll
+                is seen. Needs the bus token. Without it the counter is
+                judged as the batches read it.
+
+        Returns:
+            Number of parameters committed (0 when the poll is discarded).
+        """
+        if watched is None:
+            watched = self._watched_indices()
+        values = {name: collected[index].value for name, index in watched.items() if index in collected}
+        # Regulator indices are below 10000; the panel answers for the rest.
+        controller = any(index < 10000 for index in collected)
+
+        counter_name = self._validity.counter_param
+        counter_unread = False
+        if counter_batch is not None and counter_name in watched:
+            # The reading the batches took can predate a reset in this poll.
+            values.pop(counter_name, None)
+            if controller:
+                read, counter = await self._read_again(counter_batch, watched[counter_name])
+                if read:
+                    values[counter_name] = counter
+                else:
+                    counter_unread = True
+
+        reason = self._validity.judge(values, complete, controller=controller, counter_unread=counter_unread)
+        if reason is not None:
+            logger.debug("Poll discarded: %s", reason)
+            self._report_readiness()
+            return 0
+
+        await self._cache.set_many(list(collected.values()))
+        if not self._params_ready:
+            self._startup_polls += 1
+            if complete:
+                self._params_ready = True
+                logger.info("Parameter cache ready (%d parameters)", len(collected))
+            elif self._startup_polls >= STARTUP_POLLS:
+                self._params_ready = True
+                logger.warning(
+                    "Parameter cache ready with %d parameters after %d incomplete polls: a batch keeps failing",
+                    self._cache.count,
+                    self._startup_polls,
+                )
+        self._report_readiness()
+        return len(collected)
+
+    def _watched_indices(self) -> dict[str, int]:
+        """Index of the reset counter and of each sentinel the controller has.
+
+        A name can exist at several indices. The lowest one is the one a
+        lookup by name returns, so it is the one a poll is judged by,
+        whether or not a poll read it.
+        """
+        names = self._validity.watched
+        found: dict[str, int] = {}
+        for index, entry in self._param_structs.items():
+            if entry.name in names and index < found.get(entry.name, index + 1):
+                found[entry.name] = index
+        return found
+
+    async def _read_again(self, request: _BatchRequest, index: int) -> tuple[bool, Any]:
+        """Send a request of this poll once more and take one parameter from the answer.
+
+        The whole batch is asked for again, not the one parameter: it is a
+        request the controller is known to answer.
+
+        Returns:
+            (True, value), or (False, None) when no attempt brought the parameter.
+        """
+        for _ in range(RETRY_ATTEMPTS):
+            values = await self.fetch_param_values(
+                request.wire_index,
+                request.count,
+                destination=request.destination,
+                store_offset=request.store_offset,
+            )
+            for stored_index, value in values:
+                if stored_index == index:
+                    return True, value
+        return False, None
 
     async def _poll_loop(self) -> None:
         """Background polling loop with reconnection support."""
