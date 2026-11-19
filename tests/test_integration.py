@@ -617,22 +617,25 @@ class TestApiIntegration:
                 assert resp.json()["status"] == "degraded"
                 assert resp.json()["controller_connected"] is True
 
-                # First full poll done -> healthy
-                handler._params_ready = True
+                # First valid poll committed -> healthy
                 asyncio.run(
-                    c.set(
-                        Parameter(
-                            index=0,
-                            name="T",
-                            value=1,
-                            type=2,
-                            unit=0,
-                            writable=False,
-                        )
+                    handler._commit_poll(
+                        {
+                            0: Parameter(
+                                index=0,
+                                name="T",
+                                value=1,
+                                type=2,
+                                unit=0,
+                                writable=False,
+                            )
+                        },
+                        complete=True,
                     )
                 )
                 resp = client.get("/health")
                 assert resp.json()["status"] == "healthy"
+                assert resp.json()["data_ready"] is True
 
                 # Disconnect -> unhealthy
                 conn._protocol._connected = False

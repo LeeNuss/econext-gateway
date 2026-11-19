@@ -1,5 +1,7 @@
 """Unit tests for API endpoints."""
 
+from dataclasses import replace
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -8,9 +10,21 @@ from fastapi.testclient import TestClient
 from econext_gateway.api.dependencies import app_state
 from econext_gateway.core.cache import ParameterCache
 from econext_gateway.core.models import Parameter
+from econext_gateway.core.validity import Readiness
 from econext_gateway.main import app
 from econext_gateway.protocol.handler import ProtocolHandler
 from econext_gateway.serial.connection import GM3SerialTransport
+
+READY = Readiness(
+    ready=True,
+    reason="ok",
+    reset_counter=58,
+    last_valid_poll=datetime(2026, 1, 13, 10, 30, 0),
+    polls_complete=6,
+    polls_incomplete=1,
+    polls_discarded=0,
+)
+NOT_READY = replace(READY, ready=False, reason="controller reset (counter 58 to 59)", polls_discarded=1)
 
 
 @pytest.fixture
@@ -29,6 +43,7 @@ def mock_app_state():
     handler = MagicMock(spec=ProtocolHandler)
     handler.connected = True
     handler.params_ready = True
+    handler.readiness.return_value = READY
 
     app_state.connection = conn
     app_state.cache = cache
@@ -68,15 +83,22 @@ class TestHealthEndpoint:
 
     def test_health_not_initialized(self, client):
         """Test health when app is not initialized."""
+        handler, cache = app_state.handler, app_state.cache
         app_state.handler = None
         app_state.cache = None
-
-        response = client.get("/health")
+        try:
+            response = client.get("/health")
+        finally:
+            # the lifespan of the client fixture still has to stop its handler
+            app_state.handler, app_state.cache = handler, cache
 
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "unhealthy"
         assert data["controller_connected"] is False
+        assert data["data_ready"] is False
+        assert data["reset_counter"] is None
+        assert data["last_valid_poll"] is None
 
     def test_health_connected_with_params(self, client, mock_app_state):
         """Test health when connected with cached params."""
@@ -97,6 +119,7 @@ class TestHealthEndpoint:
     def test_health_connected_no_params(self, client, mock_app_state):
         """Test health when connected but the first poll has not finished."""
         mock_app_state["handler"].params_ready = False
+        mock_app_state["handler"].readiness.return_value = replace(READY, ready=False, reason="starting")
 
         response = client.get("/health")
 
@@ -104,10 +127,12 @@ class TestHealthEndpoint:
         data = response.json()
         assert data["status"] == "degraded"
         assert data["parameters_ready"] is False
+        assert data["data_ready"] is False
 
     def test_health_disconnected(self, client, mock_app_state):
-        """Test health when disconnected."""
+        """Test health when disconnected: the data is not ready either, although the last poll was valid."""
         mock_app_state["handler"].connected = False
+        mock_app_state["handler"].readiness.return_value = replace(READY, ready=False, reason="not connected")
 
         response = client.get("/health")
 
@@ -115,6 +140,33 @@ class TestHealthEndpoint:
         data = response.json()
         assert data["status"] == "unhealthy"
         assert data["controller_connected"] is False
+        assert data["data_ready"] is False
+        assert data["ready_reason"] == "not connected"
+
+    def test_health_reports_data_readiness_and_poll_counts(self, client, mock_app_state):
+        response = client.get("/health")
+
+        data = response.json()
+        assert data["status"] == "healthy"
+        assert data["data_ready"] is True
+        assert data["ready_reason"] == "ok"
+        assert data["reset_counter"] == 58
+        assert data["last_valid_poll"] == "2026-01-13T10:30:00"
+        assert (data["polls_complete"], data["polls_incomplete"], data["polls_discarded"]) == (6, 1, 0)
+
+    def test_health_degraded_when_the_data_is_not_ready(self, client, mock_app_state):
+        """Connected and past the first poll, but the last poll was discarded."""
+        mock_app_state["handler"].readiness.return_value = NOT_READY
+
+        response = client.get("/health")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "degraded"
+        assert data["parameters_ready"] is True
+        assert data["data_ready"] is False
+        assert data["ready_reason"] == "controller reset (counter 58 to 59)"
+        assert data["polls_discarded"] == 1
 
 
 class TestGetParameters:
@@ -191,6 +243,33 @@ class TestGetParameters:
         assert pressure["value"] == 2.5
         assert pressure["writable"] is False
 
+    def test_get_parameters_reports_readiness(self, client, mock_app_state):
+        response = client.get("/api/parameters")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["ready"] is True
+        assert data["ready_reason"] == "ok"
+        # diagnostics are on /health; the counter is the parameter resetCounter
+        assert set(data) == {"timestamp", "ready", "ready_reason", "parameters"}
+
+    def test_get_parameters_not_ready_still_serves_the_last_valid_values(self, client, mock_app_state):
+        """Not ready is a flag in the reply, not an error: the cache holds the last valid poll."""
+        import asyncio
+
+        asyncio.run(
+            mock_app_state["cache"].set(Parameter(index=61, name="TempCWU", value=40.0, type=7, unit=1, writable=False))
+        )
+        mock_app_state["handler"].readiness.return_value = NOT_READY
+
+        response = client.get("/api/parameters")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["ready"] is False
+        assert data["ready_reason"] == "controller reset (counter 58 to 59)"
+        assert data["parameters"]["61"]["value"] == 40.0
+
     def test_get_parameters_disconnected(self, client, mock_app_state):
         """Test getting parameters when controller is disconnected."""
         mock_app_state["handler"].connected = False
@@ -236,6 +315,25 @@ class TestSetParameter:
         assert data["name"] == "SetPoint"
         assert data["old_value"] == 50
         assert data["new_value"] == 65
+
+    def test_set_parameter_accepted_while_the_data_is_not_ready(self, client, mock_app_state):
+        """A write is not refused while not ready: a stop set by hand during a
+        controller restart must still be taken."""
+        import asyncio
+
+        asyncio.run(
+            mock_app_state["cache"].set(
+                Parameter(index=119, name="HDWusermode", value=1, type=4, unit=0, writable=True)
+            )
+        )
+        mock_app_state["handler"].readiness.return_value = NOT_READY
+        mock_app_state["handler"].write_param = AsyncMock(return_value=True)
+
+        response = client.post("/api/parameters/HDWusermode", json={"value": 0})
+
+        assert response.status_code == 200
+        assert response.json()["success"] is True
+        mock_app_state["handler"].write_param.assert_awaited_once_with("HDWusermode", 0)
 
     def test_set_parameter_not_found(self, client, mock_app_state):
         """Test setting nonexistent parameter."""

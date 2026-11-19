@@ -40,6 +40,11 @@ async def get_parameters(
 
     Returns 503 until the first full poll after startup has finished, so
     clients never mistake a half-filled cache for the full parameter set.
+
+    After that the reply is 200 while connected and carries ``ready``. While
+    ``ready`` is false (controller reset or silence) the values are those
+    of the last valid poll, not current measurements; ``ready_reason``
+    says why. A client that acts on the values should wait for ``ready``.
     """
     if not handler.connected:
         raise HTTPException(status_code=503, detail="Controller not connected")
@@ -61,8 +66,11 @@ async def get_parameters(
             "max": param.max_value,
         }
 
+    state = handler.readiness()
     return ParametersResponse(
         timestamp=cache.last_update or datetime.now(),
+        ready=state.ready,
+        ready_reason=state.reason,
         parameters=parameters_dict,
     )
 

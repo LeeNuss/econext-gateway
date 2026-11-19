@@ -32,6 +32,8 @@ partial parameter set as complete.
 ```json
 {
   "timestamp": "2026-01-13T12:00:00Z",
+  "ready": true,
+  "ready_reason": "ok",
   "parameters": {
     "150": {
       "index": 150,
@@ -60,6 +62,8 @@ partial parameter set as complete.
 **Response Fields:**
 
 - `timestamp` (string): ISO 8601 timestamp of when data was read
+- `ready` (boolean): `false` while the values are those of the last valid poll and not current measurements: from a discarded poll until the next valid one, and when no valid poll has landed for `ECONEXT_STALE_AFTER` seconds. The reply is still `200`
+- `ready_reason` (string): `ok`, or why the data is not ready, for example `controller reset (counter 28 to 29)`, `TempCWU reads 0`, `controller did not answer`, `reset counter not read`, `poll failed (ConnectionError)` or `no valid poll for 48 s`
 - `parameters` (object): Map of parameter index (as string) to parameter objects. Keyed by index because multiple parameters can share the same name across address spaces.
 
 **Parameter Object Fields:**
@@ -73,10 +77,31 @@ partial parameter set as complete.
 - `min` (number|null): Minimum allowed value (null if not applicable)
 - `max` (number|null): Maximum allowed value (null if not applicable)
 
+**Data readiness:**
+
+A poll is collected whole and written to the cache only if it is valid. A poll
+is discarded when:
+
+- the controller answered nothing in it, also when the panel did answer;
+- the controller's reset counter (`ECONEXT_RESET_COUNTER_PARAM`) differs from
+  the previous poll's. The counter is read once more after the last batch, so
+  a reset in the middle of a poll is caught in that poll; a poll in which that
+  reading fails is discarded as well, for at most 5 minutes in a row;
+- a sentinel (`ECONEXT_VALIDITY_SENTINELS`, parameters that never read 0 in
+  operation) reads 0 after having read non-zero since the gateway started. A
+  zero that lasts longer than 5 minutes is taken as a value and no longer
+  discards polls;
+- it ended in an error, such as a lost serial port.
+
+A controller that restarts answers its first poll with such zeros; without the
+check every client would read them as measurements. Clients that act on the
+values should wait for `ready`. Writes are accepted whether the data is ready
+or not.
+
 **Status Codes:**
 
-- `200 OK`: Success
-- `503 Service Unavailable`: Controller not connected
+- `200 OK`: Success, also while `ready` is `false`
+- `503 Service Unavailable`: Controller not connected, or the first complete poll after startup has not finished (when a batch keeps failing, the third valid poll opens the API with what was read)
 
 **Example:**
 
@@ -234,12 +259,28 @@ Check if the API server is running.
   "controller_connected": true,
   "parameters_ready": true,
   "parameters_count": 1766,
-  "last_update": "2026-11-17T14:00:00"
+  "last_update": "2026-11-17T14:00:00",
+  "data_ready": true,
+  "ready_reason": "ok",
+  "reset_counter": 28,
+  "last_valid_poll": "2026-11-17T14:00:00",
+  "polls_complete": 4210,
+  "polls_incomplete": 1,
+  "polls_discarded": 0
 }
 ```
 
-`status` is `healthy` when connected and the first full poll has finished,
-`degraded` when connected but still loading, `unhealthy` when disconnected.
+`status` is `healthy` when connected, the first full poll has finished and the
+data is ready; `degraded` when connected but still loading or not ready (see
+`data_ready` and `ready_reason`); `unhealthy` when disconnected. `data_ready`
+is `false` whenever the status is not `healthy`: while disconnected the reason
+is `not connected`, before the first complete poll it is `starting` or
+`waiting for a complete poll`.
+
+`last_valid_poll` is the time the last valid poll was written to the cache.
+The three counts are since the gateway started: valid polls in which every
+batch was read, valid polls in which a batch failed (the rest was stored), and
+polls that were discarded.
 
 **Status Codes:**
 
