@@ -4,9 +4,6 @@ configuration:
     description: The USB-RS485 adapter wired to the controller's G1 bus. Pick the /dev/serial/by-id entry so it survives reboots.
   log_level:
     name: Log level
-  virtual_thermostat:
-    name: Virtual thermostat
-    description: Lets Home Assistant act as a room thermostat. Only active on the bus once paired from the integration.
   clock_sync:
     name: Panel clock sync
     description: Sets the panel clock from Home Assistant once a day and after DST changes.

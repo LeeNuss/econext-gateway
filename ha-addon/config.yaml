@@ -17,10 +17,8 @@ ports_description:
 options:
   serial_port: /dev/ttyUSB0
   log_level: info
-  virtual_thermostat: true
   clock_sync: true
 schema:
   serial_port: device(subsystem=tty)
   log_level: list(debug|info|warning|error)
-  virtual_thermostat: bool
   clock_sync: bool

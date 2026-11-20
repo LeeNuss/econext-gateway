@@ -42,7 +42,6 @@ Power the controller down before wiring.
 | --- | --- | --- |
 | Serial port | `/dev/ttyUSB0` | The USB-RS485 adapter. |
 | Log level | `info` | `info` is quiet in steady state. `debug` shows bus traffic. |
-| Virtual thermostat | on | Lets Home Assistant act as a room thermostat. It only becomes active on the bus once you pair it from the integration. |
 | Panel clock sync | on | Sets the panel clock from Home Assistant once a day at 03:30 and after DST changes. |
 
 The API port can be changed in the **Network** section. Use the new port in
@@ -53,7 +52,8 @@ the integration as well.
 The gateway can pose as a wireless room thermostat, using any Home Assistant
 temperature sensor as the room temperature. Pick the sensor in the ecoNEXT
 integration's options, turn on its **Pairing** switch, then start the
-thermostat wizard on the panel within 60 seconds. Details in the
+thermostat wizard on the panel within 60 seconds. Until it is paired the
+virtual thermostat does nothing on the bus. Details in the
 [gateway README][thermostat].
 
 ## Data and updates
