@@ -197,9 +197,18 @@ class TestParameterCache:
         assert reg is not None and reg.value == 100
         assert panel is not None and panel.value == 200
 
-        # get_by_name returns first match
         by_name = await cache.get_by_name("PS")
-        assert by_name is not None
+        assert by_name is not None and by_name.index == 0
+
+    @pytest.mark.asyncio
+    async def test_get_by_name_prefers_lowest_index_regardless_of_order(self):
+        """A panel copy cached first must not shadow the regulator copy."""
+        cache = ParameterCache()
+        await cache.set(make_param("PS", index=10010, value=200))
+        await cache.set(make_param("PS", index=0, value=100))
+
+        by_name = await cache.get_by_name("PS")
+        assert by_name is not None and by_name.index == 0
 
     @pytest.mark.asyncio
     async def test_concurrent_access(self):
