@@ -72,6 +72,16 @@ This will:
 3. Install a systemd service and udev rule
 4. Start the service
 
+### Home Assistant OS app
+
+On Home Assistant OS the gateway can run on the Home Assistant machine as an app (add-on), with the USB-RS485 adapter plugged in there:
+
+1. Settings > Apps > App store > ⋮ > Repositories, add `https://github.com/LeeNuss/econext-gateway`.
+2. Install **ecoNEXT Gateway**, pick the serial port in its configuration and start it.
+3. Point the ecoNEXT integration at the Home Assistant host, port 8000.
+
+Details in [ha-addon/DOCS.md](ha-addon/DOCS.md). Thanks to XS1 on the OpenEnergyMonitor forum for the first version of this.
+
 ### Docker
 
 ```bash

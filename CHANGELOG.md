@@ -5,6 +5,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Home Assistant OS app (add-on). Add this repository in the app store and
+  the gateway runs on the Home Assistant machine, no separate Pi needed. The
+  app installs the gateway release named by its version. See
+  `ha-addon/DOCS.md`.
+
 ### Fixed
 
 - `bootstrap.sh --pre` installs the highest pre-release instead of the most
