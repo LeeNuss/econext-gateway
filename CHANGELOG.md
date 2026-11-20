@@ -11,10 +11,10 @@ All notable changes to this project are documented here. The format follows
   recently published one, so a maintenance release on the 0.2 line does not
   replace a 0.3 beta.
 
-## [0.2.1b1] - 2026-11-20
+## [0.2.1] - 2026-11-20
 
 Maintenance release on top of 0.2.0 with the low-risk fixes from the 0.3.0
-pre-releases. No new API and no change to polling.
+pre-releases. No new API and no change to polling. Same code as 0.2.1b1.
 
 ### Fixed
 
