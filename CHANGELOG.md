@@ -3,6 +3,46 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- `bootstrap.sh --pre` installs the highest pre-release instead of the most
+  recently published one, so a maintenance release on the 0.2 line does not
+  replace a 0.3 beta.
+
+## [0.2.1b1] - 2026-11-20
+
+Maintenance release on top of 0.2.0 with the low-risk fixes from the 0.3.0
+pre-releases. No new API and no change to polling.
+
+### Fixed
+
+- Re-pairing the virtual thermostat at runtime no longer needs a gateway
+  restart. The serial RX whitelist kept the old address, so every panel poll
+  to the new one was dropped and the circuit's thermostat temperature read
+  0.0 until the next restart.
+- The gateway can re-register at a new address while a virtual thermostat is
+  paired. The RX whitelist used to drop every scanning IDENTIFY probe in that
+  case, so registration never happened.
+- Writes to panel parameters (index 10000 and up) go to the panel with the
+  wire index, instead of to the controller with the cache index, which never
+  acknowledged them. Thanks to wsjoanna222 (#10).
+- A name that exists at several indices now always resolves to the lowest
+  one. Before, it depended on cache order.
+- The Docker image builds again: `README.md` is copied in for the package
+  metadata (#10).
+
+### Changed
+
+- The gateway and the virtual thermostat identify as "ecoNEXT gateway" on the
+  bus instead of using the controller vendor's name. The thermostat keeps the
+  `ecoSTER_40` model and class `03`, which the panel requires. Existing
+  pairings keep working.
+- Steady-state operation is quiet in the journal at INFO: lock hold times,
+  the periodic alarm read, thermostat submissions from Home Assistant and
+  uvicorn access lines moved to DEBUG.
+
 ## [0.3.0b3] - 2026-11-19
 
 ### Added
