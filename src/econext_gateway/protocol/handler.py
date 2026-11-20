@@ -1885,7 +1885,14 @@ class ProtocolHandler:
         if max_val is not None and float(value) > max_val:
             raise ValueError(f"Value {value} above maximum {max_val} for {name}")
 
-        data = build_modify_param_request(param.index, value, entry.type_code)
+        # Panel parameters are stored with a 10000 offset so they cannot
+        # collide with regulator parameters in the shared cache.  The offset
+        # is local to the gateway: on the wire the panel expects its original
+        # index and the request must be addressed to the panel itself.
+        is_panel = param.index >= 10000
+        wire_index = param.index - 10000 if is_panel else param.index
+        destination = PANEL_ADDRESS if is_panel else None
+        data = build_modify_param_request(wire_index, value, entry.type_code)
 
         async with self._traced_lock(f"api:write_param:{name}"):
             try:
@@ -1895,6 +1902,7 @@ class ProtocolHandler:
                     Command.MODIFY_PARAM,
                     data,
                     expected_response=Command.MODIFY_PARAM_RESPONSE,
+                    destination=destination,
                 )
             finally:
                 if self._has_token:
