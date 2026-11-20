@@ -59,9 +59,14 @@ command -v tar >/dev/null 2>&1 || die "tar is required"
 # Resolve version
 if [[ -z "$VERSION" ]]; then
     if [[ "$PRE_RELEASE" == true ]]; then
+        # Highest version, not the newest release: a maintenance release on
+        # an older line (0.2.1b1 after 0.3.0b3) must not win. A final version
+        # gets a "z" key so it sorts above its own pre-releases (0.3.0 > 0.3.0b3).
         info "Fetching latest pre-release..."
-        VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases" \
-            | grep '"tag_name"' | head -1 | sed -E 's/.*"v([^"]+)".*/\1/')
+        VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=100" \
+            | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/' \
+            | awk '{ k = $0; if (k ~ /^[0-9.]+$/) k = k "z"; print k, $0 }' \
+            | sort -V | tail -1 | cut -d' ' -f2)
     else
         info "Fetching latest release..."
         VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
