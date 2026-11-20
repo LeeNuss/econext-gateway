@@ -1,0 +1,26 @@
+name: ecoNEXT Gateway
+version: "0.2.1"
+slug: econext_gateway
+description: Local REST API for ecoNET heat pump controllers over RS-485
+url: https://github.com/LeeNuss/econext-gateway
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: services
+boot: auto
+uart: true
+ports:
+  8000/tcp: 8000
+ports_description:
+  8000/tcp: Gateway REST API
+options:
+  serial_port: /dev/ttyUSB0
+  log_level: info
+  virtual_thermostat: true
+  clock_sync: true
+schema:
+  serial_port: device(subsystem=tty)
+  log_level: list(debug|info|warning|error)
+  virtual_thermostat: bool
+  clock_sync: bool
